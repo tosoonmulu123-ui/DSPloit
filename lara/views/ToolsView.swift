@@ -19,10 +19,10 @@ struct ToolsView: View {
         List {
             if !mgr.dsready {
                 Section {
-                    Text("Kernel R/W is not ready. Run the exploit first.")
+                    Text(L("Kernel R/W is not ready. Run the exploit first.", "Kernel R/W belum siap. Jalankan exploit dulu."))
                         .foregroundColor(.secondary)
                 } header: {
-                    Text("Status")
+                    Text(L("Status", "Status"))
                 }
             }
 
@@ -47,19 +47,24 @@ struct ToolsView: View {
                     toggleaslr()
                     isaslr = aslrstate
                 } label: {
-                    Text("Toggle ASLR")
+                    Text(L("Toggle ASLR", "Ubah ASLR"))
                 }
             } header: {
                 Text("ASLR")
             } footer: {
-                Text("Address Space Layout Randomization. Probably not useful for you.")
+                Text(L("Address Space Layout Randomization. Probably not useful for you.", "Address Space Layout Randomization. Mungkin tidak terlalu berguna untukmu."))
             }
             
             Section {
+                NavigationLink(L("Disk R/W Self-Check", "Cek Mandiri Disk R/W")) {
+                    DiskSelfCheckView()
+                }
+                .disabled(!mgr.dsready || (!mgr.sbxready && !mgr.vfsready))
+                
                 Button {
                     mgr.respring()
                 } label: {
-                    Text("Respring (probably broken)")
+                    Text(L("Respring (probably broken)", "Respring (mungkin rusak)"))
                 }
                 
                 HStack {
@@ -112,7 +117,7 @@ struct ToolsView: View {
                     }
                 }
             } header: {
-                Text("Process")
+                Text(L("Process", "Proses"))
             }
 
             Section {
@@ -160,16 +165,16 @@ struct ToolsView: View {
                 Button {
                     token = mgr.sbxgettoken(path: "/var/mobile")
                 } label: {
-                    Text("Issue Token")
+                    Text(L("Issue Token", "Buat Token"))
                 }
                 .disabled(!mgr.sbxready)
             } header: {
                 Text("Sandbox")
             } footer: {
-                Text("Likely broken.")
+                Text(L("Likely broken.", "Kemungkinan rusak."))
             }
         }
-        .navigationTitle("Tools")
+        .navigationTitle(L("Tools", "Alat"))
         .onAppear {
             if mgr.dsready {
                 getaslrstate()

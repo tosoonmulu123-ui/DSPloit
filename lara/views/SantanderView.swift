@@ -34,10 +34,10 @@ struct SantanderView: View {
                     Image(systemName: "externaldrive")
                         .font(.system(size: 36, weight: .semibold))
                     
-                    Text("File Manager not ready")
+                    Text(L("File Manager not ready", "File Manager belum siap"))
                         .font(.headline)
                     
-                    Text("1. Switch to hybrid mode in settings \n2. Escape the Sandbox \n3. Initialise VFS\n4. Try again.")
+                    Text(L("1. Switch to hybrid mode in settings \n2. Escape the Sandbox \n3. Initialise VFS\n4. Try again.", "1. Ganti ke mode hybrid di pengaturan\n2. Escape Sandbox\n3. Inisialisasi VFS\n4. Coba lagi."))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -748,11 +748,11 @@ final class SantanderPathListViewController: UITableViewController, UISearchResu
             present(alert, animated: true)
             return
         }
-        let ok = mgr.vfsoverwritefromlocalpath(target: item.path, source: clip.path)
-        if ok {
+        let result = mgr.lara_writeexpandsafe(target: item.path, source: clip.path)
+        if result.ok {
             reloadContents()
         } else {
-            let alert = UIAlertController(title: "Replace Failed", message: "VFS overwrite failed.", preferredStyle: .alert)
+            let alert = UIAlertController(title: "Replace Failed", message: result.message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
         }
@@ -1087,17 +1087,17 @@ final class SantanderFileReaderViewController: UIViewController, QLPreviewContro
                 present(alert, animated: true)
                 return
             }
-            let ok = mgr.vfsoverwritewithdata(target: path.path, data: data)
-            if ok {
+            let result = mgr.lara_writeexpandsafe(target: path.path, data: data)
+            if result.ok {
                 isEditingFile = false
                 textView.isEditable = false
                 textView.resignFirstResponder()
                 editButton?.title = "Edit"
-                let alert = UIAlertController(title: "Saved", message: "File updated.", preferredStyle: .alert)
+                let alert = UIAlertController(title: "Saved", message: "File updated. (\(result.message))", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
                 present(alert, animated: true)
             } else {
-                let alert = UIAlertController(title: "Save Failed", message: "VFS overwrite failed.", preferredStyle: .alert)
+                let alert = UIAlertController(title: "Save Failed", message: result.message, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
                 present(alert, animated: true)
             }

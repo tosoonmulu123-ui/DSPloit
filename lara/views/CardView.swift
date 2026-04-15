@@ -49,22 +49,22 @@ struct CardView: View {
                     if working {
                         HStack {
                             ProgressView()
-                            Text("Scanning...")
+                            Text(L("Scanning...", "Memindai..."))
                         }
                     } else {
-                        Text("Refresh")
+                        Text(L("Refresh", "Muat Ulang"))
                     }
                 }
                 .disabled(working)
             } header: {
-                Text("Actions")
+                Text(L("Actions", "Aksi"))
             } footer: {
-                Text("Uses SBX first and falls back to VFS for overwrite.\nGet card images [here](https://dynalist.io/d/ldKY6rbMR3LPnWz4fTvf_HCh).")
+                Text(L("Uses SBX first and falls back to VFS for overwrite.\nGet card images [here](https://dynalist.io/d/ldKY6rbMR3LPnWz4fTvf_HCh).", "Menggunakan SBX terlebih dahulu lalu fallback ke VFS untuk overwrite.\nAmbil gambar kartu [di sini](https://dynalist.io/d/ldKY6rbMR3LPnWz4fTvf_HCh)."))
             }
 
             if cards.isEmpty {
                 Section {
-                    Text("No cards found.")
+                    Text(L("No cards found.", "Tidak ada kartu ditemukan."))
                         .foregroundColor(.secondary)
                 }
             } else {
@@ -99,8 +99,8 @@ struct CardView: View {
                             Spacer()
                         }
                         
-                        Picker("Replace", selection: $selectedOption) {
-                            Text("Select…").tag(ReplaceOption?.none)
+                        Picker(L("Replace", "Ganti"), selection: $selectedOption) {
+                            Text(L("Select…", "Pilih…")).tag(ReplaceOption?.none)
                             ForEach(ReplaceOption.allCases) { option in
                                 Text(option.rawValue).tag(Optional(option))
                             }
@@ -119,13 +119,13 @@ struct CardView: View {
                             selectedOption = nil
                         }
                             
-                            Button("Restore") {
+                            Button(L("Restore", "Pulihkan")) {
                                 pendingRestoreCard = card
                                 restoreImage(card: card)
                             }
                             .foregroundColor(.red)
                         
-                        Button("Edit Card Number") {
+                        Button(L("Edit Card Number", "Ubah Nomor Kartu")) {
                             pendingNumberCard = card
                             currentCardNumber = readCardNumber(for: card) ?? ""
                             cardNumberInput = currentCardNumber
@@ -151,7 +151,7 @@ struct CardView: View {
                                 Text("drkm9743")
                                     .font(.headline)
                                 
-                                Text("Inspiration.")
+                                Text(L("Inspiration.", "Inspirasi."))
                                     .font(.subheadline)
                                     .foregroundColor(Color.secondary)
                             }
@@ -165,32 +165,32 @@ struct CardView: View {
                             }
                         }
                     } header: {
-                        Text("Credits")
+                        Text(L("Credits", "Kredit"))
                     }
                 }
             }
         }
-        .navigationTitle("Card Overwrite")
-        .alert("Status", isPresented: .constant(status != nil)) {
+        .navigationTitle(L("Card Overwrite", "Overwrite Kartu"))
+        .alert(L("Status", "Status"), isPresented: .constant(status != nil)) {
             Button("OK") { status = nil }
         } message: {
             Text(status ?? "")
         }
-        .alert("Edit Card Number", isPresented: $showCardNumberEditor) {
-            TextField("Suffix", text: $cardNumberInput)
-            Button("Save") {
+        .alert(L("Edit Card Number", "Ubah Nomor Kartu"), isPresented: $showCardNumberEditor) {
+            TextField(L("Suffix", "Akhiran"), text: $cardNumberInput)
+            Button(L("Save", "Simpan")) {
                 if let card = pendingNumberCard {
                     applyCardNumber(card: card, newSuffix: cardNumberInput)
                 }
             }
             if let card = pendingNumberCard, hasPassJsonBackup(card: card) {
-                Button("Restore Original", role: .destructive) {
+                Button(L("Restore Original", "Pulihkan Asli"), role: .destructive) {
                     restorePassJson(card: card)
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L("Cancel", "Batal"), role: .cancel) {}
         } message: {
-            Text(currentCardNumber.isEmpty ? "Current suffix: (none)" : "Current suffix: \(currentCardNumber)")
+            Text(currentCardNumber.isEmpty ? L("Current suffix: (none)", "Akhiran saat ini: (tidak ada)") : L("Current suffix:", "Akhiran saat ini:") + " \(currentCardNumber)")
         }
         .sheet(isPresented: $showimgpicker) {
             ImagePicker(imageData: $pickedImageData)
@@ -548,8 +548,11 @@ struct CardView: View {
             try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             return true
         } catch {
-            guard mgr.vfsready else { return false }
-            return mgr.vfsoverwritewithdata(target: path, data: data)
+            let result = mgr.lara_writeexpandsafe(target: path, data: data)
+            if !result.ok {
+                mgr.logmsg("card write fallback failed: \(result.message)")
+            }
+            return result.ok
         }
     }
 }

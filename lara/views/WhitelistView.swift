@@ -37,28 +37,28 @@ struct WhitelistView: View {
                         if patching {
                             HStack {
                                 ProgressView()
-                                Text("Working...")
+                                Text(L("Working...", "Memproses..."))
                             }
                         } else {
-                            Text("Refresh")
+                            Text(L("Refresh", "Muat Ulang"))
                         }
                     }
                     .disabled(!mgr.sbxready || patching)
 
-                    Button("Patch (Empty Plist)") {
+                    Button(L("Patch (Empty Plist)", "Patch (Plist Kosong)")) {
                         patchall()
                     }
                     .disabled(!mgr.sbxready || patching)
                 } header: {
-                    Text("Actions")
+                    Text(L("Actions", "Aksi"))
                 } footer: {
-                    Text("Overwrites MobileIdentityData blacklist files with an empty plist.")
+                    Text(L("Overwrites MobileIdentityData blacklist files with an empty plist.", "Menimpa file blacklist MobileIdentityData dengan plist kosong."))
                 }
 
                 ForEach(files) { f in
                     Section {
                         ScrollView {
-                            Text(contents[f.path] ?? "(not loaded)")
+                            Text(contents[f.path] ?? L("(not loaded)", "(belum dimuat)"))
                                 .font(.system(size: 13, design: .monospaced))
                                 .textSelection(.enabled)
                         }
@@ -71,7 +71,7 @@ struct WhitelistView: View {
                 }
             }
             .navigationTitle("Whitelist")
-            .alert("Status", isPresented: .constant(status != nil)) {
+            .alert(L("Status", "Status"), isPresented: .constant(status != nil)) {
                 Button("OK") { status = nil }
             } message: {
                 Text(status ?? "")
@@ -86,7 +86,7 @@ struct WhitelistView: View {
 
     private func loadall() {
         guard mgr.sbxready else {
-            status = "sandbox escape not ready"
+            status = L("sandbox escape not ready", "sandbox escape belum siap")
             return
         }
         patching = true
@@ -94,7 +94,7 @@ struct WhitelistView: View {
         var next: [String: String] = [:]
         for f in files {
             guard let data = sbxread(path: f.path, maxSize: 2 * 1024 * 1024) else {
-                next[f.path] = "(failed to read)"
+                next[f.path] = L("(failed to read)", "(gagal dibaca)")
                 continue
             }
             next[f.path] = render(data: data)
@@ -104,7 +104,7 @@ struct WhitelistView: View {
 
     private func patchall() {
         guard mgr.sbxready else {
-            status = "sandbox escape not ready"
+            status = L("sandbox escape not ready", "sandbox escape belum siap")
             return
         }
         patching = true
@@ -172,8 +172,8 @@ struct WhitelistView: View {
         guard mgr.vfsready else {
             return reason + " | vfs not ready"
         }
-        let ok = mgr.vfsoverwritewithdata(target: path, data: data)
-        return ok ? "ok (vfs overwrite)" : reason + " | vfs overwrite failed"
+        let result = mgr.lara_writeexpandsafe(target: path, data: data)
+        return result.ok ? result.message : reason + " | " + result.message
     }
 
     private func render(data: Data) -> String {

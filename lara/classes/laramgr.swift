@@ -295,6 +295,76 @@ final class laramgr: ObservableObject {
         return r == 0
     }
     
+    private func sbxfilesize(path: String) -> Int64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? NSNumber else {
+            return nil
+        }
+        return size.int64Value
+    }
+    
+    private func verifyreadback(path: String, expected: Data) -> Bool {
+        if let sbxData = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
+            return sbxData == expected
+        }
+        guard vfsready else { return false }
+        guard let vfsData = vfsread(path: path, maxSize: expected.count + 1) else { return false }
+        return vfsData == expected
+    }
+    
+    @discardableResult
+    func lara_writeexpandsafe(target: String, data: Data) -> (ok: Bool, message: String) {
+        let beforeSize = sbxfilesize(path: target) ?? vfssize(path: target)
+        let wantedSize = Int64(data.count)
+        
+        let sbxResult = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
+        if sbxResult.ok {
+            if verifyreadback(path: target, expected: data) {
+                return (true, "ok (sbx rewrite, verified)")
+            }
+            return (false, "sbx write succeeded but read-back verification failed")
+        }
+        
+        guard vfsready else {
+            return (false, sbxResult.message + " | vfs not ready")
+        }
+        
+        let vfsOverwriteOK = vfsoverwritewithdata(target: target, data: data)
+        if vfsOverwriteOK {
+            if verifyreadback(path: target, expected: data) {
+                return (true, "ok (vfs overwrite, verified)")
+            }
+            return (false, "vfs overwrite succeeded but read-back verification failed")
+        }
+        
+        // If the file grew, try direct VFS write path (requires native side support for growth).
+        let targetLikelySmaller = beforeSize >= 0 && wantedSize > beforeSize
+        if targetLikelySmaller {
+            let vfsWriteOK = vfswrite(path: target, data: data)
+            if vfsWriteOK {
+                if verifyreadback(path: target, expected: data) {
+                    return (true, "ok (vfs write grow path, verified)")
+                }
+                return (false, "vfs write succeeded but read-back verification failed")
+            }
+        }
+        
+        return (false, sbxResult.message + " | vfs overwrite failed")
+    }
+    
+    @discardableResult
+    func lara_writeexpandsafe(target: String, source: String) -> (ok: Bool, message: String) {
+        guard FileManager.default.fileExists(atPath: source) else {
+            return (false, "source file not found: \(source)")
+        }
+        do {
+            let data = try Data(contentsOf: URL(fileURLWithPath: source))
+            return lara_writeexpandsafe(target: target, data: data)
+        } catch {
+            return (false, "failed to read source: \(error.localizedDescription)")
+        }
+    }
+    
     func vfsoverwritewithdata(target: String, data: Data) -> Bool {
         guard vfsready else { return false }
         let tmp = NSTemporaryDirectory() + "vfs_src_\(arc4random()).bin"
@@ -331,47 +401,12 @@ final class laramgr: ObservableObject {
     
     @discardableResult
     func lara_overwritefile(target: String, source: String) -> (ok: Bool, message: String) {
-        guard FileManager.default.fileExists(atPath: source) else {
-            return (false, "source file not found: \(source)")
-        }
-        
-        let result: (ok: Bool, message: String)
-        if sbxready {
-            do {
-                let data = try Data(contentsOf: URL(fileURLWithPath: source))
-                result = sbxoverwrite(path: target, data: data)
-            } catch {
-                result = (false, "sbx read source failed: \(error.localizedDescription)")
-            }
-        } else {
-            result = (false, "sbx not ready")
-        }
-        
-        if result.ok {
-            return result
-        }
-        
-        guard vfsready else {
-            return (false, result.message + " | vfs not ready")
-        }
-        
-        let ok = vfsoverwritefromlocalpath(target: target, source: source)
-        return ok ? (true, "ok (vfs overwrite)") : (false, result.message + " | vfs overwrite failed")
+        lara_writeexpandsafe(target: target, source: source)
     }
     
     @discardableResult
     func lara_overwritefile(target: String, data: Data) -> (ok: Bool, message: String) {
-        let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
-        if result.0 {
-            return result
-        }
-        
-        guard vfsready else {
-            return (false, result.1 + ", vfs not ready")
-        }
-        
-        let ok = vfsoverwritewithdata(target: target, data: data)
-        return ok ? (true, "vfs overwrite ok") : (false, result.1 + ", vfs overwrite failed")
+        lara_writeexpandsafe(target: target, data: data)
     }
     
     func vfszeropage(at path: String) -> Bool {

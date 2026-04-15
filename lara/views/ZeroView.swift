@@ -86,13 +86,13 @@ struct ZeroView: View {
                         }
                     }
                 } footer: {
-                    Text("Big thanks [jailbreak.party](https://github.com/jailbreakdotparty/dirtyZero)!\nNOTE: A lot of Tweaks currently dont work. This will probably be fixed in a future update.")
+                    Text(L("Big thanks [jailbreak.party](https://github.com/jailbreakdotparty/dirtyZero)!\nNOTE: A lot of Tweaks currently dont work. This will probably be fixed in a future update.", "Terima kasih [jailbreak.party](https://github.com/jailbreakdotparty/dirtyZero)!\nCATATAN: Banyak tweak belum bekerja. Kemungkinan akan diperbaiki di update berikutnya."))
                 }
             }
             .navigationTitle("DirtyZero")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Apply") {
+                    Button(L("Apply", "Terapkan")) {
                         apply()
                     }
                 }

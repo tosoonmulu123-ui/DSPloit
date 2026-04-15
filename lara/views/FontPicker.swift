@@ -45,7 +45,7 @@ struct FontPicker: View {
             List {
                 Section {
                     if repostore.repos.isEmpty {
-                        Text("No repos added yet.")
+                        Text(L("No repos added yet.", "Belum ada repo ditambahkan."))
                             .foregroundColor(.secondary)
                     }
                 }
@@ -58,7 +58,7 @@ struct FontPicker: View {
                             }
                         } else {
                             HStack {
-                                Text("Loading...")
+                                Text(L("Loading...", "Memuat..."))
                                 Spacer()
                                 if repo.isloading {
                                     ProgressView()
@@ -75,7 +75,7 @@ struct FontPicker: View {
                 }
                 
                 Section {
-                    Picker("Target Style", selection: $selectedTarget) {
+                    Picker(L("Target Style", "Gaya Target"), selection: $selectedTarget) {
                         ForEach(styletarget.allCases, id: \.self) { target in
                             Text(target.rawValue).tag(target)
                         }
@@ -92,8 +92,8 @@ struct FontPicker: View {
                                     save(customfonts)
                                     return
                                 }
-                                let success = mgr.vfsoverwritefromlocalpath(target: selectedTarget.path, source: font.path)
-                                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                                let result = mgr.lara_writeexpandsafe(target: selectedTarget.path, source: font.path)
+                                result.ok ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font: \(result.message)")
                             } label: {
                                 Text(font.name)
                                     .font(viewfontfile(path: font.path, size: 17))
@@ -101,27 +101,27 @@ struct FontPicker: View {
                         }
                     }
                     
-                    Button("Import Font") {
+                    Button(L("Import Font", "Impor Font")) {
                         showimporter = true
                     }
                 } header: {
-                    Text("Settings")
+                    Text(L("Settings", "Pengaturan"))
                 } footer: {
-                    Text("Some custom fonts will not work for app icons and other stuff, some will not work at all. If you want them to work, patch your .ttf [here](https://neonmodder123.github.io/lara-font-patcher/).")
+                    Text(L("Some custom fonts will not work for app icons and other stuff, some will not work at all. If you want them to work, patch your .ttf [here](https://neonmodder123.github.io/lara-font-patcher/).", "Beberapa font kustom tidak akan bekerja untuk ikon aplikasi dan hal lain, bahkan ada yang tidak bekerja sama sekali. Kalau mau kompatibel, patch file .ttf kamu [di sini](https://neonmodder123.github.io/lara-font-patcher/)."))
                 }
                 
                 Section {
-                    Text(globallogger.logs.last ?? "No logs yet")
+                    Text(globallogger.logs.last ?? L("No logs yet", "Belum ada log"))
                         .font(.system(size: 13, design: .monospaced))
                     
                     if #unavailable(iOS 18.2) {
-                        Button("Respring") {
+                        Button(L("Respring", "Respring")) {
                             mgr.respring()
                         }
                     }
                 }
             }
-            .navigationTitle("Font Overwrite")
+            .navigationTitle(L("Font Overwrite", "Overwrite Font"))
             .task {
                 await repostore.refreshrepos()
             }
@@ -283,11 +283,11 @@ struct repofontrow: View {
 
         Button {
             if iddownloaded, let localurl {
-                let success = mgr.vfsoverwritefromlocalpath(
+                let result = mgr.lara_writeexpandsafe(
                     target: laramgr.fontpath,
                     source: localurl.path
                 )
-                success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
+                result.ok ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font: \(result.message)")
             } else {
                 Task {
                     await repostore.dlfont(font, repo: repo)

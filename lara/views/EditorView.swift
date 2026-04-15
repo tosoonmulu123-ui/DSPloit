@@ -42,40 +42,40 @@ struct EditorView: View {
         NavigationStack {
             List {
                 Section {
-                    Toggle("Action Button (iOS 17+)", isOn: mgkeybinding(["cT44WE1EohiwRzhsZ8xEsw"]))
-                    Toggle("Allow installing iPadOS apps", isOn: mgkeybinding(["9MZ5AdH43csAUajl/dU+IQ"], type: [Int].self, default: [1], enable: [1, 2]))
-                    Toggle("Always on Display (18.0+)", isOn: mgkeybinding(["j8/Omm6s1lsmTDFsXjsBfA", "2OOJf1VhaM7NxfRok3HbWQ"]))
+                    Toggle(L("Action Button (iOS 17+)", "Tombol Action (iOS 17+)"), isOn: mgkeybinding(["cT44WE1EohiwRzhsZ8xEsw"]))
+                    Toggle(L("Allow installing iPadOS apps", "Izinkan instal aplikasi iPadOS"), isOn: mgkeybinding(["9MZ5AdH43csAUajl/dU+IQ"], type: [Int].self, default: [1], enable: [1, 2]))
+                    Toggle(L("Always on Display (18.0+)", "Always on Display (18.0+)"), isOn: mgkeybinding(["j8/Omm6s1lsmTDFsXjsBfA", "2OOJf1VhaM7NxfRok3HbWQ"]))
                     // Toggle("Apple Intelligence", isOn: bindingForAppleIntelligence())
                     //    .disabled(requiresVersion(18))
-                    Toggle("Apple Pencil", isOn: mgkeybinding(["yhHcB0iH0d1XzPO/CFd3ow"]))
-                    Toggle("Boot chime", isOn: mgkeybinding(["QHxt+hGLaBPbQJbXiUJX3w"]))
-                    Toggle("Camera button (18.0rc+)", isOn: mgkeybinding(["CwvKxM2cEogD3p+HYgaW0Q", "oOV1jhJbdV3AddkcCg0AEA"]))
-                    Toggle("Charge limit (iOS 17+)", isOn: mgkeybinding(["37NVydb//GP/GrhuTN+exg"]))
-                    Toggle("Crash Detection (might not work)", isOn: mgkeybinding(["HCzWusHQwZDea6nNhaKndw"]))
-                    Toggle("Dynamic Island (17.4+, might not work)", isOn: mgkeybinding(["YlEtTtHlNesRBMal1CqRaA"]))
+                    Toggle(L("Apple Pencil", "Apple Pencil"), isOn: mgkeybinding(["yhHcB0iH0d1XzPO/CFd3ow"]))
+                    Toggle(L("Boot chime", "Suara boot"), isOn: mgkeybinding(["QHxt+hGLaBPbQJbXiUJX3w"]))
+                    Toggle(L("Camera button (18.0rc+)", "Tombol kamera (18.0rc+)"), isOn: mgkeybinding(["CwvKxM2cEogD3p+HYgaW0Q", "oOV1jhJbdV3AddkcCg0AEA"]))
+                    Toggle(L("Charge limit (iOS 17+)", "Batas pengisian daya (iOS 17+)"), isOn: mgkeybinding(["37NVydb//GP/GrhuTN+exg"]))
+                    Toggle(L("Crash Detection (might not work)", "Deteksi tabrakan (mungkin tidak berfungsi)"), isOn: mgkeybinding(["HCzWusHQwZDea6nNhaKndw"]))
+                    Toggle(L("Dynamic Island (17.4+, might not work)", "Dynamic Island (17.4+, mungkin tidak berfungsi)"), isOn: mgkeybinding(["YlEtTtHlNesRBMal1CqRaA"]))
                     // Toggle("Disable region restrictions", isOn: bindingForRegionRestriction())
-                    Toggle("Internal Storage info", isOn: mgkeybinding(["LBJfwOEzExRxzlAnSuI7eg"]))
+                    Toggle(L("Internal Storage info", "Info Storage Internal"), isOn: mgkeybinding(["LBJfwOEzExRxzlAnSuI7eg"]))
                     // Toggle("Internal stuff", isOn: bindingForInternalStuff())
-                    Toggle("Security Research Device", isOn: mgkeybinding(["XYlJKKkj2hztRP1NWWnhlw"]))
-                    Toggle("Metal HUD for all apps", isOn: mgkeybinding(["EqrsVvjcYDdxHBiQmGhAWw"]))
-                    Toggle("Stage Manager (iPad Only?)", isOn: mgkeybinding(["qeaj75wk3HF4DwQ8qbIi7g"]))
+                    Toggle(L("Security Research Device", "Perangkat Riset Keamanan"), isOn: mgkeybinding(["XYlJKKkj2hztRP1NWWnhlw"]))
+                    Toggle(L("Metal HUD for all apps", "Metal HUD untuk semua aplikasi"), isOn: mgkeybinding(["EqrsVvjcYDdxHBiQmGhAWw"]))
+                    Toggle(L("Stage Manager (iPad Only?)", "Stage Manager (khusus iPad?)"), isOn: mgkeybinding(["qeaj75wk3HF4DwQ8qbIi7g"]))
                 } header: {
                     Text("MobileGestalt")
                 } footer: {
-                    Text("Note: some tweaks may not work or cause instability.\nWARNING: Never enable features your device doesn't support.")
+                    Text(L("Note: some tweaks may not work or cause instability.\nWARNING: Never enable features your device doesn't support.", "Catatan: beberapa tweak mungkin tidak berfungsi atau menyebabkan tidak stabil.\nPERINGATAN: Jangan aktifkan fitur yang tidak didukung perangkatmu."))
                 }
                 Section {
                     HStack {
-                        Text("Status")
+                        Text(L("Status", "Status"))
                         
                         Spacer()
                         
                         if valid {
-                            Text("valid!")
+                            Text(L("valid!", "valid!"))
                                 .monospaced(true)
                                 .foregroundColor(.green)
                         } else {
-                            Text("invalid.")
+                            Text(L("invalid.", "tidak valid."))
                                 .monospaced(true)
                                 .foregroundColor(.red)
                         }
@@ -84,13 +84,13 @@ struct EditorView: View {
                     Button() {
                         apply()
                     } label: {
-                        Text("Apply Modified MobileGestalt")
+                        Text(L("Apply Modified MobileGestalt", "Terapkan MobileGestalt yang Dimodifikasi"))
                     }
                     .disabled(!valid)
                 } header: {
-                    Text("Apply")
+                    Text(L("Apply", "Terapkan"))
                 } footer: {
-                    Text("Use at your own risk.")
+                    Text(L("Use at your own risk.", "Gunakan dengan risiko sendiri."))
                 }
                 
                 HStack(alignment: .top) {
@@ -108,7 +108,7 @@ struct EditorView: View {
                         Text("Jurre")
                             .font(.headline)
                         
-                        Text("The entire EditorView.")
+                            Text(L("The entire EditorView.", "Seluruh EditorView."))
                             .font(.subheadline)
                             .foregroundColor(Color.secondary)
                     }
@@ -123,14 +123,14 @@ struct EditorView: View {
                 }
             }
             .navigationTitle("MobileGestalt")
-            .alert("Status", isPresented: .constant(status != nil)) {
+            .alert(L("Status", "Status"), isPresented: .constant(status != nil)) {
                 Button("OK") { status = nil }
             } message: {
                 Text(status ?? "")
             }
-            .alert("Done", isPresented: .constant(alert != nil)) {
-                Button("Cancel") { alert = nil }
-                Button("Respring") { mgr.respring() }
+            .alert(L("Done", "Selesai"), isPresented: .constant(alert != nil)) {
+                Button(L("Cancel", "Batal")) { alert = nil }
+                Button(L("Respring", "Respring")) { mgr.respring() }
             } message: {
                 Text(alert ?? "uhh...")
             }
@@ -147,7 +147,7 @@ struct EditorView: View {
         do {
             mg = try NSMutableDictionary(contentsOf: URL(fileURLWithPath: path), error: ())
         } catch {
-            status = "Failed to load mobilegestalt"
+            status = L("Failed to load mobilegestalt", "Gagal memuat mobilegestalt")
         }
     }
 
@@ -156,10 +156,10 @@ struct EditorView: View {
         do {
             try mg.write(to: URL(fileURLWithPath: path))
             mgr.logmsg("wrote custom mbgestalt to \(path)")
-            alert = "Applied modified mobilegestalt, respring to see changes."
+            alert = L("Applied modified mobilegestalt, respring to see changes.", "Mobilegestalt termodifikasi berhasil diterapkan, respring untuk melihat perubahan.")
             return
         } catch {
-            status = "failed to write plist: \(error.localizedDescription)"
+            status = L("failed to write plist:", "gagal menulis plist:") + " \(error.localizedDescription)"
             return
         }
     }

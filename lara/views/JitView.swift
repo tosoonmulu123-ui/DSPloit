@@ -26,16 +26,16 @@ struct JitView: View {
         NavigationStack {
             List {
                 if !issetup {
-                    Section("Setup") {
-                        Text("Initial setup is required before listing applications.")
+                    Section(L("Setup", "Setup")) {
+                        Text(L("Initial setup is required before listing applications.", "Setup awal wajib dilakukan sebelum menampilkan daftar aplikasi."))
                         
-                        Button("Run Setup") {
+                        Button(L("Run Setup", "Jalankan Setup")) {
                             showsetup = true
                         }
                     }
                 } else {
                     HStack {
-                        TextField("Search", text: $query)
+                        TextField(L("Search", "Cari"), text: $query)
                         
                         Button {
                             loadprocs()
@@ -87,14 +87,14 @@ struct JitView: View {
                 }
             }
         }
-        .alert("Reset setup?", isPresented: $showresetup) {
-            Button("Cancel", role: .cancel) { }
-            Button("Reset", role: .destructive) {
+        .alert(L("Reset setup?", "Reset setup?"), isPresented: $showresetup) {
+            Button(L("Cancel", "Batal"), role: .cancel) { }
+            Button(L("Reset", "Reset"), role: .destructive) {
                 issetup = false
                 processes.removeAll()
             }
         } message: {
-            Text("This will reset the setup and require running it again.")
+            Text(L("This will reset the setup and require running it again.", "Ini akan mereset setup dan kamu perlu menjalankannya lagi."))
         }
         .sheet(isPresented: $showsetup) {
             NavigationView {
@@ -142,11 +142,11 @@ struct JitView: View {
                         }
                     }
                 }
-                .navigationTitle("Setup")
+                .navigationTitle(L("Setup", "Setup"))
                 .environment(\.defaultMinListRowHeight, 50)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Done") {
+                        Button(L("Done", "Selesai")) {
                             issetup = true
                             showsetup = false
                             loadprocs()
@@ -167,16 +167,16 @@ struct JitView: View {
         
         do {
             let fileData = try Data(contentsOf: certURL)
-            let success = laramgr.shared.vfsoverwritewithdata(
+            let result = laramgr.shared.lara_writeexpandsafe(
                 target: "/System/Library/Lockdown/iPhoneDebug.pem",
                 data: fileData
             )
             
             DispatchQueue.main.async {
-                if success {
-                    globallogger.log("vfs overwrite success")
+                if result.ok {
+                    globallogger.log("overwrite success (\(result.message))")
                 } else {
-                    globallogger.log("vfs overwrite failed")
+                    globallogger.log("overwrite failed (\(result.message))")
                 }
             }
         } catch {

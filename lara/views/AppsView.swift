@@ -218,7 +218,7 @@ struct AppsView: View {
         List {
             Section {
                 if scannedapps.isEmpty {
-                    Text("No apps found.")
+                    Text(L("No apps found.", "Tidak ada aplikasi ditemukan."))
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(scannedapps) { app in
@@ -253,20 +253,20 @@ struct AppsView: View {
                     }
                 }
             } header: {
-                Text("Sideloaded Apps")
+                Text(L("Sideloaded Apps", "Aplikasi Sideload"))
             }
 
             Section {
                 Button {
                     sbx3apbypass()
                 } label: {
-                    Text("Bypass 3 App Limit")
+                    Text(L("Bypass 3 App Limit", "Bypass Batas 3 Aplikasi"))
                 }
             } footer: {
-                Text("Needs to be reapplied everytime you sideload a new app.")
+                Text(L("Needs to be reapplied everytime you sideload a new app.", "Perlu diterapkan ulang setiap kali kamu sideload aplikasi baru."))
             }
         }
-        .navigationTitle("3 App Bypass")
+        .navigationTitle(L("3 App Bypass", "Bypass 3 Aplikasi"))
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

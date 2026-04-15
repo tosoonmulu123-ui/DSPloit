@@ -20,9 +20,9 @@ struct ContentView: View {
             List {
                 if !hasoffsets {
                     Section("Setup") {
-                        Text("Kernelcache offsets are missing. Download them in Settings.")
+                        Text(L("Kernelcache offsets are missing. Download them in Settings.", "Offset Kernelcache belum ada. Unduh di Pengaturan."))
                             .foregroundColor(.secondary)
-                        Button("Open Settings") {
+                        Button(L("Open Settings", "Buka Pengaturan")) {
                             showsettings = true
                         }
                     }
@@ -37,27 +37,27 @@ struct ContentView: View {
                                     ProgressView(value: mgr.dsprogress)
                                         .progressViewStyle(.circular)
                                         .frame(width: 18, height: 18)
-                                    Text("Running...")
+                                    Text(L("Running...", "Menjalankan..."))
                                     Spacer()
                                     Text("\(Int(mgr.dsprogress * 100))%")
                                 }
                             } else {
                                 if mgr.dsready {
                                     HStack {
-                                        Text("Ran Exploit")
+                                        Text(L("Ran Exploit", "Exploit Berhasil"))
                                         Spacer()
                                         Image(systemName: "checkmark.circle")
                                             .foregroundColor(.green)
                                     }
                                 } else if mgr.dsattempted && mgr.dsfailed {
                                     HStack {
-                                        Text("Exploit Failed")
+                                        Text(L("Exploit Failed", "Exploit Gagal"))
                                         Spacer()
                                         Image(systemName: "xmark.circle")
                                             .foregroundColor(.red)
                                     }
                                 } else {
-                                    Text("Run Exploit")
+                                    Text(L("Run Exploit", "Jalankan Exploit"))
                                 }
                             }
                         }
@@ -98,10 +98,10 @@ struct ContentView: View {
                             }
                         }
                     } header: {
-                        Text("Kernel Read Write")
+                        Text(L("Kernel Read Write", "Kernel Baca Tulis"))
                     } footer: {
                         if g_isunsupported {
-                            Text("Your device/installation method may not be supported.")
+                            Text(L("Your device/installation method may not be supported.", "Perangkat/metode instalasi kamu mungkin belum didukung."))
                         }
                     }
 
@@ -115,24 +115,24 @@ struct ContentView: View {
                                         ProgressView(value: mgr.vfsprogress)
                                             .progressViewStyle(.circular)
                                             .frame(width: 18, height: 18)
-                                        Text("Initialising VFS...")
+                                        Text(L("Initialising VFS...", "Menginisialisasi VFS..."))
                                         Spacer()
                                         Text("\(Int(mgr.vfsprogress * 100))%")
                                     }
                                 } else if !mgr.vfsready {
                                     if mgr.vfsattempted && mgr.vfsfailed {
                                         HStack {
-                                            Text("VFS Init Failed")
+                                            Text(L("VFS Init Failed", "Init VFS Gagal"))
                                             Spacer()
                                             Image(systemName: "xmark.circle")
                                                 .foregroundColor(.red)
                                         }
                                     } else {
-                                        Text("Initialise VFS")
+                                        Text(L("Initialise VFS", "Inisialisasi VFS"))
                                     }
                                 } else {
                                     HStack {
-                                        Text("Initialised VFS")
+                                        Text(L("Initialised VFS", "VFS Siap"))
                                         Spacer()
                                         Image(systemName: "checkmark.circle")
                                             .foregroundColor(.green)
@@ -144,24 +144,24 @@ struct ContentView: View {
                             if mgr.vfsready {
                                 NavigationLink("Tweaks") {
                                     List {
-                                        NavigationLink("Font Overwrite") {
+                                        NavigationLink(L("Font Overwrite", "Overwrite Font")) {
                                             FontPicker(mgr: mgr)
                                         }
                                         
-                                        NavigationLink("Card Overwrite") {
+                                        NavigationLink(L("Card Overwrite", "Overwrite Kartu")) {
                                             CardView()
                                         }
                                         
-                                        NavigationLink("Custom Overwrite") {
+                                        NavigationLink(L("Custom Overwrite", "Overwrite Kustom")) {
                                             CustomView(mgr: mgr)
                                         }
                                         
-                                        NavigationLink("DirtyZero (Broken)") {
+                                        NavigationLink(L("DirtyZero (Broken)", "DirtyZero (Rusak)")) {
                                             ZeroView(mgr: mgr)
                                         }
                                         
                                         if !showfmintabs {
-                                            NavigationLink("File Manager") {
+                                            NavigationLink(L("File Manager", "Manajer File")) {
                                                 SantanderView(startPath: "/")
                                             }
                                         }
@@ -179,22 +179,22 @@ struct ContentView: View {
                                         ProgressView()
                                             .progressViewStyle(.circular)
                                             .frame(width: 18, height: 18)
-                                        Text("Escaping Sandbox...")
+                                        Text(L("Escaping Sandbox...", "Melewati Sandbox..."))
                                     }
                                 } else if !mgr.sbxready {
                                     if mgr.sbxattempted && mgr.sbxfailed {
                                         HStack {
-                                            Text("Sandbox Escape Failed")
+                                            Text(L("Sandbox Escape Failed", "Sandbox Escape Gagal"))
                                             Spacer()
                                             Image(systemName: "xmark.circle")
                                                 .foregroundColor(.red)
                                         }
                                     } else {
-                                        Text("Escape Sandbox")
+                                        Text(L("Escape Sandbox", "Lepas Sandbox"))
                                     }
                                 } else {
                                     HStack {
-                                        Text("Sandbox Escaped")
+                                        Text(L("Sandbox Escaped", "Sandbox Terlewati"))
                                         Spacer()
                                         Image(systemName: "checkmark.circle")
                                             .foregroundColor(.green)
@@ -366,7 +366,7 @@ struct ContentView: View {
                     }
                     
                     Section {
-                        Button("Init RemoteCall") {
+                        Button(L("Init RemoteCall", "Inisialisasi RemoteCall")) {
                             mgr.logmsg("T")
                             mgr.rcinit(process: "springboard", migbypass: false) { success in
                                 if success {
@@ -381,7 +381,7 @@ struct ContentView: View {
                         .disabled(!mgr.dsready || mgr.remotecallrunning)
                         
                         if mgr.remotecallrunning {
-                            Button("Destroy RemoteCall") {
+                            Button(L("Destroy RemoteCall", "Hentikan RemoteCall")) {
                                 mgr.rcdestroy()
                             }
                         }
@@ -391,21 +391,21 @@ struct ContentView: View {
                     
                     Section {
                         if mgr.dsready {
-                            NavigationLink("Tools") {
+                            NavigationLink(L("Tools", "Alat")) {
                                 ToolsView()
                             }
                         }
             
-                        Button("Respring") {
+                        Button(L("Respring", "Respring")) {
                             mgr.respring()
                         }
                         
-                        Button("Panic!") {
+                        Button(L("Panic!", "Panic!")) {
                             mgr.panic()
                         }
                         .disabled(!mgr.dsready)
                     } header: {
-                        Text("Other")
+                        Text(L("Other", "Lainnya"))
                     }
                 }
                 

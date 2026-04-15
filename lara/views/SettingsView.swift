@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("keepalive") private var iskeepalive: Bool = true
     @AppStorage("showfmintabs") private var showfmintabs: Bool = true
     @AppStorage("selectedmethod") private var selectedmethod: method = .hybrid
+    @AppStorage("app_language") private var appLanguage: String = AppLanguage.english.rawValue
     
     var appname: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
@@ -52,13 +53,26 @@ struct SettingsView: View {
                             Text(appname)
                                 .font(.headline)
                             
-                            Text("Version \(appversion)")
+                            Text("\(L("Version", "Versi")) \(appversion)")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                         }
                     }
                 } header: {
                     Text("Lara")
+                }
+                
+                Section {
+                    Picker("", selection: $appLanguage) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.label).tag(lang.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text(L("Language", "Bahasa"))
+                } footer: {
+                    Text(L("UI and error messages will follow your selected language.", "UI dan pesan error akan mengikuti bahasa yang kamu pilih."))
                 }
                 
                 
@@ -70,24 +84,24 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                 } header: {
-                    Text("Method")
+                    Text(L("Method", "Metode"))
                 } footer: {
                     if selectedmethod == .vfs {
-                        Text("VFS only.")
+                        Text(L("VFS only.", "Hanya VFS."))
                     } else if selectedmethod == .sbx {
-                        Text("SBX only.")
+                        Text(L("SBX only.", "Hanya SBX."))
                     } else {
-                        Text("Hybrid: SBX for read, VFS for write.\nBest method ever. (Thanks Huy)")
+                        Text(L("Hybrid: SBX for read, VFS for write.\nBest method ever. (Thanks Huy)", "Hybrid: SBX untuk baca, VFS untuk tulis.\nMetode terbaik. (Thanks Huy)"))
                     }
                 }
                 
                 Section {
-                    Toggle("Disable log dividers", isOn: $loggernobullshit)
+                    Toggle(L("Disable log dividers", "Nonaktifkan pemisah log"), isOn: $loggernobullshit)
                         .onChange(of: loggernobullshit) { _ in
                             globallogger.clear()
                         }
                     
-                    Toggle("Keep Alive", isOn: $iskeepalive)
+                    Toggle(L("Keep Alive", "Keep Alive"), isOn: $iskeepalive)
                         .onChange(of: iskeepalive) { _ in
                             if iskeepalive {
                                 if !kaenabled { toggleka() }
@@ -96,17 +110,17 @@ struct SettingsView: View {
                             }
                         }
                     
-                    Toggle("Show File Manager in Tabs", isOn: $showfmintabs)
+                    Toggle(L("Show File Manager in Tabs", "Tampilkan File Manager di Tab"), isOn: $showfmintabs)
 
                 } header: {
-                    Text("Lara Settings")
+                    Text(L("Lara Settings", "Pengaturan Lara"))
                 } footer: {
-                    Text("Keep Alive keeps the app running in the background when it is minimized (not closed from app switcher).")
+                    Text(L("Keep Alive keeps the app running in the background when it is minimized (not closed from app switcher).", "Keep Alive menjaga aplikasi tetap berjalan di background saat diminimalkan (bukan ditutup dari app switcher)."))
                 }
 
                 Section {
                     if !hasoffsets {
-                        Button("Download Kernelcache") {
+                        Button(L("Download Kernelcache", "Unduh Kernelcache")) {
                             guard !downloadingkernelcache else { return }
                             downloadingkernelcache = true
                             DispatchQueue.global(qos: .userInitiated).async {
@@ -119,7 +133,7 @@ struct SettingsView: View {
                         }
                         .disabled(downloadingkernelcache)
                         
-                        Button("Fetch Kernelcache") {
+                        Button(L("Fetch Kernelcache", "Ambil Kernelcache")) {
                             mgr.run()
                         }
                     }
@@ -127,13 +141,13 @@ struct SettingsView: View {
                     Button {
                         showresetalert = true
                     } label: {
-                        Text("Delete Kernelcache Data")
+                        Text(L("Delete Kernelcache Data", "Hapus Data Kernelcache"))
                             .foregroundColor(.red)
                     }
                 } header: {
                     Text("Kernelcache")
                 } footer: {
-                    Text("Deleting and redownloading Kernelcache can fix a lot of issues. Try this before making a github Issue.")
+                    Text(L("Deleting and redownloading Kernelcache can fix a lot of issues. Try this before making a github Issue.", "Menghapus lalu mengunduh ulang Kernelcache bisa memperbaiki banyak masalah. Coba ini sebelum membuat issue di GitHub."))
                 }
                 
                 Section {
@@ -152,7 +166,7 @@ struct SettingsView: View {
                             Text("roooot")
                                 .font(.headline)
                             
-                            Text("Main Developer")
+                            Text(L("Main Developer", "Developer Utama"))
                                 .font(.subheadline)
                                 .foregroundColor(Color.secondary)
                         }
@@ -181,7 +195,7 @@ struct SettingsView: View {
                             Text("wh1te4ever")
                                 .font(.headline)
                             
-                            Text("Made darksword-kexploit-fun.")
+                            Text(L("Made darksword-kexploit-fun.", "Membuat darksword-kexploit-fun."))
                                 .font(.subheadline)
                                 .foregroundColor(Color.secondary)
                         }
@@ -210,7 +224,7 @@ struct SettingsView: View {
                             Text("AppInstaller iOS")
                                 .font(.headline)
                             
-                            Text("Helped me with offsets and lots of other stuff. This project wouldnt have been possible without him!")
+                            Text(L("Helped me with offsets and lots of other stuff. This project wouldnt have been possible without him!", "Membantu offset dan banyak hal lainnya. Proyek ini tidak akan bisa tanpa dia!"))
                                 .font(.subheadline)
                                 .foregroundColor(Color.secondary)
                         }
@@ -239,7 +253,7 @@ struct SettingsView: View {
                             Text("jailbreak.party")
                                 .font(.headline)
                             
-                            Text("All of the DirtyZero tweaks and emotional support.")
+                            Text(L("All of the DirtyZero tweaks and emotional support.", "Semua tweak DirtyZero dan dukungan moral."))
                                 .font(.subheadline)
                                 .foregroundColor(Color.secondary)
                         }
@@ -268,7 +282,7 @@ struct SettingsView: View {
                             Text("neon")
                                 .font(.headline)
                             
-                            Text("Made the respring script.")
+                            Text(L("Made the respring script.", "Membuat script respring."))
                                 .font(.subheadline)
                                 .foregroundColor(Color.secondary)
                         }
@@ -282,19 +296,19 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("Credits")
+                    Text(L("Credits", "Kredit"))
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle(L("Settings", "Pengaturan"))
         }
-        .alert("Clear Kernelcache Data?", isPresented: $showresetalert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
+        .alert(L("Clear Kernelcache Data?", "Hapus Data Kernelcache?"), isPresented: $showresetalert) {
+            Button(L("Cancel", "Batal"), role: .cancel) {}
+            Button(L("Delete", "Hapus"), role: .destructive) {
                 clearkerncachedata()
                 hasoffsets = haskernproc()
             }
         } message: {
-            Text("This will delete the downloaded kernelcache and remove saved offsets.")
+            Text(L("This will delete the downloaded kernelcache and remove saved offsets.", "Ini akan menghapus kernelcache yang diunduh dan offset yang tersimpan."))
         }
     }
 }

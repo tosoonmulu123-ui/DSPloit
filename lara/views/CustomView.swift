@@ -24,7 +24,7 @@ struct CustomView: View {
                     .autocorrectionDisabled(true)
 
                 HStack {
-                    Text("Source")
+                    Text(L("Source", "Sumber"))
                     Spacer()
                     Text(sourceName)
                         .foregroundColor(.secondary)
@@ -32,27 +32,27 @@ struct CustomView: View {
                         .truncationMode(.middle)
                 }
 
-                Button("Choose Source File") {
+                Button(L("Choose Source File", "Pilih File Sumber")) {
                     showImporter = true
                 }
 
-                Button(isOverwriting ? "Overwriting..." : "Overwrite Target") {
+                Button(isOverwriting ? L("Overwriting...", "Menimpa...") : L("Overwrite Target", "Timpa Target")) {
                     guard !isOverwriting else { return }
                     overwrite()
                 }
                 .disabled(!canOverwrite)
             } header: {
-                Text("Custom Path Overwrite")
+                Text(L("Custom Path Overwrite", "Timpa Path Kustom"))
             } footer: {
-                Text("This will overwrite the target file with the contents of the selected source file. Target size must be >= source size.")
+                Text(L("This will overwrite the target file with the selected source file. If possible, it now uses a growth-safe path when the new file is larger.", "Ini akan menimpa file target dengan file sumber yang dipilih. Jika memungkinkan, sekarang memakai jalur aman untuk file yang ukurannya membesar."))
             }
 
             Section {
-                Text(globallogger.logs.last ?? "No logs yet")
+                    Text(globallogger.logs.last ?? L("No logs yet", "Belum ada log"))
                     .font(.system(size: 13, design: .monospaced))
             }
         }
-        .navigationTitle("Custom Overwrite")
+        .navigationTitle(L("Custom Overwrite", "Overwrite Kustom"))
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.item],
@@ -80,9 +80,9 @@ struct CustomView: View {
             try fm.copyItem(at: url, to: dest)
             sourcePath = dest.path
             sourceName = url.lastPathComponent
-            mgr.logmsg("selected source: \(sourceName)")
+            mgr.logmsg(L("selected source:", "sumber terpilih:") + " \(sourceName)")
         } catch {
-            mgr.logmsg("failed to import source: \(error.localizedDescription)")
+            mgr.logmsg(L("failed to import source:", "gagal impor sumber:") + " \(error.localizedDescription)")
         }
     }
 
@@ -90,10 +90,12 @@ struct CustomView: View {
         guard canOverwrite else { return }
         isOverwriting = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = mgr.vfsoverwritefromlocalpath(target: targetPath, source: sourcePath)
+            let result = mgr.lara_writeexpandsafe(target: targetPath, source: sourcePath)
             DispatchQueue.main.async {
                 isOverwriting = false
-                ok ? mgr.logmsg("overwrite ok: \(targetPath)") : mgr.logmsg("overwrite failed: \(targetPath)")
+                result.ok
+                    ? mgr.logmsg(L("overwrite ok:", "overwrite berhasil:") + " \(targetPath) (\(result.message))")
+                    : mgr.logmsg(L("overwrite failed:", "overwrite gagal:") + " \(targetPath) (\(result.message))")
             }
         }
     }
