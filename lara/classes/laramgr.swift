@@ -317,7 +317,7 @@ final class laramgr: ObservableObject {
         let beforeSize = sbxfilesize(path: target) ?? vfssize(path: target)
         let wantedSize = Int64(data.count)
         
-        let sbxResult = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
+        let sbxResult = sbxready ? sbxoverwrite(path: target, data: data) : (ok: false, message: "sbx not ready")
         if sbxResult.ok {
             if verifyreadback(path: target, expected: data) {
                 return (true, "ok (sbx rewrite, verified)")
