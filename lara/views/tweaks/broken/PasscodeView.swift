@@ -245,7 +245,7 @@ struct PasscodeView: View {
     func decompress(deflate data: Data, originalSize: Int) -> Data? {
         guard originalSize > 0 else { return Data() }
         
-        let pageSize = 16384
+        
         let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: originalSize)
         defer { destinationBuffer.deallocate() }
         

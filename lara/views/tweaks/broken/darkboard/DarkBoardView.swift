@@ -434,13 +434,12 @@ private struct ThemeImportPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        var documentTypes = [UTType.folder.identifier]
-        documentTypes.append(UTType.zip.identifier)
-        if let themeType = UTType(filenameExtension: "theme")?.identifier {
-            documentTypes.append(themeType)
+        var contentTypes: [UTType] = [.folder, .zip]
+        if let themeType = UTType(filenameExtension: "theme") {
+            contentTypes.append(themeType)
         }
 
-        let picker = UIDocumentPickerViewController(documentTypes: documentTypes, in: .open)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: false)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
         return picker

@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import "IconServices.h"
 
-void LaraClearIconCache(void) {
+void DSPClearIconCache(void) {
     static NSXPCConnection *connection = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
