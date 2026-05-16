@@ -9,11 +9,11 @@ import SwiftUI
 
 public struct FancyButtonStyle: PrimitiveButtonStyle {
     var color: Color = .accentColor
-    var shape: Shape
+    var shape: any Shape
     var useFullWidth: Bool
     @Environment(\.isEnabled) private var isEnabled
     
-    public init(color: Color = .accentColor, foregroundStyle: Color = .accentColor, shape: Shape = .rect(cornerRadius: cornerRad.component), useFullWidth: Bool = true) {
+    public init(color: Color = .accentColor, foregroundStyle: Color = .accentColor, shape: any Shape = .rect(cornerRadius: cornerRad.component), useFullWidth: Bool = true) {
         self.color = color
         self.shape = shape
         self.useFullWidth = useFullWidth

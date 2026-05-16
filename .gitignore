@@ -2,3 +2,4 @@ Resources/*
 xcuserdata/
 *.xcuserstate
 .DS_Store
+compile-logs.txt

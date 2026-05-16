@@ -106,7 +106,8 @@ final class IconThemeGalleryManager: ObservableObject {
         downloadingThemeNames.contains(theme.name)
     }
 
-    func downloadAndImport(_ theme: GalleryTheme, importer: IconThemeManager = .shared) async throws {
+    func downloadAndImport(_ theme: GalleryTheme, importer: IconThemeManager? = nil) async throws {
+        let actualImporter = importer ?? IconThemeManager.shared
         if downloadingThemeNames.contains(theme.name) { return }
         downloadingThemeNames.insert(theme.name)
         defer { downloadingThemeNames.remove(theme.name) }
@@ -123,7 +124,7 @@ final class IconThemeGalleryManager: ObservableObject {
         try FileManager.default.moveItem(at: temporaryURL, to: importURL)
         defer { try? FileManager.default.removeItem(at: importURL) }
 
-        try importer.importTheme(from: importURL, preferredName: theme.name)
+        try actualImporter.importTheme(from: importURL, preferredName: theme.name)
     }
 
     private func absoluteURL(for relativePath: String) async throws -> URL {

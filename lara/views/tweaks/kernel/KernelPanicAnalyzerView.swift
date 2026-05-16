@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-
+import Combine
 // MARK: - Data Models
 
 struct PanicLogEntry: Identifiable {

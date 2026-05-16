@@ -139,7 +139,7 @@ struct GestaltView: View {
                 Section(header: HeaderLabel(text: "iPadOS Features", icon: "ipad")) {
                     let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary
                     
-                    PlainToggle(text: "Allow Installing iPadOS Apps", icon: "plus.app", isOn: mgKeyBinding(["9MZ5AdH43csAUajl/dU+IQ"], type: [Int].self, defaultValue: [1], enableValue: [1, 2]))
+                    PlainToggle(text: "Allow Installing iPadOS Apps", icon: "plus.app", isOn: _mgKeyBinding(["9MZ5AdH43csAUajl/dU+IQ"], type: [Int].self, defaultValue: [1], enableValue: [1, 2]))
                     PlainToggle(text: "Apple Pencil Settings", icon: "pencil", isOn: mgKeyBinding(["yhHcB0iH0d1XzPO/CFd3ow"]))
                     if UIDevice.current.userInterfaceIdiom == .pad {
                         PlainToggle(text: "Stage Manager", icon: "squares.leading.rectangle", isOn: mgKeyBinding(["qeaj75wk3HF4DwQ8qbIi7g"]))
@@ -310,7 +310,11 @@ struct GestaltView: View {
     // default = 0 (off in Gesalt Terms), enable = 1 (on)
     // "gesalt" lol (roooot, 12.05.2026)
     // return just returns a boolean
-    private func mgKeyBinding<T: Equatable>(_ keys: [String], type: T.Type = Int.self, defaultValue: T? = 0, enableValue: T? = 1) -> Binding<Bool>  {
+    private func mgKeyBinding(_ keys: [String], defaultValue: Int = 0, enableValue: Int = 1) -> Binding<Bool>  {
+        return _mgKeyBinding(keys, type: Int.self, defaultValue: defaultValue, enableValue: enableValue)
+    }
+
+    private func _mgKeyBinding<T: Equatable>(_ keys: [String], type: T.Type, defaultValue: T?, enableValue: T?) -> Binding<Bool>  {
         // immediately return false if it can't find cacheextra, again why is this here? i think it's safety.
         guard let cacheExtra = mgCurrentDict["CacheExtra"] as? NSMutableDictionary else {
             return State(initialValue: false).projectedValue
