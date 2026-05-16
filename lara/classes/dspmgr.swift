@@ -8,6 +8,7 @@
 import Combine
 import Foundation
 import Darwin
+import IOKit
 import notify
 import UIKit
 import WebKit
