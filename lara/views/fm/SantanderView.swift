@@ -59,6 +59,7 @@ struct SantanderView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
+                .premiumStyling()
             }
         }
     }
@@ -89,6 +90,7 @@ private struct santanderroot: View {
                     }
                 }
         }
+        .premiumStyling()
     }
 }
 

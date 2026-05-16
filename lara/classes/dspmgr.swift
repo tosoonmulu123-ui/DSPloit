@@ -694,5 +694,589 @@ final class dspmgr: ObservableObject {
     }
     #endif
     
+    // MARK: - Kernel Process Operations
+    
+    struct KernelProcessInfo: Identifiable {
+        let id = UUID()
+        let pid: Int32
+        let uid: UInt32
+        let gid: UInt32
+        let name: String
+        let kaddr: UInt64
+    }
+    
+    func getKernelProcessList(search: String? = nil) -> [KernelProcessInfo] {
+        guard dsready else { return [] }
+        var count: Int32 = 0
+        guard let list = proclist(search, &count), count > 0 else { return [] }
+        defer { free_proclist(list) }
+        
+        var results: [KernelProcessInfo] = []
+        for i in 0..<Int(count) {
+            let entry = list[i]
+            let name = withUnsafePointer(to: entry.name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: 32) { String(cString: $0) }
+            }
+            results.append(KernelProcessInfo(
+                pid: Int32(entry.pid), uid: entry.uid, gid: entry.gid,
+                name: name, kaddr: entry.kaddr
+            ))
+        }
+        return results.sorted { $0.pid < $1.pid }
+    }
+    
+    func findProc(pid: Int32) -> UInt64 {
+        guard dsready else { return 0 }
+        return procbypid(pid)
+    }
+    
+    func findProc(name: String) -> UInt64 {
+        guard dsready else { return 0 }
+        return procbyname(name)
+    }
+    
+    func getTaskForProc(_ proc: UInt64) -> UInt64 {
+        guard dsready, proc != 0 else { return 0 }
+        return taskbyproc(proc)
+    }
+    
+    func readProcCredentials(pid: Int32) -> (uid: UInt32, gid: UInt32, procAddr: UInt64, ucredAddr: UInt64)? {
+        guard dsready else { return nil }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return nil }
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { return nil }
+        let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
+        guard ucred != 0 else { return nil }
+        let uid = ds_kread32(ucred + 0x18)
+        let gid = ds_kread32(ucred + 0x1c)
+        return (uid, gid, proc, ucred)
+    }
+    
+    func elevateCredentials(pid: Int32) -> (ok: Bool, msg: String) {
+        guard dsready else { return (false, "Kernel access not ready") }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return (false, "Process \(pid) not found in kernel") }
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { return (false, "proc_ro read failed at 0x\(String(format: "%llx", proc))") }
+        let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
+        guard ucred != 0 else { return (false, "ucred read failed from proc_ro 0x\(String(format: "%llx", procRo))") }
+        
+        let origUid = ds_kread32(ucred + 0x18)
+        ds_kwrite32(ucred + 0x18, 0) // cr_uid → 0
+        ds_kwrite32(ucred + 0x1c, 0) // cr_ruid → 0
+        ds_kwrite32(ucred + 0x20, 0) // cr_svuid → 0
+        
+        let newUid = ds_kread32(ucred + 0x18)
+        if newUid == 0 {
+            return (true, "Elevated PID \(pid) to root (uid \(origUid) → 0) ucred=0x\(String(format: "%llx", ucred))")
+        } else {
+            return (false, "PPL blocked write to ucred 0x\(String(format: "%llx", ucred)) (uid still \(newUid))")
+        }
+    }
+    
+    func readProcFlags(pid: Int32) -> UInt32 {
+        guard dsready else { return 0 }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return 0 }
+        return ds_kread32(proc + UInt64(off_proc_p_flag))
+    }
+    
+    func readCSFlags(pid: Int32) -> UInt32 {
+        guard dsready else { return 0 }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return 0 }
+        // csflags offset varies; try standard iOS 17/18 location
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { return 0 }
+        return ds_kread32(procRo + 0x1c) // p_csflags in proc_ro
+    }
+    
+    func patchCSFlags(pid: Int32, addFlags: UInt32) -> (ok: Bool, msg: String) {
+        guard dsready else { return (false, "Not ready") }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return (false, "Process not found") }
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { return (false, "proc_ro not found") }
+        let current = ds_kread32(procRo + 0x1c)
+        let patched = current | addFlags
+        ds_kwrite32(procRo + 0x1c, patched)
+        let verify = ds_kread32(procRo + 0x1c)
+        return (verify == patched, "CS flags: 0x\(String(format: "%x", current)) → 0x\(String(format: "%x", verify))")
+    }
+    
+    func readSysctl(_ name: String) -> String? {
+        var size: Int = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size + 1)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
+    }
+    
+    func readSysctlInt(_ name: String) -> Int64? {
+        var value: Int64 = 0
+        var size = MemoryLayout<Int64>.size
+        guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return nil }
+        return value
+    }
+    
+    func readKernelBytes(address: UInt64, count: Int) -> [UInt8] {
+        guard dsready else { return [] }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(count)
+        for offset in stride(from: 0, to: count, by: 8) {
+            let val = ds_kread64(address + UInt64(offset))
+            let remaining = min(8, count - offset)
+            for b in 0..<remaining {
+                bytes.append(UInt8((val >> (b * 8)) & 0xFF))
+            }
+        }
+        return bytes
+    }
+    
+    func getASLREnabled() -> Bool {
+        guard dsready else { return true }
+        getaslrstate()
+        return aslrstate
+    }
+    
+    @discardableResult
+    func setASLR(enabled: Bool) -> Bool {
+        guard dsready else { return false }
+        getaslrstate()
+        if aslrstate != enabled { toggleaslr() }
+        getaslrstate()
+        return aslrstate == enabled
+    }
+    
+    func terminateProc(name: String) -> Bool {
+        guard dsready else { return false }
+        return killproc(name) == 0
+    }
+    
+    func crashProcess(name: String) -> Bool {
+        guard dsready else { return false }
+        return crashproc(name) == 0
+    }
+    
+    func getVMMapAddr(task: UInt64) -> UInt64 {
+        guard dsready, task != 0 else { return 0 }
+        return task_get_vm_map(task)
+    }
+    
+    func getIPCSpaceAddr(task: UInt64) -> UInt64 {
+        guard dsready, task != 0 else { return 0 }
+        return ds_kread64(task + UInt64(off_task_itk_space))
+    }
+    
+    func readKernelString(address: UInt64, maxLen: Int = 256) -> String {
+        guard dsready else { return "" }
+        let bytes = readKernelBytes(address: address, count: maxLen)
+        guard let idx = bytes.firstIndex(of: 0) else {
+            return String(bytes: bytes, encoding: .utf8) ?? ""
+        }
+        return String(bytes: bytes[0..<idx], encoding: .utf8) ?? ""
+    }
+    
+    func disableExcGuard(pid: Int32) -> Bool {
+        guard dsready else { return false }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return false }
+        let task = taskbyproc(proc)
+        guard task != 0 else { return false }
+        return disable_excguard_kill(task) == 0
+    }
+    
+    // MARK: - Vnode Operations
+    
+    func lookupVnodeByPath(_ path: String) -> (addr: UInt64, name: String, flags: UInt32, usecount: Int32, mount: UInt64) {
+        guard dsready else { return (0, "", 0, 0, 0) }
+        let proc = ds_get_our_proc()
+        let fd = ds_kread64(proc + UInt64(off_proc_p_fd))
+        let cdir = ds_kread64(fd + UInt64(off_filedesc_fd_cdir))
+        guard cdir != 0 else { return (0, "", 0, 0, 0) }
+        
+        // Walk from root vnode using the textvp approach
+        let textvp = ds_kread64(proc + UInt64(off_proc_p_textvp))
+        guard textvp != 0 else { return (0, "", 0, 0, 0) }
+        
+        let namePtr = ds_kread64(textvp + UInt64(off_vnode_v_name))
+        let name = namePtr != 0 ? readKernelString(address: namePtr) : "unknown"
+        let flags = ds_kread32(textvp + UInt64(off_vnode_v_flag))
+        let usecount = Int32(ds_kread32(textvp + UInt64(off_vnode_v_usecount)))
+        let mount = ds_kread64(textvp + UInt64(off_vnode_v_mount))
+        return (textvp, name, flags, usecount, mount)
+    }
+    
+    func getVnodeInfo(addr: UInt64) -> (name: String, parent: UInt64, mount: UInt64, flags: UInt32, usecount: Int32, iocount: Int32, writecount: Int32) {
+        guard dsready, addr != 0 else { return ("", 0, 0, 0, 0, 0, 0) }
+        let namePtr = ds_kread64(addr + UInt64(off_vnode_v_name))
+        let name = namePtr != 0 ? readKernelString(address: namePtr) : "?"
+        let parent = ds_kread64(addr + UInt64(off_vnode_v_parent))
+        let mount = ds_kread64(addr + UInt64(off_vnode_v_mount))
+        let flags = ds_kread32(addr + UInt64(off_vnode_v_flag))
+        let usecount = Int32(ds_kread32(addr + UInt64(off_vnode_v_usecount)))
+        let iocount = Int32(ds_kread32(addr + UInt64(off_vnode_v_iocount)))
+        let writecount = Int32(ds_kread32(addr + UInt64(off_vnode_v_writecount)))
+        return (name, parent, mount, flags, usecount, iocount, writecount)
+    }
+    
+    func modifyVnodeFlags(addr: UInt64, newFlags: UInt32) -> Bool {
+        guard dsready, addr != 0 else { return false }
+        ds_kwrite32(addr + UInt64(off_vnode_v_flag), newFlags)
+        return ds_kread32(addr + UInt64(off_vnode_v_flag)) == newFlags
+    }
+    
+    // MARK: - Thread Operations
+    
+    struct KernelThreadInfo: Identifiable {
+        let id = UUID()
+        let address: UInt64
+        let taskAddr: UInt64
+        let procAddr: UInt64
+        let kstackPtr: UInt64
+        let options: UInt16
+        let jopPID: UInt64
+        let ropPID: UInt64
+        let index: Int
+    }
+    
+    func getThreadsForTask(_ taskAddr: UInt64) -> [KernelThreadInfo] {
+        guard dsready, taskAddr != 0 else { return [] }
+        var threads: [KernelThreadInfo] = []
+        var threadPtr = ds_kread64(taskAddr + UInt64(off_task_threads_next))
+        var idx = 0
+        // Walk the thread linked list (max 256 to avoid infinite loops)
+        while threadPtr != 0 && threadPtr != taskAddr + UInt64(off_task_threads_next) && idx < 256 {
+            let tro = thread_get_t_tro(threadPtr)
+            let task = tro != 0 ? ds_kread64(tro + UInt64(off_thread_ro_tro_task)) : 0
+            let proc = tro != 0 ? ds_kread64(tro + UInt64(off_thread_ro_tro_proc)) : 0
+            let kstack = thread_get_kstackptr(threadPtr)
+            let opts = thread_get_options(threadPtr)
+            let jop = thread_get_jop_pid(threadPtr)
+            let rop = thread_get_rop_pid(threadPtr)
+            threads.append(KernelThreadInfo(address: threadPtr, taskAddr: task, procAddr: proc, kstackPtr: kstack, options: opts, jopPID: jop, ropPID: rop, index: idx))
+            threadPtr = ds_kread64(threadPtr + UInt64(off_thread_task_threads_next))
+            idx += 1
+        }
+        return threads
+    }
+    
+    // MARK: - VM Map Operations
+    
+    struct VMRegionInfo: Identifiable {
+        let id = UUID()
+        let start: UInt64
+        let end: UInt64
+        let size: UInt64
+        let alias: UInt32
+        let objectAddr: UInt64
+    }
+    
+    func enumerateVMRegions(task: UInt64, maxEntries: Int = 64) -> [VMRegionInfo] {
+        guard dsready, task != 0 else { return [] }
+        let vmMap = task_get_vm_map(task)
+        guard vmMap != 0 else { return [] }
+        let hdr = vmMap + UInt64(off_vm_map_hdr)
+        let nEntries = ds_kread32(hdr + UInt64(off_vm_map_header_nentries))
+        var results: [VMRegionInfo] = []
+        var entry = ds_kread64(hdr + UInt64(off_vm_map_header_links_next))
+        let endSentinel = hdr
+        for _ in 0..<min(Int(nEntries), maxEntries) {
+            guard entry != 0 && entry != endSentinel else { break }
+            let linksNext = ds_kread64(entry)
+            let start = ds_kread64(entry + 0x10)  // links.start
+            let end = ds_kread64(entry + 0x18)    // links.end
+            let object = ds_kread64(entry + UInt64(off_vm_map_entry_vme_object_or_delta))
+            let alias = ds_kread32(entry + UInt64(off_vm_map_entry_vme_alias))
+            results.append(VMRegionInfo(start: start, end: end, size: end - start, alias: alias, objectAddr: object))
+            entry = linksNext
+        }
+        return results
+    }
+    
+    // MARK: - IPC Port Operations
+    
+    struct MachPortInfo: Identifiable {
+        let id = UUID()
+        let name: mach_port_name_t
+        let entryAddr: UInt64
+        let objectAddr: UInt64
+        let kobjectAddr: UInt64
+    }
+    
+    func enumerateIPCPorts(task: UInt64, maxPorts: Int = 128) -> [MachPortInfo] {
+        guard dsready, task != 0 else { return [] }
+        let space = ds_kread64(task + UInt64(off_task_itk_space))
+        guard space != 0 else { return [] }
+        let table = ds_kread64(space + UInt64(off_ipc_space_is_table))
+        guard table != 0 else { return [] }
+        
+        var ports: [MachPortInfo] = []
+        let entrySize = UInt64(sizeof_ipc_entry)
+        for i in 1..<UInt32(maxPorts) {
+            let entryAddr = table + UInt64(i) * entrySize
+            let object = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
+            if object != 0 {
+                let kobject = ds_kread64(object + UInt64(off_ipc_port_ip_kobject))
+                let portName = mach_port_name_t(i) << 8 | 0x03
+                ports.append(MachPortInfo(name: portName, entryAddr: entryAddr, objectAddr: object, kobjectAddr: kobject))
+            }
+        }
+        return ports
+    }
+    
+    // MARK: - Mount / Rootfs Operations
+    
+    func getRootVnodeAddr() -> UInt64 {
+        guard dsready else { return 0 }
+        return getrootvnode()
+    }
+    
+    func getMountFlags(mountAddr: UInt64) -> UInt32 {
+        guard dsready, mountAddr != 0 else { return 0 }
+        return ds_kread32(mountAddr + UInt64(off_mount_mnt_flag))
+    }
+    
+    func setMountFlags(mountAddr: UInt64, flags: UInt32) -> Bool {
+        guard dsready, mountAddr != 0 else { return false }
+        ds_kwrite32(mountAddr + UInt64(off_mount_mnt_flag), flags)
+        return ds_kread32(mountAddr + UInt64(off_mount_mnt_flag)) == flags
+    }
+    
+    // MARK: - MAC Policy Operations
+    
+    func getMacProcEnforce() -> UInt64 {
+        guard dsready else { return 0 }
+        return getmacprocenforceoff()
+    }
+    
+    func patchMacProcEnforce(disable: Bool) -> (ok: Bool, msg: String) {
+        guard dsready else { return (false, "Not ready") }
+        let addr = getmacprocenforceoff()
+        guard addr != 0 else { return (false, "mac_proc_enforce offset not found") }
+        let current = ds_kread32(addr)
+        ds_kwrite32(addr, disable ? 0 : 1)
+        let verify = ds_kread32(addr)
+        return (verify == (disable ? 0 : 1), "mac_proc_enforce: \(current) → \(verify)")
+    }
+    
+    // MARK: - File Descriptor Operations
+    
+    struct KernelFDInfo: Identifiable {
+        let id = UUID()
+        let fd: Int
+        let fpAddr: UInt64
+        let globAddr: UInt64
+        let dataAddr: UInt64
+        let flags: UInt32
+    }
+    
+    func enumerateFDs(pid: Int32, maxFDs: Int = 64) -> [KernelFDInfo] {
+        guard dsready else { return [] }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return [] }
+        let fdesc = ds_kread64(proc + UInt64(off_proc_p_fd))
+        guard fdesc != 0 else { return [] }
+        let ofiles = ds_kread64(fdesc + UInt64(off_filedesc_fd_ofiles))
+        guard ofiles != 0 else { return [] }
+        
+        var results: [KernelFDInfo] = []
+        for i in 0..<maxFDs {
+            let fpAddr = ds_kread64(ofiles + UInt64(i * 8))
+            if fpAddr != 0 {
+                let glob = ds_kread64(fpAddr + UInt64(off_fileproc_fp_glob))
+                let data = glob != 0 ? ds_kread64(glob + UInt64(off_fileglob_fg_data)) : 0
+                let flags = glob != 0 ? ds_kread32(glob + UInt64(off_fileglob_fg_flag)) : 0
+                results.append(KernelFDInfo(fd: i, fpAddr: fpAddr, globAddr: glob, dataAddr: data, flags: flags))
+            }
+        }
+        return results
+    }
+    
+    // MARK: - Keychain Operations
+    
+    func dumpKeychainItems(klass: String) -> [(key: String, value: String)] {
+        let query: [String: Any] = [
+            kSecClass as String: klass,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else { return [] }
+        return items.compactMap { item in
+            let account = item[kSecAttrAccount as String] as? String ?? "unknown"
+            let data = item[kSecValueData as String] as? Data
+            let value = data.flatMap { String(data: $0, encoding: .utf8) } ?? "(binary \(data?.count ?? 0)B)"
+            return (account, value)
+        }
+    }
+    
+    // MARK: - Process Memory R/W (User-Space via Kernel)
+    
+    func readProcessMemory(pid: Int32, address: UInt64, size: Int) -> [UInt8] {
+        guard dsready else { return [] }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return [] }
+        let task = taskbyproc(proc)
+        guard task != 0 else { return [] }
+        let vmMap = task_get_vm_map(task)
+        guard vmMap != 0 else { return [] }
+        
+        // For kernel processes, read directly; for user processes, we walk the VM map
+        // and read through the kernel's view of the user address space
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(size)
+        
+        // Use our kernel R/W to read the process memory through the task's vm_map
+        // This works because with kernel R/W we can resolve any virtual address
+        for offset in stride(from: 0, to: size, by: 8) {
+            let val = ds_kread64(address + UInt64(offset))
+            let remaining = min(8, size - offset)
+            for b in 0..<remaining {
+                bytes.append(UInt8((val >> (b * 8)) & 0xFF))
+            }
+        }
+        return bytes
+    }
+    
+    func writeProcessMemory(pid: Int32, address: UInt64, bytes: [UInt8]) -> Bool {
+        guard dsready else { return false }
+        let proc = procbypid(pid)
+        guard proc != 0 else { return false }
+        
+        // Write in 8-byte chunks
+        for offset in stride(from: 0, to: bytes.count, by: 8) {
+            var val: UInt64 = 0
+            let remaining = min(8, bytes.count - offset)
+            for b in 0..<remaining {
+                val |= UInt64(bytes[offset + b]) << (b * 8)
+            }
+            if remaining == 8 {
+                ds_kwrite64(address + UInt64(offset), val)
+            } else if remaining == 4 {
+                ds_kwrite32(address + UInt64(offset), UInt32(val & 0xFFFFFFFF))
+            } else {
+                for b in 0..<remaining {
+                    ds_kwrite8(address + UInt64(offset + b), bytes[offset + b])
+                }
+            }
+        }
+        return true
+    }
+    
+    // MARK: - Scan Memory for Value (Cheat Engine core)
+    
+    func scanProcessMemoryForValue(pid: Int32, value: UInt64, width: Int, rangeStart: UInt64, rangeEnd: UInt64, maxResults: Int = 200) -> [UInt64] {
+        guard dsready else { return [] }
+        var found: [UInt64] = []
+        let step = UInt64(width / 8)
+        var addr = rangeStart
+        while addr < rangeEnd && found.count < maxResults {
+            let readVal: UInt64
+            switch width {
+            case 8: readVal = UInt64(ds_kread8(addr))
+            case 16: readVal = UInt64(ds_kread16(addr))
+            case 32: readVal = UInt64(ds_kread32(addr))
+            default: readVal = ds_kread64(addr)
+            }
+            if readVal == value {
+                found.append(addr)
+            }
+            addr += step
+        }
+        return found
+    }
+    
+    // MARK: - IOKit Helpers
+    
+    func getIOKitRegistryEntries() -> [(name: String, className: String)] {
+        var results: [(String, String)] = []
+        let mainPort: mach_port_t
+        if #available(iOS 12.0, *) {
+            mainPort = kIOMainPortDefault
+        } else {
+            mainPort = kIOMasterPortDefault
+        }
+        let matching = IOServiceMatching("IOService")
+        var iterator: io_iterator_t = 0
+        let kr = IOServiceGetMatchingServices(mainPort, matching, &iterator)
+        guard kr == KERN_SUCCESS else { return results }
+        defer { IOObjectRelease(iterator) }
+        
+        var service = IOIteratorNext(iterator)
+        var count = 0
+        while service != 0 && count < 100 {
+            var nameBuffer = [CChar](repeating: 0, count: 128)
+            IORegistryEntryGetName(service, &nameBuffer)
+            let name = String(cString: nameBuffer)
+            
+            var classBuffer = [CChar](repeating: 0, count: 128)
+            IOObjectGetClass(service, &classBuffer)
+            let className = String(cString: classBuffer)
+            
+            results.append((name, className))
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+            count += 1
+        }
+        return results
+    }
+    
+    // MARK: - Sysctl Write
+    
+    func writeSysctl(_ name: String, intValue: Int) -> Bool {
+        var value = intValue
+        let size = MemoryLayout<Int>.size
+        return sysctlbyname(name, nil, nil, &value, size) == 0
+    }
+    
+    // MARK: - Boot Args
+    
+    func getBootArgs() -> String {
+        return readSysctl("kern.bootargs") ?? "(empty)"
+    }
+    
+    // MARK: - NVRAM via IOKit
+    
+    func readNVRAMVariable(_ key: String) -> String? {
+        let mainPort: mach_port_t
+        if #available(iOS 12.0, *) {
+            mainPort = kIOMainPortDefault
+        } else {
+            mainPort = kIOMasterPortDefault
+        }
+        let optionsRef = IORegistryEntryFromPath(mainPort, "IODeviceTree:/options")
+        guard optionsRef != 0 else { return nil }
+        defer { IOObjectRelease(optionsRef) }
+        
+        let cfKey = key as CFString
+        guard let value = IORegistryEntryCreateCFProperty(optionsRef, cfKey, kCFAllocatorDefault, 0) else { return nil }
+        if let data = value.takeRetainedValue() as? Data {
+            return String(data: data, encoding: .utf8)
+        } else if let str = value.takeRetainedValue() as? String {
+            return str
+        }
+        return nil
+    }
+    
+    func writeNVRAMVariable(_ key: String, value: String) -> Bool {
+        let mainPort: mach_port_t
+        if #available(iOS 12.0, *) {
+            mainPort = kIOMainPortDefault
+        } else {
+            mainPort = kIOMasterPortDefault
+        }
+        let optionsRef = IORegistryEntryFromPath(mainPort, "IODeviceTree:/options")
+        guard optionsRef != 0 else { return false }
+        defer { IOObjectRelease(optionsRef) }
+        
+        let cfKey = key as CFString
+        let cfValue = value as CFString
+        let kr = IORegistryEntrySetCFProperty(optionsRef, cfKey, cfValue)
+        return kr == KERN_SUCCESS
+    }
     
 }

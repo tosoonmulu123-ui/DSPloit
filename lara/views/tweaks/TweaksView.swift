@@ -128,5 +128,6 @@ struct TweaksView: View {
                 }
             }
         }
+        .premiumStyling()
     }
 }

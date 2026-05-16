@@ -51,6 +51,7 @@ struct ContentView: View {
                 SettingsView()
             }
         }
+        .premiumStyling()
     }
     
     private var AlertsSection: some View {
