@@ -15,7 +15,7 @@ struct SantanderView: View {
     let startpath: String
 
     @AppStorage("selectedmethod") private var selectedmethod: method = .hybrid
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
 
     init(startPath: String = "/") {
         self.startpath = startPath.isEmpty ? "/" : startPath
@@ -682,7 +682,7 @@ private struct santanderdirview: View {
         guard let clipitem = clip.item else { return }
 
         if writevfs && !entry.isdir && !clipitem.isdir {
-            let ok = laramgr.shared.vfsoverwritefromlocalpath(target: entry.path, source: clipitem.path)
+            let ok = dspmgr.shared.vfsoverwritefromlocalpath(target: entry.path, source: clipitem.path)
             if ok {
                 model.load(query: query.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
@@ -1011,7 +1011,7 @@ private enum santanderfs {
             return listsbx(item: item)
         }
 
-        let mgr = laramgr.shared
+        let mgr = dspmgr.shared
         guard mgr.vfsready else {
             return santanderlisting(items: [], empty: "VFS not ready.")
         }
@@ -1242,7 +1242,7 @@ private enum santanderfs {
 
     static func writefile(path: String, data: Data, readsbx: Bool, writevfs: Bool) -> Bool {
         if writevfs {
-            return laramgr.shared.vfsoverwritewithdata(target: path, data: data)
+            return dspmgr.shared.vfsoverwritewithdata(target: path, data: data)
         }
         guard readsbx else { return false }
         do {
@@ -1263,7 +1263,7 @@ private enum santanderfs {
             }
             return handle.readData(ofLength: max)
         }
-        return laramgr.shared.vfsread(path: path, maxSize: max)
+        return dspmgr.shared.vfsread(path: path, maxSize: max)
     }
 
     static func preparetemp(item: santanderitem, readsbx: Bool, maxbytes: Int64) -> URL? {

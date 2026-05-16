@@ -1,29 +1,29 @@
 {
-  "name": "lara",
-  "subtitle": "A customization toolbox that utilizes DarkSword.",
+  "name": "DSPloit",
+  "subtitle": "Advanced kernel exploitation suite powered by DarkSword.",
   "description": "",
-  "iconURL": "https://raw.githubusercontent.com/rooootdev/lara/refs/heads/main/lara.png",
-  "headerURL": "https://raw.githubusercontent.com/rooootdev/lara/refs/heads/main/icon.png",
-  "website": "https://github.com/rooootdev/lara",
+  "iconURL": "https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/dsploit.png",
+  "headerURL": "https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/icon.png",
+  "website": "https://github.com/rooootdev/dsploit",
   "tintColor": "#4185A9",
   "featuredApps": [
-    "com.roooot.lara"
+    "com.roooot.dsploit"
   ],
   "apps": [
     {
-      "name": "lara",
-      "bundleIdentifier": "com.roooot.lara",
-      "developerName": "rooootdev & lara team",
-      "subtitle": "This is the regular release build for lara.",
-      "localizedDescription": "lara is a customization toolbox that utilizes DarkSword. Supports iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.\nFor more information, check out our GitHub! https://github.com/rooootdev/lara. Join the Discord if you need any help! https://discord.gg/gw8PcRF3Jr.",
-      "iconURL": "https://raw.githubusercontent.com/rooootdev/lara/refs/heads/main/lara.png",
+      "name": "DSPloit",
+      "bundleIdentifier": "com.roooot.dsploit",
+      "developerName": "Royan & DSPloit team",
+      "subtitle": "This is the regular release build for DSPloit.",
+      "localizedDescription": "DSPloit is an advanced kernel exploitation suite that utilizes DarkSword. Supports iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.\nFor more information, check out our GitHub! https://github.com/rooootdev/dsploit. Join the Discord if you need any help! https://discord.gg/gw8PcRF3Jr.",
+      "iconURL": "https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/dsploit.png",
       "tintColor": "#5CA399",
       "versions": [
         {
           "version": "0.1",
           "date": "2026-05-1",
           "size": 3450675,
-          "downloadURL": "https://github.com/rooootdev/lara/releases/download/0.1/lara_v0.1.ipa",
+          "downloadURL": "https://github.com/rooootdev/dsploit/releases/download/0.1/dsploit_v0.1.ipa",
           "localizedDescription": "",
           "minOSVersion": "16.0"
         }
@@ -31,19 +31,19 @@
       "appPermissions": {}
     },
     {
-      "name": "lara (Nightly)",
-      "bundleIdentifier": "com.roooot.lara",
-      "developerName": "rooootdev & lara team",
-      "subtitle": "This is the nightly testing build for lara.",
-      "localizedDescription": "This is the nightly testing build for lara. Only use this if you're interested in new features and do not care about stability. lara is a customization toolbox that utilizes DarkSword. Supports iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.\n\nFor more information, check out our GitHub! https://github.com/rooootdev/lara. Join the Discord if you'd like to report any bugs! https://discord.gg/gw8PcRF3Jr.",
-      "iconURL": "https://raw.githubusercontent.com/rooootdev/lara/refs/heads/main/lara.png",
+      "name": "DSPloit (Nightly)",
+      "bundleIdentifier": "com.roooot.dsploit",
+      "developerName": "Royan & DSPloit team",
+      "subtitle": "This is the nightly testing build for DSPloit.",
+      "localizedDescription": "This is the nightly testing build for DSPloit. Only use this if you're interested in new features and do not care about stability. DSPloit is an advanced kernel exploitation suite that utilizes DarkSword. Supports iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.\n\nFor more information, check out our GitHub! https://github.com/rooootdev/dsploit. Join the Discord if you'd like to report any bugs! https://discord.gg/gw8PcRF3Jr.",
+      "iconURL": "https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/dsploit.png",
       "tintColor": "#5CA399",
       "versions": [
         {
           "version": "0.2",
           "date": "2026-05-5",
           "size": 3450675,
-          "downloadURL": "https://github.com/rooootdev/lara/releases/download/nightly/lara.ipa",
+          "downloadURL": "https://github.com/rooootdev/dsploit/releases/download/nightly/dsploit.ipa",
           "localizedDescription": "",
           "minOSVersion": "16.0"
         }

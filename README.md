@@ -1,10 +1,10 @@
 <div align="center">
   <br>
-  <a href="https://discord.gg/gw8PcRF3Jr"><img src="https://github.com/rooootdev/lara/blob/main/lara.png?raw=true" alt="JESSI Logo" width="200"></a>
+  <a href="https://discord.gg/gw8PcRF3Jr"><img src="https://github.com/rooootdev/dsploit/blob/main/dsploit.png?raw=true" alt="DSPloit Logo" width="200"></a>
   <br>
-  <h1>LARA</h1>
+  <h1>DSPloit</h1>
 
-  <p>A customization toolbox that utilizes DarkSword. iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.</p>
+  <p>An advanced kernel exploitation suite that utilizes DarkSword. iOS 16.0 - iOS 18.7.1 & iOS 26.0.x, excluding M5 and A19.</p>
   <p>star this repo please :P</p>
 </div>
 
@@ -12,17 +12,17 @@
   <a href="https://discord.gg/gw8PcRF3Jr">
     <img src="https://img.shields.io/badge/Discord-Join%20Server-7289DA.svg" alt="Discord">
   </a>
-  <a href="https://github.com/rooootdev/lara/stargazers">
-    <img src="https://img.shields.io/github/stars/rooootdev/lara?style=social" alt="GitHub stars">
+  <a href="https://github.com/rooootdev/dsploit/stargazers">
+    <img src="https://img.shields.io/github/stars/rooootdev/dsploit?style=social" alt="GitHub stars">
   </a>
-  <a href="https://github.com/rooootdev/lara/issues">
-    <img src="https://img.shields.io/github/issues/rooootdev/lara" alt="GitHub issues">
+  <a href="https://github.com/rooootdev/dsploit/issues">
+    <img src="https://img.shields.io/github/issues/rooootdev/dsploit" alt="GitHub issues">
   </a>
-  <a href="https://github.com/rooootdev/lara/releases">
-    <img src="https://img.shields.io/github/v/release/rooootdev/lara" alt="Release">
+  <a href="https://github.com/rooootdev/dsploit/releases">
+    <img src="https://img.shields.io/github/v/release/rooootdev/dsploit" alt="Release">
   </a>
-  <a href="https://github.com/rooootdev/lara/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/rooootdev/lara/build.yml?branch=main&style=flat&logo=github" alt="GitHub Actions">
+  <a href="https://github.com/rooootdev/dsploit/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/rooootdev/dsploit/build.yml?branch=main&style=flat&logo=github" alt="GitHub Actions">
   </a>
 </p>
 
@@ -34,8 +34,8 @@
   <a href="#credits">credits</a>
 </p>
 
->[!NOTE]
->Lara is still in a super rough state and is undergoing a rewrite. If you are experiencing any issues, it is best to simply wait instead of opening issues or asking for support in the Discord. If you would like to contribute, it is best to wait after the rewrite. We will not be accepting PRs during this time or resolving/responding to any issues. Thank you for your understanding!
+> [!NOTE]
+> DSPloit is still in a super rough state and is undergoing a rewrite. If you are experiencing any issues, it is best to simply wait instead of opening issues or asking for support in the Discord. If you would like to contribute, it is best to wait after the rewrite. We will not be accepting PRs during this time or resolving/responding to any issues. Thank you for your understanding!
 
 ## Support
 | iOS Version | Support Status |
@@ -46,18 +46,18 @@
 | iOS 26.0 - iOS 26.0.1 | Supported |
 | iOS 26.1+ | Not Supported |
 
-¹ While *technically* affected by the exploit lara abuses, offsets havent been found for these versions and lara therefore doesnt support them.
+¹ While *technically* affected by the exploit DSPloit abuses, offsets havent been found for these versions and DSPloit therefore doesnt support them.
 
 Important Notes:
 - This tool does **not** work on M5 or A19 (Pro) devices regardless of iOS version because of MIE.
-- YMMV on M-series CPUs. If you are on an M-series device, try going to lara settings, selecting `Modify Offsets`, and setting `t1sz_boot` to `0x11`.
-- Issues involving lara not working on either unsupported or *technically* supported versions will be closed immediately.
+- YMMV on M-series CPUs. If you are on an M-series device, try going to DSPloit settings, selecting `Modify Offsets`, and setting `t1sz_boot` to `0x11`.
+- Issues involving DSPloit not working on either unsupported or *technically* supported versions will be closed immediately.
 
 <p align="center">
-  <a href="https://celloserenity.github.io/altdirect/?url=https://raw.githubusercontent.com/rooootdev/lara/refs/heads/main/source.json" target="_blank">
+  <a href="https://celloserenity.github.io/altdirect/?url=https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/source.json" target="_blank">
     <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/AltSource_Blue.png?raw=true" alt="Add AltSource" width="200">
   </a>
-  <a href="https://github.com/rooootdev/lara/releases/download/0.1/lara_v0.1.ipa" target="_blank">
+  <a href="https://github.com/rooootdev/dsploit/releases/download/0.1/dsploit_v0.1.ipa" target="_blank">
     <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true" alt="Download .ipa" width="200">
   </a>
 </p>
@@ -79,13 +79,14 @@ Important Notes:
 - Grid App Switcher
 - Performance HUD
 - JIT Enabler (only for apps with `get-task-allow`)
+- **65+ Kernel Exploit Tools** (Process Inspector, AMFI Bypass, PAC/PPL Bypass, Heap Sprayer, ROP Builder, KASLR Defeater, IOSurface Exploiter, SEP Commander, CoreTrust Bypass, Kernel Fuzzer, and more)
 
 ### Coming Soon
 - App Decrypt
 
 ## Known Issues
 - wont work on M5, A19 and A19 Pro due to MTE
-- the kernel may panic when lara is closed from the app switcher.
+- the kernel may panic when DSPloit is closed from the app switcher.
 - dirtyzero does not work.
 - apps don't detect JIT enabled however they are enabled.
 - remotecall is super bugged and may not work properly.
@@ -107,7 +108,7 @@ Important Notes:
 6. Get the kernelcache file.
 7. Transfer the kernelcache to your iPhone.
 8. In the Files app:
-   - Go to "On My iPhone" > "lara"
+   - Go to "On My iPhone" > "DSPloit"
    - Place the kernelcache file there.
 9. Rename the file to `kernelcache` (without extension).
 
@@ -117,10 +118,11 @@ Important Notes:
 - respringing is needed to apply springboard changes such as font changes.
 
 ## Credits
+- Royan - Lead Developer & DSPloit Creator
 - opa334 for the kernel exploit poc, ChOma and XPF
 - AppInstaller iOS for help with offsets
 - AlfieCG for libgrabkernel2
-- Everyone who contributed! (Visible <a href="https://github.com/rooootdev/lara/graphs/contributors">Here</a>)
+- Everyone who contributed! (Visible <a href="https://github.com/rooootdev/dsploit/graphs/contributors">Here</a>)
 
 <br> 
 <div align="center">a beautiful kexploit ❤️</div>

@@ -1,8 +1,8 @@
 //
 //  CreditsView.swift
-//  lara
+//  DSPloit
 //
-//  Created by lunginspector on 5/9/26.
+//  Created by Royan on 5/9/26.
 //
 
 import SwiftUI
@@ -11,7 +11,7 @@ struct CreditsView: View {
     var body: some View {
         NavigationStack {
             List {
-                LinkCreditCell(name: "roooot", description: "Main Developer", url: "https://github.com/rooootdev") {
+                LinkCreditCell(name: "Royan", description: "Lead Developer & DSPloit Creator", url: "https://github.com/rooootdev") {
                     LinkCreditIcon(url: "https://github.com/rooootdev.png")
                 }
                 LinkCreditCell(name: "wh1te4ever", description: "Made darksword-kexploit-fun", url: "https://github.com/wh1te4ever") {
@@ -20,7 +20,7 @@ struct CreditsView: View {
                 LinkCreditCell(name: "Duy Tran", description: "Various remotecall-related improvements and features", url: "https://github.com/khanhduytran0") {
                     LinkCreditIcon(url: "https://github.com/khanhduytran0.png")
                 }
-                LinkCreditCell(name: "AppInstalleriOS", description: "Helped me with offsets and lots of other stuff", url: "https://github.com/AppInstalleriOSGH") {
+                LinkCreditCell(name: "AppInstalleriOS", description: "Helped with offsets and lots of other stuff", url: "https://github.com/AppInstalleriOSGH") {
                     LinkCreditIcon(url: "https://github.com/AppInstalleriOSGH.png")
                 }
                 LinkCreditCell(name: "jailbreak.party", description: "dirtyZero Tweaks", url: "https://github.com/jailbreakdotparty") {

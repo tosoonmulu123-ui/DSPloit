@@ -152,7 +152,7 @@ struct entry: Identifiable {
 }
 
 struct SystemColor: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     @State private var entries: [entry] = []
     @State private var status = "Not loaded"
     @State private var ogdata: Data?
@@ -308,7 +308,7 @@ struct SystemColor: View {
             return
         }
 
-        let res = mgr.lara_overwritefile(target: syspath, source: tmp)
+        let res = mgr.dsploit_overwritefile(target: syspath, source: tmp)
         status = res.ok ? "Patched!" : "Failed: \(res.message)"
 
         try? FileManager.default.removeItem(atPath: tmp)

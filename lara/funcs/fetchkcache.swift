@@ -1,6 +1,6 @@
 //
 //  fetchkcache.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 12.05.26.
 //
@@ -12,7 +12,7 @@ func syskcpath() -> String? {
     return "/private/preboot/\(hash)/System/Library/Caches/com.apple.kernelcaches/kernelcache"
 }
 
-func larakcpath() -> String? {
+func dspkcpath() -> String? {
     guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
     return docs.appendingPathComponent("kernelcache").path
 }
@@ -23,7 +23,7 @@ func fetchkcache() -> Bool {
         return false
     }
 
-    guard let outpath = larakcpath() else {
+    guard let outpath = dspkcpath() else {
         globallogger.log("(fetchkcache) failed to get output path")
         return false
     }

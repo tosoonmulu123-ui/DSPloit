@@ -1,6 +1,6 @@
 //
 //  dirtyZeroView.swift
-//  lara
+//  DSPloit
 //
 //  Created by lunginspector on 5/14/26.
 //
@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct dirtyZeroView: View {
-    @EnvironmentObject private var mgr: laramgr
+    @EnvironmentObject private var mgr: dspmgr
     @AppStorage("tweakArray") var tweakArray: [ZeroSection] = TweakArray.tweaks
     @AppStorage("enableRiskyTweaks") var enableRiskyTweaks: Bool = false
     

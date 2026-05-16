@@ -1,6 +1,6 @@
 //
 //  FontPicker.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 28.03.26.
 //
@@ -25,15 +25,15 @@ enum styletarget: String, CaseIterable {
 
     var path: String {
         switch self {
-            case .standard: return laramgr.fontpath
-            case .mono: return laramgr.monofontpath
-            case .italic: return laramgr.italicfontpath
+            case .standard: return dspmgr.fontpath
+            case .mono: return dspmgr.monofontpath
+            case .italic: return dspmgr.italicfontpath
         }
     }
 }
 
 struct FontPicker: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     @State private var showimporter = false
     @State private var customfonts: [importedfont] = load()
     @StateObject private var repostore = fontrepostore()
@@ -121,7 +121,7 @@ struct FontPicker: View {
                 } header: {
                     Text("Settings")
                 } footer: {
-                    Text("Some custom fonts will not work for app icons and other stuff, some will not work at all. If you want them to work, patch your .ttf [here](https://neonmodder123.github.io/lara-font-patcher/).")
+                    Text("Some custom fonts will not work for app icons and other stuff, some will not work at all. If you want them to work, patch your .ttf [here](https://neonmodder123.github.io/dsploit-font-patcher/).")
                 }
                 
                 Section {
@@ -206,7 +206,7 @@ private func viewfontfile(path: String, size: CGFloat) -> Font {
 
 private let fontkey = "customfonts"
 private let fontrepokey = "fontrepos"
-private let defaultrepo = "https://raw.githubusercontent.com/rooootdev/larafonts/main/fonts.json"
+private let defaultrepo = "https://raw.githubusercontent.com/rooootdev/dsploitfonts/main/fonts.json"
 
 private func load() -> [importedfont] {
     guard let storeddata = UserDefaults.standard.data(forKey: fontkey),
@@ -298,7 +298,7 @@ struct fontrepofont: Decodable, Identifiable {
 }
 
 struct repofontrow: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     let repo: fontrepodata
     let font: fontrepofont
     @ObservedObject var repostore: fontrepostore
@@ -310,7 +310,7 @@ struct repofontrow: View {
         Button {
             if iddownloaded, let localurl {
                 let success = mgr.vfsoverwritefromlocalpath(
-                    target: laramgr.fontpath,
+                    target: dspmgr.fontpath,
                     source: localurl.path
                 )
                 success ? mgr.logmsg("font changed to \(font.name)") : mgr.logmsg("failed to change font")
@@ -335,7 +335,7 @@ struct repofontrow: View {
 }
 
 private struct repoemojirow: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     let repo: fontrepodata
     let emoji: fontrepofont
     @ObservedObject var repostore: fontrepostore
@@ -440,7 +440,7 @@ struct FontRepoView: View {
                 } header: {
                     Text("Repos")
                 } footer: {
-                    Text("Make a repo by forking the [template repo](https://github.com/rooootdev/larafonts/) on GitHub and adding your custom fonts there.")
+                    Text("Make a repo by forking the [template repo](https://github.com/rooootdev/dsploitfonts/) on GitHub and adding your custom fonts there.")
                 }
             }
             .navigationTitle("Font Repos")

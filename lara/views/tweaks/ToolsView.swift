@@ -1,6 +1,6 @@
 //
 //  ToolsView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 04.04.26.
 //
@@ -14,10 +14,10 @@ struct procentry: Identifiable, Hashable {
 }
 
 struct ToolsView: View {
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
     @State private var isaslr: Bool = aslrstate
     @State var showtoken: Bool = false
-    @AppStorage("lara.sbx.issuedToken") private var token: String = ""
+    @AppStorage("dsploit.sbx.issuedToken") private var token: String = ""
     @State private var issueclass: tokenclass = .rw
     @State private var issuepath: String = "/"
     @State private var uid: uid_t = getuid()

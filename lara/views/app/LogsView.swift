@@ -1,6 +1,6 @@
 //
 //  LogsView.swift
-//  lara
+//  DSPloit
 //
 //  Created by lunginspector on 5/3/26.
 //
@@ -13,7 +13,7 @@ struct LogsView: View {
     private let nobullshitkey = "loggernobullshit"
     let logsURL: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docs.appendingPathComponent("lara.log")
+        return docs.appendingPathComponent("dsploit.log")
     }()
 
     var body: some View {

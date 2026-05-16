@@ -1,6 +1,6 @@
 //
 //  SettingsView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 29.03.26.
 //
@@ -28,7 +28,7 @@ enum logsdisplaymode: String, CaseIterable {
 }
 
 struct SettingsView: View {
-    @EnvironmentObject var mgr: laramgr
+    @EnvironmentObject var mgr: dspmgr
     
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
     @AppStorage("keepAlive") private var keepAlive: Bool = false
@@ -121,7 +121,7 @@ struct SettingsView: View {
                         }
                     } else {
                         Button("Remove Kernelcache", action: {
-                            Alertinator.shared.alert(title: "Clear Kernelcache Data?", body: "This will delete all kernelcache data and remove saved offsets. You will have to refetch the data to use lara again.", actionLabel: "Confirm", action: {
+                            Alertinator.shared.alert(title: "Clear Kernelcache Data?", body: "This will delete all kernelcache data and remove saved offsets. You will have to refetch the data to use DSPloit again.", actionLabel: "Confirm", action: {
                                 clearKcacheData()
                             })
                         })
@@ -252,8 +252,8 @@ struct SettingsView: View {
     private func clearKcacheData() {
         let fm = FileManager.default
         
-        UserDefaults.standard.removeObject(forKey: "lara.kernelcache_path")
-        UserDefaults.standard.removeObject(forKey: "lara.kernelcache_size")
+        UserDefaults.standard.removeObject(forKey: "dsploit.kernelcache_path")
+        UserDefaults.standard.removeObject(forKey: "dsploit.kernelcache_size")
         
         let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let kernelcacheDocPath = docsPath.appendingPathComponent("kernelcache")

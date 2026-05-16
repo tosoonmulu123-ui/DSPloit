@@ -1,6 +1,6 @@
 //
 //  CustomView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 29.03.26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct CustomView: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     @State private var target: String = "/"
     @State private var showimport = false
     @State private var srcpath: String = ""

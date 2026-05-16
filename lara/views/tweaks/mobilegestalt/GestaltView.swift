@@ -1,6 +1,6 @@
 //
 //  EditorView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 27.03.26.
 //
@@ -17,7 +17,7 @@ struct GestaltView: View {
     @AppStorage("gestaltwarn") private var gestaltwarn: Bool = true
     @AppStorage("mgDeviceName") private var mgDeviceName: String = ""
     
-    @EnvironmentObject private var mgr: laramgr
+    @EnvironmentObject private var mgr: dspmgr
     @State private var mgCurrentDict: NSMutableDictionary = NSMutableDictionary()
     @State private var isGestaltVaild: Bool = false
     
@@ -258,7 +258,7 @@ struct GestaltView: View {
             
             // bro please dont bootloop
             let mgData = try verifyPlist(mgCurrentDict, targetPath: mgCurrentPath)
-            let result = mgr.lara_overwritefile(target: mgCurrentPath, data: mgData)
+            let result = mgr.dsploit_overwritefile(target: mgCurrentPath, data: mgData)
             
             if result.ok {
                 Alertinator.shared.alert(title: "Successfully applied MobileGestalt!", body: "Respring to see any changes", actionLabel: "Respring", action: { mgr.respring() })
@@ -417,7 +417,7 @@ struct GestaltView: View {
 
 #Preview {
     GestaltView()
-        .environmentObject(laramgr())
+        .environmentObject(dspmgr())
 }
 
 func verifyPlist(_ plist: Any, targetPath: String) throws -> Data {

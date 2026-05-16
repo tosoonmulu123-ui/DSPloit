@@ -1,6 +1,6 @@
 //
 //  PasscodeView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 29.03.26.
 //
@@ -20,7 +20,7 @@ struct PasscodeKey: Identifiable {
 }
 
 struct PasscodeView: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     
     @State private var selectedKeys: [String: Data] = [:]
     @State private var showImagePicker: String?

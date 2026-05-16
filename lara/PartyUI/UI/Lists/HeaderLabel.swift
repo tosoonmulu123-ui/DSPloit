@@ -17,10 +17,16 @@ public struct HeaderLabel: View {
     }
     
     public var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
                 .frame(width: width.headerIcon, alignment: .center)
             Text(text)
+                .font(.system(.subheadline, design: .default, weight: .bold))
+                .foregroundStyle(.primary)
+                .textCase(nil) // Prevent automatic all-caps if the list forces it
         }
+        .padding(.vertical, 4)
     }
 }

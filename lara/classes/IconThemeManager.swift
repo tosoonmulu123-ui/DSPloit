@@ -4,12 +4,12 @@ import Foundation
 import SwiftUI
 import UIKit
 
-private let iconThemeStorageRoot = URL(fileURLWithPath: "/var/mobile/.DO-NOT-DELETE-lara/IconThemes", isDirectory: true)
+private let iconThemeStorageRoot = URL(fileURLWithPath: "/var/mobile/.DO-NOT-DELETE-dsploit/IconThemes", isDirectory: true)
 private let rawThemesDir = iconThemeStorageRoot.appendingPathComponent("RawThemes", isDirectory: true)
 private let processedThemesDir = iconThemeStorageRoot.appendingPathComponent("ProcessedThemes", isDirectory: true)
 private let originalIconsDir = iconThemeStorageRoot.appendingPathComponent("OriginalIconsBackup", isDirectory: true)
 
-struct LaraIconTheme: Identifiable, Equatable, Hashable {
+struct DSPIconTheme: Identifiable, Equatable, Hashable {
     let name: String
     let iconCount: Int
 
@@ -18,7 +18,7 @@ struct LaraIconTheme: Identifiable, Equatable, Hashable {
     var cacheURL: URL { processedThemesDir.appendingPathComponent(name, isDirectory: true) }
 }
 
-struct LaraThemedIcon: Codable {
+struct DSPThemedIcon: Codable {
     let appID: String
     let themeName: String
 
@@ -31,7 +31,7 @@ struct LaraThemedIcon: Codable {
     }
 }
 
-struct LaraThemedApp: Identifiable, Hashable {
+struct DSPThemedApp: Identifiable, Hashable {
     let bundleIdentifier: String
     var name: String
     let version: String
@@ -105,14 +105,14 @@ struct LaraThemedApp: Identifiable, Hashable {
             guard let originalURL = backedUpIconURL(fileName: iconName) else { continue }
             let iconURL = bundleURL.appendingPathComponent(iconName)
             let data = try Data(contentsOf: originalURL)
-            let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: data)
+            let result = dspmgr.shared.dsploit_overwritefile(target: iconURL.path, data: data)
             if !result.ok {
                 throw NSError(domain: "IconThemer", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
             }
         }
     }
 
-    func setPNGIcons(icon: LaraThemedIcon) throws {
+    func setPNGIcons(icon: DSPThemedIcon) throws {
         let fm = FileManager.default
         for iconName in pngIconPaths {
             let iconURL = bundleURL.appendingPathComponent(iconName)
@@ -158,7 +158,7 @@ struct LaraThemedApp: Identifiable, Hashable {
             }
 
             guard let cachedIcon else { continue }
-            let result = laramgr.shared.lara_overwritefile(target: iconURL.path, data: cachedIcon)
+            let result = dspmgr.shared.dsploit_overwritefile(target: iconURL.path, data: cachedIcon)
             if !result.ok {
                 throw NSError(domain: "IconThemer", code: 6, userInfo: [NSLocalizedDescriptionKey: "\(bundleIdentifier): \(result.message)"])
             }
@@ -166,17 +166,17 @@ struct LaraThemedApp: Identifiable, Hashable {
     }
 }
 
-struct LaraAppIconChange {
-    let app: LaraThemedApp
-    let icon: LaraThemedIcon?
+struct DSPAppIconChange {
+    let app: DSPThemedApp
+    let icon: DSPThemedIcon?
 }
 
 final class IconThemeManager: ObservableObject {
     static let shared = IconThemeManager()
 
-    @Published var themes: [LaraIconTheme] = []
+    @Published var themes: [DSPIconTheme] = []
     @Published var selectedThemeNames: [String]
-    @Published var installedApps: [LaraThemedApp] = []
+    @Published var installedApps: [DSPThemedApp] = []
     @Published var isApplying = false
     @Published var applyProgress: Double = 0
     @Published var applyMessage = ""
@@ -186,9 +186,9 @@ final class IconThemeManager: ObservableObject {
     @Published var showFixupSheet = false
 
     private let fm = FileManager.default
-    private let selectedThemesKey = "lara.iconThemes.selectedThemes"
-    private let iconOverridesKey = "lara.iconThemes.iconOverrides"
-    private let pendingFixupKey = "lara.iconThemes.pendingFixup"
+    private let selectedThemesKey = "dsploit.iconThemes.selectedThemes"
+    private let iconOverridesKey = "dsploit.iconThemes.iconOverrides"
+    private let pendingFixupKey = "dsploit.iconThemes.pendingFixup"
     private init() {
         self.selectedThemeNames = UserDefaults.standard.stringArray(forKey: selectedThemesKey) ?? []
         refreshThemes()
@@ -203,29 +203,29 @@ final class IconThemeManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: iconOverridesKey) }
     }
 
-    var selectedThemes: [LaraIconTheme] {
+    var selectedThemes: [DSPIconTheme] {
         selectedThemeNames.compactMap { name in
             themes.first(where: { $0.name == name })
         }
     }
 
-    var preferredIcons: [String: LaraThemedIcon] {
-        var result: [String: LaraThemedIcon] = [:]
+    var preferredIcons: [String: DSPThemedIcon] {
+        var result: [String: DSPThemedIcon] = [:]
         for theme in selectedThemes {
             if let icons = try? fm.contentsOfDirectory(at: theme.url, includingPropertiesForKeys: nil) {
                 for icon in icons {
                     let appID = appIDFromIcon(url: icon)
-                    result[appID] = LaraThemedIcon(appID: appID, themeName: theme.name)
+                    result[appID] = DSPThemedIcon(appID: appID, themeName: theme.name)
                 }
             }
         }
         for (bundleID, themeName) in iconOverrides {
-            result[bundleID] = LaraThemedIcon(appID: bundleID, themeName: themeName)
+            result[bundleID] = DSPThemedIcon(appID: bundleID, themeName: themeName)
         }
         return result
     }
 
-    func theme(named name: String) -> LaraIconTheme? {
+    func theme(named name: String) -> DSPIconTheme? {
         themes.first(where: { $0.name == name })
     }
 
@@ -233,7 +233,7 @@ final class IconThemeManager: ObservableObject {
         UserDefaults.standard.set(selectedThemeNames, forKey: selectedThemesKey)
     }
 
-    func toggleThemeSelection(_ theme: LaraIconTheme) {
+    func toggleThemeSelection(_ theme: DSPIconTheme) {
         if let idx = selectedThemeNames.firstIndex(of: theme.name) {
             selectedThemeNames.remove(at: idx)
         } else {
@@ -266,7 +266,7 @@ final class IconThemeManager: ObservableObject {
         themes = contents
             .filter { $0.hasDirectoryPath }
             .map { url in
-                LaraIconTheme(name: url.lastPathComponent, iconCount: ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "png" }.count)
+                DSPIconTheme(name: url.lastPathComponent, iconCount: ((try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "png" }.count)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
@@ -290,14 +290,14 @@ final class IconThemeManager: ObservableObject {
             }
         }
 
-        var apps: [LaraThemedApp] = []
+        var apps: [DSPThemedApp] = []
         for bundleURL in dotAppDirs {
             let infoPlistURL = bundleURL.appendingPathComponent("Info.plist")
             guard fm.fileExists(atPath: infoPlistURL.path) else { continue }
             guard let infoPlist = NSDictionary(contentsOf: infoPlistURL) as? [String: AnyObject],
                   let bundleID = infoPlist["CFBundleIdentifier"] as? String else { continue }
 
-            var app = LaraThemedApp(
+            var app = DSPThemedApp(
                 bundleIdentifier: bundleID,
                 name: (infoPlist["CFBundleDisplayName"] as? String) ?? (infoPlist["CFBundleName"] as? String) ?? bundleURL.lastPathComponent,
                 version: (infoPlist["CFBundleShortVersionString"] as? String) ?? (infoPlist["CFBundleVersion"] as? String) ?? "1",
@@ -334,11 +334,11 @@ final class IconThemeManager: ObservableObject {
         installedApps = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    func icons(forAppIDs appIDs: [String], from theme: LaraIconTheme) -> [UIImage?] {
+    func icons(forAppIDs appIDs: [String], from theme: DSPIconTheme) -> [UIImage?] {
         appIDs.map { try? icon(forAppID: $0, from: theme) }
     }
 
-    func icon(forAppID appID: String, from theme: LaraIconTheme) throws -> UIImage {
+    func icon(forAppID appID: String, from theme: DSPIconTheme) throws -> UIImage {
         let path = theme.url.appendingPathComponent(appID + ".png").path
         guard let image = UIImage(contentsOfFile: path) else {
             throw NSError(domain: "IconThemer", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not open image"])
@@ -346,7 +346,7 @@ final class IconThemeManager: ObservableObject {
         return image
     }
 
-    func availableOverrideChoices(for bundleID: String) -> [(theme: LaraIconTheme, image: UIImage)] {
+    func availableOverrideChoices(for bundleID: String) -> [(theme: DSPIconTheme, image: UIImage)] {
         themes.compactMap { theme in
             guard let image = try? icon(forAppID: bundleID, from: theme) else { return nil }
             return (theme, image)
@@ -404,7 +404,7 @@ final class IconThemeManager: ObservableObject {
         refreshThemes()
     }
 
-    func removeTheme(_ theme: LaraIconTheme) throws {
+    func removeTheme(_ theme: DSPIconTheme) throws {
         try? fm.removeItem(at: theme.cacheURL)
         try fm.removeItem(at: theme.url)
         selectedThemeNames.removeAll { $0 == theme.name }
@@ -417,7 +417,7 @@ final class IconThemeManager: ObservableObject {
         refreshThemes()
     }
 
-    func neededChanges() throws -> [LaraAppIconChange] {
+    func neededChanges() throws -> [DSPAppIconChange] {
         if installedApps.isEmpty {
             try refreshApps()
         }
@@ -427,7 +427,7 @@ final class IconThemeManager: ObservableObject {
             .filter { !$0.hiddenFromSpringboard && !$0.pngIconPaths.isEmpty }
             .map { app in
                 if let themedIcon = preferredIcons[app.bundleIdentifier] {
-                    return LaraAppIconChange(app: app, icon: themedIcon)
+                    return DSPAppIconChange(app: app, icon: themedIcon)
                 }
 
                 var bundleComponents = app.bundleIdentifier.components(separatedBy: ".")
@@ -435,11 +435,11 @@ final class IconThemeManager: ObservableObject {
                     bundleComponents.removeLast()
                     let parentBundleID = bundleComponents.joined(separator: ".")
                     if let themedIcon = preferredIcons[parentBundleID] {
-                        return LaraAppIconChange(app: app, icon: themedIcon)
+                        return DSPAppIconChange(app: app, icon: themedIcon)
                     }
                 }
 
-                return LaraAppIconChange(app: app, icon: nil)
+                return DSPAppIconChange(app: app, icon: nil)
             }
     }
 
@@ -496,7 +496,7 @@ final class IconThemeManager: ObservableObject {
     }
 
     func startPendingFixupIfPossible() {
-        guard hasPendingFixup, !isFixingUp, laramgr.shared.sbxready else { return }
+        guard hasPendingFixup, !isFixingUp, dspmgr.shared.sbxready else { return }
         showFixupSheet = true
         startPendingFixup()
     }
@@ -685,7 +685,7 @@ final class IconThemeManager: ObservableObject {
     }
 
     private func clearIconCache() {
-        LaraClearIconCache()
+        DSPClearIconCache()
     }
 }
 
@@ -703,7 +703,7 @@ struct IconThemeFixupView: View {
                 Text(manager.isFixingUp ? "Fixing apps..." : "Fixup complete")
                     .font(.title2.bold())
 
-                Text(manager.fixupMessage.isEmpty ? "Reopen lara after respring and initialize SBX so icon backups can be restored." : manager.fixupMessage)
+                Text(manager.fixupMessage.isEmpty ? "Reopen DSPloit after respring and initialize SBX so icon backups can be restored." : manager.fixupMessage)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)

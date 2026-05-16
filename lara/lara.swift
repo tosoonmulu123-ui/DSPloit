@@ -1,6 +1,6 @@
 //
-//  lara.swift
-//  lara
+//  DSPloit.swift
+//  DSPloit
 //
 //  Created by ruter on 23.03.26.
 //
@@ -16,8 +16,8 @@ let g_isunsupported: Bool = isunsupported()
 var weonadebugbuild_pjbweouttahereexclamationmark: Bool = false
 
 @main
-struct lara: App {
-    @StateObject private var mgr = laramgr.shared
+struct DSPloit: App {
+    @StateObject private var mgr = dspmgr.shared
     @StateObject private var iconthememgr = IconThemeManager.shared
     @Environment(\.scenePhase) var scenephase
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
@@ -104,7 +104,7 @@ struct lara: App {
                     // thanks
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
                 } else {
-                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by Lara. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
+                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by DSPloit. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
                 }
             }
             .onChange(of: scenephase, perform: handleScenePhase)

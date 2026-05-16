@@ -1,6 +1,6 @@
 //
 //  VarCleanView.swift
-//  lara
+//  DSPloit
 //
 //  credits to: m1337v
 //
@@ -25,7 +25,7 @@ private struct varcleangroup: Identifiable, Hashable {
 }
 
 struct VarCleanView: View {
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
     @State private var groups: [varcleangroup] = []
     @State private var isrefreshing = false
     @State private var isdeleting = false

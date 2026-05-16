@@ -36,9 +36,9 @@ if ! command -v ldid >/dev/null 2>&1; then
   exit 1
 fi
 ldid -SConfig/lara.entitlements "$PWD/build/Payload/lara.app/lara"
-(cd "$PWD/build" && /usr/bin/zip -qry lara.ipa Payload)
+(cd "$PWD/build" && /usr/bin/zip -qry dsploit.ipa Payload)
 
 echo
 echo "build successful!"
-echo "ipa at: build/lara.ipa"
+echo "ipa at: build/dsploit.ipa"
 exit 0

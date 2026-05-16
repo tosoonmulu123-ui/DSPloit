@@ -376,7 +376,7 @@
 					"$(PROJECT_DIR)/lara/lib",
 				);
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.lara;
+				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.dsploit;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -428,7 +428,7 @@
 					"$(PROJECT_DIR)/lara/lib",
 				);
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.lara;
+				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.dsploit;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

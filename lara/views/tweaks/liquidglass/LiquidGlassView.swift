@@ -1,6 +1,6 @@
 //
 //  LGView.swift
-//  lara
+//  DSPloit
 //
 //  Created by jurre111 on 24.04.26.
 //
@@ -13,7 +13,7 @@ import SwiftUI
 let gpCurrentPath = "/var/Managed Preferences/mobile/.GlobalPreferences.plist"
 
 struct LiquidGlassView: View {
-    @EnvironmentObject private var mgr: laramgr
+    @EnvironmentObject private var mgr: dspmgr
     
     @State private var gpCurrentDict: NSMutableDictionary = NSMutableDictionary()
     @State private var trueBool: Bool = true
@@ -79,7 +79,7 @@ struct LiquidGlassView: View {
     func applyLiquidGlass() {
         do {
             let gpData = try verifyPlist(gpCurrentDict, targetPath: gpCurrentPath)
-            let result = mgr.lara_overwritefile(target: gpCurrentPath, data: gpData)
+            let result = mgr.dsploit_overwritefile(target: gpCurrentPath, data: gpData)
             
             if result.ok {
                 Alertinator.shared.alert(title: "Successfully applied Liquid Glass Tweaks!", body: "Reboot your device to see any changes")

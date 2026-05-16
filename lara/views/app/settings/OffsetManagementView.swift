@@ -1,6 +1,6 @@
 //
 //  OffsetManagementView.swift
-//  lara
+//  DSPloit
 //
 //  Created by lunginspector on 5/9/26.
 //  yo this shit is BROKEN (roooot, 09.05.2026)
@@ -10,7 +10,7 @@
 import SwiftUI
 
 struct OffsetManagementView: View {
-    @EnvironmentObject var mgr: laramgr
+    @EnvironmentObject var mgr: dspmgr
     @State private var editable: [String: String] = [:]
     @State private var loaded = false
     @State private var lastfocused: String?

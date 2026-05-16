@@ -1,6 +1,6 @@
 //
 //  CardView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 29.03.26.
 //
@@ -17,7 +17,7 @@ enum replaceoption: String, CaseIterable, Identifiable {
 }
 
 struct CardView: View {
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
     @State private var cards: [carditem] = []
     @State private var status: String?
     @State private var working = false

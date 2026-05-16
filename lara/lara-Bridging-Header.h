@@ -1,6 +1,6 @@
 //
-//  lara-Bridging-Header.h
-//  lara
+//  DSPloit-Bridging-Header.h
+//  DSPloit
 //
 
 @import UIKit;
@@ -18,7 +18,7 @@
 #import "RemoteCall.h"
 
 long findcachedataoff(const char *mgkey);
-void LaraClearIconCache(void);
+void DSPClearIconCache(void);
 
 @interface UIDevice(Private)
 + (BOOL)_hasHomeButton;

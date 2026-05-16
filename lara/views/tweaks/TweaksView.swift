@@ -1,6 +1,6 @@
 //
 //  TweaksView.swift
-//  lara
+//  DSPloit
 //
 //  Created by lunginspector on 5/3/26.
 //
@@ -9,11 +9,68 @@ import SwiftUI
 
 struct TweaksView: View {
     @AppStorage("logsdisplaymode") private var selectedlogsdisplaymode: logsdisplaymode = .toolbar
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     
     var body: some View {
         NavigationStack {
             List {
+                // Kernel Exploits - Top Priority Section
+                Section(header: HeaderLabel(text: "Kernel Exploits", icon: "bolt.shield.fill")) {
+                    NavigationLink(destination: KernelExploitDashboardView()) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "cpu")
+                                .font(.title3)
+                                .foregroundStyle(.red)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Kernel Exploit Suite")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("65+ kernel-level exploit tools")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    .disabled(!mgr.dsready)
+                    
+                    NavigationLink(destination: KernelPanicAnalyzerView()) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "bolt.shield.fill")
+                                .font(.title3)
+                                .foregroundStyle(.orange)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Kernel Panic Analyzer")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Super detailed panic log analysis")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    .disabled(!mgr.dsready)
+                    
+                    NavigationLink(destination: KernelMemoryInspectorView()) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "memorychip")
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Memory Inspector")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Live kernel memory hex viewer & editor")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    .disabled(!mgr.dsready)
+                }
+                
                 Section(header: HeaderLabel(text: "SpringBoard", icon: "house")) {
                     NavigationLink("RemoteCall Customizer", destination: RemoteView(mgr: mgr))
                         .disabled(!mgr.rcready)

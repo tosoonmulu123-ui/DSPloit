@@ -1,6 +1,6 @@
 //
 //  CCView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 16.04.26.
 //
@@ -15,7 +15,7 @@ struct CCView: View {
                 } header: {
                     Text("RespringCC")
                 } footer: {
-                    Text("Uses lara's respring helper.")
+                    Text("Uses DSPloit's respring helper.")
                 }
             }
             .navigationTitle("Control Center")

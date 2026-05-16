@@ -1,6 +1,6 @@
 //
 //  FontPicker.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 27.03.26.
 //
@@ -18,7 +18,7 @@ struct scannedapp: Identifiable, Hashable {
 }
 
 struct AppsView: View {
-    @EnvironmentObject private var mgr: laramgr
+    @EnvironmentObject private var mgr: dspmgr
     @AppStorage("selectedmethod") private var selectedmethod: method = .vfs
     
     @State private var scannedapps: [scannedapp] = []

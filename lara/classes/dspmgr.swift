@@ -1,6 +1,6 @@
 //
-//  laramgr.swift
-//  lara
+//  dspmgr.swift
+//  DSPloit
 //
 //  Created by ruter on 23.03.26.
 //
@@ -12,7 +12,7 @@ import notify
 import UIKit
 import WebKit
 
-final class laramgr: ObservableObject {
+final class dspmgr: ObservableObject {
     @Published var log: String = ""
     @Published var hasOffsets: Bool = false
     @Published var dsrunning: Bool = false
@@ -56,7 +56,7 @@ final class laramgr: ObservableObject {
     var sbProc: RemoteCall?
     var ytProc = RemoteCall(process: "youtube", useMigFilterBypass: false)
     
-    static let shared = laramgr()
+    static let shared = dspmgr()
     static let fontpath = "/System/Library/Fonts/Core/SFUI.ttf"
     static let italicfontpath = "/System/Library/Fonts/Core/SFUIItalic.ttf"
     static let monofontpath = "/System/Library/Fonts/Core/SFUIMono.ttf"
@@ -83,12 +83,12 @@ final class laramgr: ObservableObject {
             guard let messageCStr else { return }
             let message = String(cString: messageCStr)
             DispatchQueue.main.async {
-                laramgr.shared.logmsg("(ds) \(message)")
+                dspmgr.shared.logmsg("(ds) \(message)")
             }
         }
         ds_set_progress_callback { progress in
             DispatchQueue.main.async {
-                laramgr.shared.dsprogress = progress
+                dspmgr.shared.dsprogress = progress
             }
         }
         
@@ -166,10 +166,10 @@ final class laramgr: ObservableObject {
     }
     
     func vfsinit(completion: ((Bool) -> Void)? = nil) {
-        vfs_setlogcallback(laramgr.vfslogcallback)
+        vfs_setlogcallback(dspmgr.vfslogcallback)
         vfs_setprogresscallback { progress in
             DispatchQueue.main.async {
-                laramgr.shared.vfsprogress = progress
+                dspmgr.shared.vfsprogress = progress
             }
         }
         vfsattempted = true
@@ -202,7 +202,7 @@ final class laramgr: ObservableObject {
         sbxfailed = false
         sbxrunning = true
         
-        sbx_setlogcallback(laramgr.sbxlogcallback)
+        sbx_setlogcallback(dspmgr.sbxlogcallback)
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r = sbx_escape(ds_get_our_proc())
@@ -226,7 +226,7 @@ final class laramgr: ObservableObject {
         guard let msg = msg else { return }
         let s = String(cString: msg)
         DispatchQueue.main.async {
-            laramgr.shared.logmsg("(sbx) " + s)
+            dspmgr.shared.logmsg("(sbx) " + s)
         }
     }
     
@@ -234,8 +234,8 @@ final class laramgr: ObservableObject {
         guard let msg = msg else { return }
         let s = String(cString: msg)
         DispatchQueue.main.async {
-            laramgr.shared.vfsinitlog += "(vfs) " + s + "\n"
-            laramgr.shared.logmsg("(vfs) " + s)
+            dspmgr.shared.vfsinitlog += "(vfs) " + s + "\n"
+            dspmgr.shared.logmsg("(vfs) " + s)
         }
     }
     
@@ -350,7 +350,7 @@ final class laramgr: ObservableObject {
     }
     
     @discardableResult
-    func lara_overwritefile(target: String, source: String) -> (ok: Bool, message: String) {
+    func dsploit_overwritefile(target: String, source: String) -> (ok: Bool, message: String) {
         guard FileManager.default.fileExists(atPath: source) else {
             return (false, "source file not found: \(source)")
         }
@@ -380,7 +380,7 @@ final class laramgr: ObservableObject {
     }
     
     @discardableResult
-    func lara_overwritefile(target: String, data: Data) -> (ok: Bool, message: String) {
+    func dsploit_overwritefile(target: String, data: Data) -> (ok: Bool, message: String) {
         let result = sbxready ? sbxoverwrite(path: target, data: data) : (false, "sbx not ready")
         if result.0 {
             return result
@@ -487,7 +487,6 @@ final class laramgr: ObservableObject {
                 if let appInfo = appList[bundleID] {
                     hashes[bundleID] = appInfo.dataFolder
                 } else {
-                    // this shouldn't happen
                     logmsg("Could not find app with bundle ID \(bundleID).")
                     return false
                 }

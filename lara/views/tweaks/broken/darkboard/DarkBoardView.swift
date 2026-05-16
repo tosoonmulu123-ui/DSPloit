@@ -1,6 +1,6 @@
 //
 //  DarkBoard.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 24.04.26.
 //  skidded from Cowabunga, credit goes to lemin and co.
@@ -16,7 +16,7 @@ private struct DarkBoardAlert: Identifiable {
 }
 
 private struct OverrideChoice: Identifiable {
-    let theme: LaraIconTheme
+    let theme: DSPIconTheme
     let image: UIImage
 
     var id: String { theme.name }
@@ -24,7 +24,7 @@ private struct OverrideChoice: Identifiable {
 
 struct DarkBoardView: View {
     @ObservedObject private var manager = IconThemeManager.shared
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
 
     @State private var showImporter = false
     @State private var alert: DarkBoardAlert?
@@ -183,7 +183,7 @@ struct DarkBoardView: View {
                 let errors = try manager.applyThemes()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                     if errors.isEmpty {
-                        alert = DarkBoardAlert(message: "Icons applied. Respring now. After reopening lara, initialize SBX again so the post-respring icon fixup can restore the original bundle files.")
+                        alert = DarkBoardAlert(message: "Icons applied. Respring now. After reopening DSPloit, initialize SBX again so the post-respring icon fixup can restore the original bundle files.")
                     } else {
                         alert = DarkBoardAlert(message: "Applied with some errors:\n\n" + errors.joined(separator: "\n\n"))
                     }
@@ -211,7 +211,7 @@ struct DarkBoardView: View {
         }
     }
 
-    private func removeTheme(_ theme: LaraIconTheme) {
+    private func removeTheme(_ theme: DSPIconTheme) {
         do {
             try manager.removeTheme(theme)
         } catch {
@@ -240,7 +240,7 @@ struct DarkBoardView: View {
 }
 
 private struct ThemeCardView: View {
-    let theme: LaraIconTheme
+    let theme: DSPIconTheme
     let previews: [UIImage?]
     let selectionIndex: Int?
     let onToggle: () -> Void
@@ -362,7 +362,7 @@ struct IconOverridesView: View {
         }
     }
 
-    private var filteredApps: [LaraThemedApp] {
+    private var filteredApps: [DSPThemedApp] {
         let visibleApps = manager.installedApps.filter { !$0.hiddenFromSpringboard }
         guard !search.isEmpty else { return visibleApps }
         return visibleApps.filter {
@@ -374,7 +374,7 @@ struct IconOverridesView: View {
 private struct OverrideSelectionView: View {
     @ObservedObject private var manager = IconThemeManager.shared
 
-    let app: LaraThemedApp
+    let app: DSPThemedApp
 
     @Environment(\.dismiss) private var dismiss
 

@@ -1,6 +1,6 @@
 //
 //  RemoteView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 17.04.26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import Darwin
 
 struct RemoteView: View {
-    @ObservedObject var mgr: laramgr
+    @ObservedObject var mgr: dspmgr
     @State private var statusBarTimeFormat: String = "HH:mm"
     @State private var running: Bool = false
     @State private var columns: Int = 5

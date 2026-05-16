@@ -1,6 +1,6 @@
 //
 //  JitView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 06.04.26.
 //
@@ -16,7 +16,7 @@ struct proc: Identifiable {
 }
 
 struct JitView: View {
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
     @State private var query = ""
     @State private var allprocs: [proc] = []
     @State private var enablingbid: String? = nil
@@ -102,7 +102,7 @@ struct JitView: View {
                     Text("Only works on apps with the `get-task-allow` entitlement.")
                 }
             }
-            .navigationTitle("LaraJIT")
+            .navigationTitle("DSPloitJIT")
         }
         .onAppear {
             if mgr.sbxready {

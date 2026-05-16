@@ -4,7 +4,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-APPLICATION_NAME=lara
+APPLICATION_NAME=dsploit
 
 echo "[*] $APPLICATION_NAME Build Script"
 

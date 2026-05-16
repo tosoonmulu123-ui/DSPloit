@@ -1,6 +1,6 @@
 //
 //  WhitelistView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 29.03.26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import Darwin
 
 struct WhitelistView: View {
-    @ObservedObject private var mgr = laramgr.shared
+    @ObservedObject private var mgr = dspmgr.shared
 
     private struct wlfile: Identifiable {
         let id = UUID()

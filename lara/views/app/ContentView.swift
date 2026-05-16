@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  lara
+//  DSPloit
 //
 //  Created by ruter on 23.03.26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var mgr: laramgr
+    @EnvironmentObject private var mgr: dspmgr
     @ObservedObject private var logger = globallogger
     @AppStorage("selectedMethod") private var selectedmethod: method = .hybrid
     @AppStorage("logsdisplaymode") private var selectedlogsdisplaymode: logsdisplaymode = .toolbar
@@ -32,7 +32,7 @@ struct ContentView: View {
                 DebugSection
                 InlineLogsSection
             }
-            .navigationTitle("lara")
+            .navigationTitle("DSPloit")
             .toolbar {
                 if selectedlogsdisplaymode == .toolbar {
                     Button(action: {
@@ -334,5 +334,5 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .environmentObject(laramgr())
+        .environmentObject(dspmgr())
 }

@@ -89,7 +89,7 @@ class Logger: ObservableObject {
         "Z:",
         "Total Latency:",
         "Timestamp type:",
-        "lara[",
+        "DSPloit[",
         "};",
         "NSLayoutConstraint",
         "   \"",
@@ -295,7 +295,7 @@ class Logger: ObservableObject {
 
     private func setuplogfile() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let url = docs.appendingPathComponent("lara.log")
+        let url = docs.appendingPathComponent("dsploit.log")
         logfileurl = url
         
         if FileManager.default.fileExists(atPath: url.path) {
@@ -311,7 +311,7 @@ class Logger: ObservableObject {
         
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let separator = "lara started: \(formatter.string(from: Date()))"
+        let separator = "DSPloit started: \(formatter.string(from: Date()))"
         self.logs = [separator]
         self.lastwasdivider = true
         
