@@ -67,7 +67,9 @@ private func makesilentwav(at url: URL) {
     
     func append<T>(_ value: T) {
         var v = value
-        wavdata.append(Data(bytes: &v, count: MemoryLayout<T>.size))
+        withUnsafeBytes(of: &v) { bytes in
+            wavdata.append(contentsOf: bytes)
+        }
     }
     
     wavdata.append("RIFF".data(using: .ascii)!)

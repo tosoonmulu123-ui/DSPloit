@@ -144,7 +144,7 @@ struct VarCleanView: View {
         isrefreshing = true
         defer { isrefreshing = false }
 
-        let newgroups = await Task.detached(priority: .userInitiated) {
+        let newgroups = await Task(priority: .userInitiated) {
             loadvarcleangroups()
         }.value
 

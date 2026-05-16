@@ -536,7 +536,7 @@ final class fontrepostore: ObservableObject {
                         let repo = repodata
                         Task {
                             await self.ensurerepofontsdownloaded(repo)
-                            await MainActor.run {
+                            _ = await MainActor.run {
                                 self.pendingdownload.remove(url)
                             }
                         }
@@ -589,7 +589,7 @@ final class fontrepostore: ObservableObject {
     }
 
     func dlfont(_ font: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(font.url) }
+        _ = await MainActor.run { downloading.insert(font.url) }
         defer { Task { @MainActor in downloading.remove(font.url) } }
 
         guard let remoteurl = URL(string: font.url) else { return }
@@ -614,7 +614,7 @@ final class fontrepostore: ObservableObject {
     }
 
     func dlemoji(_ emoji: fontrepofont, repo: fontrepodata) async {
-        await MainActor.run { downloading.insert(emoji.url) }
+        _ = await MainActor.run { downloading.insert(emoji.url) }
         defer { Task { @MainActor in downloading.remove(emoji.url) } }
 
         guard let remoteurl = URL(string: emoji.url) else { return }
