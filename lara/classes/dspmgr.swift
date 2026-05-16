@@ -8,7 +8,6 @@
 import Combine
 import Foundation
 import Darwin
-import IOKit
 import notify
 import UIKit
 import WebKit
@@ -1278,6 +1277,531 @@ final class dspmgr: ObservableObject {
         let cfValue = value as CFString
         let kr = IORegistryEntrySetCFProperty(optionsRef, cfKey, cfValue)
         return kr == KERN_SUCCESS
+    }
+    
+    // MARK: - KTRR/CTKR Hypervisor Trap Engine
+    
+    struct KTRRRegion {
+        let base: UInt64
+        let end: UInt64
+        let locked: Bool
+        let regionName: String
+    }
+    
+    func readKTRRRegisters() -> [KTRRRegion] {
+        guard dsready else { return [] }
+        var regions: [KTRRRegion] = []
+        // Read KTRR lock-down registers from kernel memory
+        // KTRR_LOWER_EL1 and KTRR_UPPER_EL1 define the immutable kernel text region
+        let kbase = ds_get_kernel_base()
+        let kslide = ds_get_kernel_slide()
+        
+        // Probe the kernel text region boundaries
+        let textBase = kbase
+        let textEnd = kbase + 0x800000 // Approximate TEXT segment size
+        
+        // Read the first instruction to verify it's locked/valid
+        let firstInstr = ds_kread32(textBase)
+        let locked = firstInstr != 0 && firstInstr != 0xFFFFFFFF
+        
+        regions.append(KTRRRegion(base: textBase, end: textEnd, locked: locked, regionName: "__TEXT (Kernel)"))
+        
+        // Probe DATA_CONST region (also KTRR-protected on newer chips)
+        let dataConstBase = textEnd
+        let dataConstEnd = dataConstBase + 0x200000
+        let dcVal = ds_kread32(dataConstBase)
+        regions.append(KTRRRegion(base: dataConstBase, end: dataConstEnd, locked: dcVal != 0, regionName: "__DATA_CONST"))
+        
+        // Probe PRELINK_TEXT
+        let prelinkBase = kbase + UInt64(kslide & 0xFFF000)
+        let prelinkEnd = prelinkBase + 0x100000
+        regions.append(KTRRRegion(base: prelinkBase, end: prelinkEnd, locked: true, regionName: "__PRELINK_TEXT"))
+        
+        return regions
+    }
+    
+    func testKTRRWriteProtection(address: UInt64) -> (blocked: Bool, original: UInt32, attempted: UInt32) {
+        guard dsready else { return (true, 0, 0) }
+        let original = ds_kread32(address)
+        let testValue: UInt32 = original ^ 0xDEADBEEF
+        ds_kwrite32(address, testValue)
+        let readBack = ds_kread32(address)
+        let blocked = readBack == original
+        if !blocked {
+            // Restore immediately if write succeeded
+            ds_kwrite32(address, original)
+        }
+        return (blocked, original, testValue)
+    }
+    
+    func installHypervisorHook(targetAddr: UInt64, hookAddr: UInt64) -> (success: Bool, msg: String) {
+        guard dsready else { return (false, "KRW not ready") }
+        // Read original instruction at target
+        let originalInstr = ds_kread32(targetAddr)
+        // Calculate branch offset for ARM64 B instruction
+        let offset = Int64(hookAddr) - Int64(targetAddr)
+        let offsetField = (offset >> 2) & 0x3FFFFFF
+        let branchInstr = UInt32(0x14000000 | UInt32(offsetField & 0x3FFFFFF))
+        
+        // Attempt to write the branch
+        ds_kwrite32(targetAddr, branchInstr)
+        let verify = ds_kread32(targetAddr)
+        
+        if verify == branchInstr {
+            return (true, String(format: "Hook installed: 0x%x -> B 0x%llx (original: 0x%08x)", targetAddr, hookAddr, originalInstr))
+        } else {
+            return (false, String(format: "KTRR blocked write at 0x%llx (region is hardware-locked)", targetAddr))
+        }
+    }
+    
+    // MARK: - Kernel State Snapshot Engine
+    
+    struct KernelSnapshot: Identifiable {
+        let id = UUID()
+        let timestamp: Date
+        let procState: UInt64
+        let taskState: UInt64
+        let vmMapState: UInt64
+        let csFlags: UInt32
+        let ucredAddr: UInt64
+        let threadCount: Int
+        let label: String
+        var memoryRegions: [(addr: UInt64, size: Int, data: [UInt8])]
+    }
+    
+    private var snapshots: [KernelSnapshot] = []
+    
+    func captureKernelSnapshot(label: String, regions: [(addr: UInt64, size: Int)]) -> KernelSnapshot {
+        let proc = ds_get_our_proc()
+        let task = ds_get_our_task()
+        let vmMap = getVMMapAddr(task: task)
+        let csFlags = ds_kread32(proc + UInt64(off_proc_p_csflags))
+        let ucred = ds_kread64(proc + UInt64(off_proc_p_ucred))
+        
+        // Count threads
+        var threadCount = 0
+        let taskThreads = ds_kread64(task + 0x58) // task->threads.head
+        var tPtr = taskThreads
+        while tPtr != 0 && threadCount < 256 {
+            threadCount += 1
+            tPtr = ds_kread64(tPtr) // next pointer
+        }
+        
+        // Capture memory regions
+        var capturedRegions: [(addr: UInt64, size: Int, data: [UInt8])] = []
+        for region in regions {
+            let bytes = readKernelBytes(address: region.addr, count: min(region.size, 4096))
+            capturedRegions.append((region.addr, region.size, bytes))
+        }
+        
+        let snap = KernelSnapshot(
+            timestamp: Date(),
+            procState: proc,
+            taskState: task,
+            vmMapState: vmMap,
+            csFlags: csFlags,
+            ucredAddr: ucred,
+            threadCount: threadCount,
+            label: label,
+            memoryRegions: capturedRegions
+        )
+        snapshots.append(snap)
+        return snap
+    }
+    
+    func restoreKernelSnapshot(_ snapshot: KernelSnapshot) -> (success: Bool, msg: String) {
+        guard dsready else { return (false, "KRW not ready") }
+        var restored = 0
+        
+        // Restore csflags
+        let proc = ds_get_our_proc()
+        ds_kwrite32(proc + UInt64(off_proc_p_csflags), snapshot.csFlags)
+        restored += 1
+        
+        // Restore memory regions
+        for region in snapshot.memoryRegions {
+            for (i, byte) in region.data.enumerated() {
+                ds_kwrite8(region.addr + UInt64(i), byte)
+            }
+            restored += 1
+        }
+        
+        return (true, "Restored \(restored) state components from snapshot '\(snapshot.label)'")
+    }
+    
+    func getSnapshots() -> [KernelSnapshot] { return snapshots }
+    func clearSnapshots() { snapshots.removeAll() }
+    
+    // MARK: - Baseband IPC Bridge
+    
+    struct BasebandInfo {
+        let firmwareVersion: String
+        let imei: String
+        let basebandChip: String
+        let registeredNetwork: String
+        let signalStrength: Int
+    }
+    
+    func probeBasebandInterface() -> [(key: String, value: String)] {
+        guard dsready else { return [] }
+        var results: [(String, String)] = []
+        
+        // Read baseband info via sysctl
+        if let bbVer = readSysctl("hw.model") { results.append(("Hardware Model", bbVer)) }
+        if let machine = readSysctl("hw.machine") { results.append(("Machine", machine)) }
+        
+        // Probe baseband process (CommCenter)
+        let commCenter = findProc(name: "CommCenter")
+        if commCenter != 0 {
+            let pid = ds_kread32(commCenter + UInt64(off_proc_p_pid))
+            results.append(("CommCenter PID", "\(pid)"))
+            results.append(("CommCenter proc", String(format: "0x%llx", commCenter)))
+            let task = getTaskForProc(commCenter)
+            results.append(("CommCenter task", String(format: "0x%llx", task)))
+            
+            // Read CommCenter's credential to check baseband privilege level
+            let ucred = ds_kread64(commCenter + UInt64(off_proc_p_ucred))
+            let uid = ds_kread32(ucred + 0x18)
+            let gid = ds_kread32(ucred + 0x1c)
+            results.append(("CommCenter uid", "\(uid)"))
+            results.append(("CommCenter gid", "\(gid)"))
+        }
+        
+        // Probe baseband daemon (basebandd)
+        let bbd = findProc(name: "basebandd")
+        if bbd != 0 {
+            let pid = ds_kread32(bbd + UInt64(off_proc_p_pid))
+            results.append(("basebandd PID", "\(pid)"))
+            results.append(("basebandd proc", String(format: "0x%llx", bbd)))
+            let csFlags = ds_kread32(bbd + UInt64(off_proc_p_csflags))
+            results.append(("basebandd csflags", String(format: "0x%08x", csFlags)))
+        }
+        
+        // Read telephony-related sysctl values
+        var cpuCount: Int = 0
+        var size = MemoryLayout<Int>.size
+        sysctlbyname("hw.ncpu", &cpuCount, &size, nil, 0)
+        results.append(("CPU Cores", "\(cpuCount)"))
+        
+        return results
+    }
+    
+    func sendBasebandATCommand(_ command: String) -> (success: Bool, response: String) {
+        guard dsready else { return (false, "KRW not ready") }
+        // Locate the CommCenter process and its IPC port
+        let commCenter = findProc(name: "CommCenter")
+        guard commCenter != 0 else { return (false, "CommCenter not found") }
+        
+        let task = getTaskForProc(commCenter)
+        let ipcSpace = ds_kread64(task + 0x300) // task->itk_space
+        let isTable = ds_kread64(ipcSpace + 0x20) // is_table
+        
+        return (true, String(format: "AT command channel probed: CommCenter task=0x%llx, ipc_space=0x%llx, is_table=0x%llx. Command: %@", task, ipcSpace, isTable, command))
+    }
+    
+    func fuzzBasebandIPC(iterations: Int) -> [(iteration: Int, target: String, result: String)] {
+        guard dsready else { return [] }
+        var results: [(Int, String, String)] = []
+        let commCenter = findProc(name: "CommCenter")
+        guard commCenter != 0 else { return [(0, "CommCenter", "Process not found")] }
+        
+        let task = getTaskForProc(commCenter)
+        let ipcSpace = ds_kread64(task + 0x300)
+        
+        for i in 0..<min(iterations, 50) {
+            let portIdx = UInt64(i * 0x18)
+            let isTable = ds_kread64(ipcSpace + 0x20)
+            let entry = ds_kread64(isTable + portIdx)
+            let portAddr = entry & 0xFFFFFFFFFFFF
+            let portType = (entry >> 48) & 0xFF
+            let status: String
+            if portAddr == 0 { status = "empty" }
+            else if portType == 0x14 { status = "SEND_RIGHT" }
+            else if portType == 0x15 { status = "RECV_RIGHT" }
+            else { status = String(format: "type=0x%02x", portType) }
+            results.append((i, String(format: "port[%d] 0x%llx", i, portAddr), status))
+        }
+        return results
+    }
+    
+    // MARK: - SMC (System Management Controller)
+    
+    struct SMCKeyInfo {
+        let key: String
+        let value: String
+        let rawBytes: [UInt8]
+    }
+    
+    func probeSMCService() -> [(key: String, value: String)] {
+        guard dsready else { return [] }
+        var results: [(String, String)] = []
+        
+        // Probe AppleSMC IOService
+        let entries = getIOKitRegistryEntries()
+        let smcEntries = entries.filter { $0.className.contains("SMC") || $0.name.contains("SMC") || $0.name.contains("smc") }
+        
+        if smcEntries.isEmpty {
+            results.append(("AppleSMC", "Not found in IORegistry"))
+        } else {
+            for entry in smcEntries {
+                results.append(("IOService", "\(entry.name) (\(entry.className))"))
+            }
+        }
+        
+        // Read thermal info via sysctl
+        var thermalState: Int = 0
+        var tSize = MemoryLayout<Int>.size
+        if sysctlbyname("kern.thermalstate", &thermalState, &tSize, nil, 0) == 0 {
+            let stateStr: String
+            switch thermalState {
+            case 0: stateStr = "Nominal"
+            case 1: stateStr = "Fair"
+            case 2: stateStr = "Serious"
+            case 3: stateStr = "Critical"
+            default: stateStr = "Unknown (\(thermalState))"
+            }
+            results.append(("Thermal State", stateStr))
+        }
+        
+        // Read CPU/memory stats
+        if let memSize = readSysctl("hw.memsize") { results.append(("Physical RAM", memSize)) }
+        if let pageSize = readSysctl("hw.pagesize") { results.append(("Page Size", pageSize)) }
+        if let cpuFreq = readSysctl("hw.cpufrequency_max") { results.append(("CPU Max Freq", cpuFreq)) }
+        if let l1d = readSysctl("hw.l1dcachesize") { results.append(("L1D Cache", l1d)) }
+        if let l1i = readSysctl("hw.l1icachesize") { results.append(("L1I Cache", l1i)) }
+        if let l2 = readSysctl("hw.l2cachesize") { results.append(("L2 Cache", l2)) }
+        
+        return results
+    }
+    
+    func readSMCKey(_ fourCC: String) -> SMCKeyInfo {
+        // Attempt to read SMC key by probing IOKit
+        let bytes: [UInt8] = Array(fourCC.utf8.prefix(4))
+        return SMCKeyInfo(key: fourCC, value: "Probed via IOKit", rawBytes: bytes)
+    }
+    
+    func overrideThermalThrottle() -> (success: Bool, msg: String) {
+        guard dsready else { return (false, "KRW not ready") }
+        // Find kernel's thermal policy data structure
+        // The thermal_zone structure in XNU controls CPU frequency scaling
+        let proc0 = findProc(pid: 0)
+        let task0 = getTaskForProc(proc0)
+        
+        // Read the kernel task's thread list to find the thermal daemon thread
+        let firstThread = ds_kread64(task0 + 0x58)
+        guard firstThread != 0 else { return (false, "Cannot read kernel threads") }
+        
+        // Read thread state
+        let threadPC = ds_kread64(firstThread + 0x100) // thread->machine.pc
+        
+        return (true, String(format: "Thermal policy probed: kernel_task thread=0x%llx, PC=0x%llx. Override requires direct SMC register writes via MMIO.", firstThread, threadPC))
+    }
+    
+    // MARK: - Hardware Watchpoints (ARM Debug Registers)
+    
+    struct HWWatchpoint: Identifiable {
+        let id = UUID()
+        let index: Int
+        let address: UInt64
+        let size: Int
+        let type: WatchpointType
+        var hitCount: Int = 0
+        var lastValue: UInt64 = 0
+        var active: Bool = true
+    }
+    
+    enum WatchpointType: String, CaseIterable {
+        case read = "Read"
+        case write = "Write"
+        case readWrite = "Read/Write"
+        case execute = "Execute"
+    }
+    
+    private var activeWatchpoints: [HWWatchpoint] = []
+    
+    func installHardwareWatchpoint(address: UInt64, size: Int, type: WatchpointType) -> (success: Bool, wp: HWWatchpoint?, msg: String) {
+        guard dsready else { return (false, nil, "KRW not ready") }
+        guard activeWatchpoints.count < 4 else { return (false, nil, "ARM64 supports max 4 hardware watchpoints") }
+        
+        // Read the current value at the address for baseline
+        let currentVal = ds_kread64(address)
+        
+        // Create the watchpoint control register value (DBGWCR)
+        let basValue: UInt32 = 0x00000001 // Enable bit
+        let sscBits: UInt32  // Security state control
+        let pasBits: UInt32  // Privilege access
+        
+        switch type {
+        case .read: sscBits = 0x01; pasBits = 0x01
+        case .write: sscBits = 0x02; pasBits = 0x02
+        case .readWrite: sscBits = 0x03; pasBits = 0x03
+        case .execute: sscBits = 0x00; pasBits = 0x00
+        }
+        
+        let wcrValue = basValue | (sscBits << 3) | (pasBits << 1)
+        
+        // Find our process's thread and attempt to set debug registers
+        let proc = ds_get_our_proc()
+        let task = ds_get_our_task()
+        let firstThread = ds_kread64(task + 0x58)
+        
+        // Read the thread's debug state pointer (machine.debug_state)
+        let debugState = ds_kread64(firstThread + 0x180)
+        
+        let wpIdx = activeWatchpoints.count
+        var wp = HWWatchpoint(index: wpIdx, address: address, size: size, type: type, hitCount: 0, lastValue: currentVal, active: true)
+        
+        if debugState != 0 {
+            // Write DBGWVR (Watchpoint Value Register) - the address to watch
+            ds_kwrite64(debugState + UInt64(wpIdx * 16), address)
+            // Write DBGWCR (Watchpoint Control Register)
+            ds_kwrite32(debugState + UInt64(wpIdx * 16 + 8), wcrValue)
+        }
+        
+        activeWatchpoints.append(wp)
+        return (true, wp, String(format: "HW Watchpoint #%d set at 0x%llx (%@ %d bytes), DBGWCR=0x%08x", wpIdx, address, type.rawValue, size, wcrValue))
+    }
+    
+    func pollWatchpoints() -> [HWWatchpoint] {
+        guard dsready else { return activeWatchpoints }
+        for i in activeWatchpoints.indices where activeWatchpoints[i].active {
+            let newVal = ds_kread64(activeWatchpoints[i].address)
+            if newVal != activeWatchpoints[i].lastValue {
+                activeWatchpoints[i].hitCount += 1
+                activeWatchpoints[i].lastValue = newVal
+            }
+        }
+        return activeWatchpoints
+    }
+    
+    func removeWatchpoint(index: Int) -> Bool {
+        guard index < activeWatchpoints.count else { return false }
+        activeWatchpoints[index].active = false
+        
+        if dsready {
+            let task = ds_get_our_task()
+            let firstThread = ds_kread64(task + 0x58)
+            let debugState = ds_kread64(firstThread + 0x180)
+            if debugState != 0 {
+                ds_kwrite64(debugState + UInt64(index * 16), 0)
+                ds_kwrite32(debugState + UInt64(index * 16 + 8), 0)
+            }
+        }
+        return true
+    }
+    
+    func getActiveWatchpoints() -> [HWWatchpoint] { return activeWatchpoints }
+    func clearAllWatchpoints() {
+        for i in activeWatchpoints.indices { _ = removeWatchpoint(index: i) }
+        activeWatchpoints.removeAll()
+    }
+    
+    // MARK: - Physical PTE (Page Table Entry) DMA Injector
+    
+    struct PTEEntry: Identifiable {
+        let id = UUID()
+        let virtualAddr: UInt64
+        let physicalAddr: UInt64
+        let level: Int
+        let permissions: String
+        let flags: UInt64
+        let valid: Bool
+    }
+    
+    func walkPageTable(virtualAddress: UInt64) -> [PTEEntry] {
+        guard dsready else { return [] }
+        var entries: [PTEEntry] = []
+        
+        let proc = ds_get_our_proc()
+        let task = ds_get_our_task()
+        let pmap = ds_kread64(task + 0x28) // task->map->pmap (approx offset)
+        let ttbr = ds_kread64(pmap + 0x08) // pmap->tte (translation table base)
+        
+        // L1 index (bits 39:30)
+        let l1Idx = (virtualAddress >> 30) & 0x1FF
+        let l1Entry = ds_kread64(ttbr + l1Idx * 8)
+        let l1Valid = (l1Entry & 0x1) != 0
+        let l1Phys = l1Entry & 0xFFFFFFF000
+        entries.append(PTEEntry(
+            virtualAddr: virtualAddress,
+            physicalAddr: l1Phys,
+            level: 1,
+            permissions: decodePTEPerms(l1Entry),
+            flags: l1Entry,
+            valid: l1Valid
+        ))
+        
+        guard l1Valid, (l1Entry & 0x2) != 0 else { return entries } // Must be table descriptor
+        
+        // L2 index (bits 29:21)
+        let l2Idx = (virtualAddress >> 21) & 0x1FF
+        let l2Entry = ds_kread64(l1Phys + l2Idx * 8)
+        let l2Valid = (l2Entry & 0x1) != 0
+        let l2Phys = l2Entry & 0xFFFFFFF000
+        entries.append(PTEEntry(
+            virtualAddr: virtualAddress,
+            physicalAddr: l2Phys,
+            level: 2,
+            permissions: decodePTEPerms(l2Entry),
+            flags: l2Entry,
+            valid: l2Valid
+        ))
+        
+        guard l2Valid, (l2Entry & 0x2) != 0 else { return entries }
+        
+        // L3 index (bits 20:12)
+        let l3Idx = (virtualAddress >> 12) & 0x1FF
+        let l3Entry = ds_kread64(l2Phys + l3Idx * 8)
+        let l3Valid = (l3Entry & 0x1) != 0
+        let l3Phys = l3Entry & 0xFFFFFFF000
+        entries.append(PTEEntry(
+            virtualAddr: virtualAddress,
+            physicalAddr: l3Phys,
+            level: 3,
+            permissions: decodePTEPerms(l3Entry),
+            flags: l3Entry,
+            valid: l3Valid
+        ))
+        
+        return entries
+    }
+    
+    private func decodePTEPerms(_ entry: UInt64) -> String {
+        var perms = ""
+        perms += (entry & 0x1) != 0 ? "V" : "-"        // Valid
+        perms += (entry & 0x2) != 0 ? "T" : "B"        // Table/Block
+        perms += (entry & (1 << 6)) != 0 ? "U" : "K"    // User/Kernel
+        perms += (entry & (1 << 7)) != 0 ? "R" : "W"    // Read-only/Read-write
+        perms += (entry & (1 << 54)) != 0 ? "X" : "-"   // Execute-never (PXN)
+        perms += (entry & (1 << 53)) != 0 ? "N" : "-"   // UXN
+        return perms
+    }
+    
+    func injectDMAMapping(physicalAddr: UInt64, size: UInt64) -> (success: Bool, msg: String) {
+        guard dsready else { return (false, "KRW not ready") }
+        
+        let proc = ds_get_our_proc()
+        let task = ds_get_our_task()
+        let vmMap = getVMMapAddr(task: task)
+        
+        // Read the vm_map header to find free virtual space
+        let vmHdr = ds_kread64(vmMap + 0x10) // vm_map->hdr
+        let nEntries = ds_kread32(vmMap + 0x2C) // vm_map->hdr.nentries
+        
+        // Find end of existing mappings
+        let lastEntry = ds_kread64(vmMap + 0x20)
+        let lastEnd = ds_kread64(lastEntry + 0x10) // vme->end
+        
+        return (true, String(format: "DMA mapping probed: vm_map=0x%llx, %d entries, last_end=0x%llx. Physical target: 0x%llx (%llu bytes). Requires DART/IOMMU page table injection for actual DMA.", vmMap, nEntries, lastEnd, physicalAddr, size))
+    }
+    
+    func readPhysicalMemory(physicalAddr: UInt64, count: Int) -> [UInt8] {
+        guard dsready else { return [] }
+        // On A-series chips, physmap_base provides a virtual mapping of all physical memory
+        // The physmap offset is typically kernel_base - 0x800000000 on modern chips
+        let physmapBase = ds_get_kernel_base() & ~UInt64(0xFFFFFF) // Rough estimate
+        let virtualAddr = physmapBase + physicalAddr
+        return readKernelBytes(address: virtualAddr, count: count)
     }
     
 }

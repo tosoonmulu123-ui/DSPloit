@@ -5,6 +5,7 @@
 
 @import UIKit;
 #import <Foundation/Foundation.h>
+#import <IOKit/IOKitLib.h>
 
 #import "darksword.h"
 #import "offsets.h"
