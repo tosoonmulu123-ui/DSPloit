@@ -111,8 +111,10 @@ class ROPChainBuilderEngine: ObservableObject {
         let fileSize = fh.seekToEndOfFile()
         guard fileSize > 100 else { return [] }
         
-        // Skip first 64 bytes (potential IMG4 header), read 64KB
-        let seekTo = min(UInt64(64) + startOffset, fileSize - 64)
+        // Code section starts at 0xe00000 in kernelcache fileset
+        // (discovered via analyze_kernelcache.py)
+        let codeOffset: UInt64 = 0xe00000
+        let seekTo = min(codeOffset + startOffset, fileSize - 64)
         fh.seek(toFileOffset: seekTo)
         let chunk = fh.readData(ofLength: min(65536, Int(fileSize - seekTo)))
         guard chunk.count >= 12 else { return [] }
