@@ -25,7 +25,7 @@ struct TweaksView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Kernel Exploit Suite")
                                     .font(.subheadline.weight(.semibold))
-                                Text("65+ kernel-level exploit tools")
+                                Text("71+ bleeding-edge kernel exploit tools")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

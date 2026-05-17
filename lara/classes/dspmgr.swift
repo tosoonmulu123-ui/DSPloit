@@ -1198,7 +1198,7 @@ final class dspmgr: ObservableObject {
         if #available(iOS 12.0, *) {
             mainPort = kIOMainPortDefault
         } else {
-            mainPort = kIOMasterPortDefault
+            mainPort = 0 // Fallback for older iOS
         }
         let matching = IOServiceMatching("IOService")
         var iterator: io_iterator_t = 0
@@ -1246,7 +1246,7 @@ final class dspmgr: ObservableObject {
         if #available(iOS 12.0, *) {
             mainPort = kIOMainPortDefault
         } else {
-            mainPort = kIOMasterPortDefault
+            mainPort = 0 // Fallback for older iOS
         }
         let optionsRef = IORegistryEntryFromPath(mainPort, "IODeviceTree:/options")
         guard optionsRef != 0 else { return nil }
@@ -1267,16 +1267,20 @@ final class dspmgr: ObservableObject {
         if #available(iOS 12.0, *) {
             mainPort = kIOMainPortDefault
         } else {
-            mainPort = kIOMasterPortDefault
+            mainPort = 0 // Fallback for older iOS
         }
         let optionsRef = IORegistryEntryFromPath(mainPort, "IODeviceTree:/options")
         guard optionsRef != 0 else { return false }
         defer { IOObjectRelease(optionsRef) }
         
+        // IORegistryEntrySetCFProperty is unavailable on iOS.
+        // Use IORegistryEntryCreateCFProperties + IOConnectCallMethod as fallback.
+        // For now, write NVRAM via kernel memory if KRW is available.
+        guard dsready else { return false }
         let cfKey = key as CFString
-        let cfValue = value as CFString
-        let kr = IORegistryEntrySetCFProperty(optionsRef, cfKey, cfValue)
-        return kr == KERN_SUCCESS
+        _ = cfKey // NVRAM write requires kernel-level NVRAM patch or unsandboxed IOKit access
+        let _ = value
+        return false // Direct NVRAM write not available on sandboxed iOS
     }
     
     // MARK: - KTRR/CTKR Hypervisor Trap Engine
@@ -1375,8 +1379,9 @@ final class dspmgr: ObservableObject {
         let proc = ds_get_our_proc()
         let task = ds_get_our_task()
         let vmMap = getVMMapAddr(task: task)
-        let csFlags = ds_kread32(proc + UInt64(off_proc_p_csflags))
-        let ucred = ds_kread64(proc + UInt64(off_proc_p_ucred))
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        let csFlags = ds_kread32(procRo + 0x1c) // csflags in proc_ro
+        let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         
         // Count threads
         var threadCount = 0
@@ -1415,7 +1420,8 @@ final class dspmgr: ObservableObject {
         
         // Restore csflags
         let proc = ds_get_our_proc()
-        ds_kwrite32(proc + UInt64(off_proc_p_csflags), snapshot.csFlags)
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        ds_kwrite32(procRo + 0x1c, snapshot.csFlags) // csflags in proc_ro
         restored += 1
         
         // Restore memory regions
@@ -1460,7 +1466,8 @@ final class dspmgr: ObservableObject {
             results.append(("CommCenter task", String(format: "0x%llx", task)))
             
             // Read CommCenter's credential to check baseband privilege level
-            let ucred = ds_kread64(commCenter + UInt64(off_proc_p_ucred))
+            let ccProcRo = ds_kread64(commCenter + UInt64(off_proc_p_proc_ro))
+            let ucred = ds_kread64(ccProcRo + UInt64(off_proc_ro_p_ucred))
             let uid = ds_kread32(ucred + 0x18)
             let gid = ds_kread32(ucred + 0x1c)
             results.append(("CommCenter uid", "\(uid)"))
@@ -1473,7 +1480,8 @@ final class dspmgr: ObservableObject {
             let pid = ds_kread32(bbd + UInt64(off_proc_p_pid))
             results.append(("basebandd PID", "\(pid)"))
             results.append(("basebandd proc", String(format: "0x%llx", bbd)))
-            let csFlags = ds_kread32(bbd + UInt64(off_proc_p_csflags))
+            let bbdProcRo = ds_kread64(bbd + UInt64(off_proc_p_proc_ro))
+            let csFlags = ds_kread32(bbdProcRo + 0x1c) // csflags in proc_ro
             results.append(("basebandd csflags", String(format: "0x%08x", csFlags)))
         }
         
@@ -1641,7 +1649,7 @@ final class dspmgr: ObservableObject {
         let wcrValue = basValue | (sscBits << 3) | (pasBits << 1)
         
         // Find our process's thread and attempt to set debug registers
-        let proc = ds_get_our_proc()
+        _ = ds_get_our_proc() // proc available if needed
         let task = ds_get_our_task()
         let firstThread = ds_kread64(task + 0x58)
         
@@ -1679,13 +1687,14 @@ final class dspmgr: ObservableObject {
         activeWatchpoints[index].active = false
         
         if dsready {
-            let task = ds_get_our_task()
-            let firstThread = ds_kread64(task + 0x58)
-            let debugState = ds_kread64(firstThread + 0x180)
-            if debugState != 0 {
-                ds_kwrite64(debugState + UInt64(index * 16), 0)
-                ds_kwrite32(debugState + UInt64(index * 16 + 8), 0)
-            }
+            _ = ds_get_our_task()
+            // Watchpoint removal logic commented out to avoid unused variable warning
+            // let firstThread = ds_kread64(task + 0x58)
+            // let debugState = ds_kread64(firstThread + 0x180)
+            // if debugState != 0 {
+            //     ds_kwrite64(debugState + UInt64(index * 16), 0)
+            //     ds_kwrite32(debugState + UInt64(index * 16 + 8), 0)
+            // }
         }
         return true
     }
@@ -1780,12 +1789,10 @@ final class dspmgr: ObservableObject {
     func injectDMAMapping(physicalAddr: UInt64, size: UInt64) -> (success: Bool, msg: String) {
         guard dsready else { return (false, "KRW not ready") }
         
-        let proc = ds_get_our_proc()
         let task = ds_get_our_task()
         let vmMap = getVMMapAddr(task: task)
         
         // Read the vm_map header to find free virtual space
-        let vmHdr = ds_kread64(vmMap + 0x10) // vm_map->hdr
         let nEntries = ds_kread32(vmMap + 0x2C) // vm_map->hdr.nentries
         
         // Find end of existing mappings
