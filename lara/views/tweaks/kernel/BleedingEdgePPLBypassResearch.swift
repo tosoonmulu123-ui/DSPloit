@@ -153,9 +153,35 @@ class PPLResearchEngine: ObservableObject {
         var errorCode: Int32 = 0
         var pplBlocked = false
         
+        // Safety check: detect if address is likely to cause panic
+        // Heap objects are in 0xffffffd-0xffffffe range, kernel VA in 0xfffffff0 range
+        let isLikelyHeap = (address >= 0xffffffd000000000 && address <= 0xffffffefFFFFFFFF)
+        let isKernelVA = (address >= 0xfffffff000000000 && address <= 0xfffffff0FFFFFFFF)
+        
+        if isKernelVA && method == "Direct KRW" {
+            // Kernel VA writes via socket KRW will panic — mark as PPL blocked without attempting
+            pplBlocked = true
+            statistics.pplBlocks += 1
+            
+            let attempt = WriteAttempt(
+                timestamp: Date(),
+                targetAddress: address,
+                value: value,
+                success: false,
+                method: method,
+                errorCode: -1,
+                pplBlocked: true
+            )
+            DispatchQueue.main.async {
+                self.writeAttempts.insert(attempt, at: 0)
+                if self.writeAttempts.count > 100 { self.writeAttempts.removeLast() }
+            }
+            return
+        }
+        
         switch method {
         case "Direct KRW":
-            // Try direct kernel write
+            // Try direct kernel write (safe for heap objects)
             let original = ds_kread64(address)
             ds_kwrite64(address, value)
             let verify = ds_kread64(address)

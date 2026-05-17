@@ -13,6 +13,7 @@ import Combine
 
 class SandboxEscapeEngine: ObservableObject {
     static let shared = SandboxEscapeEngine()
+    private let mgr = dspmgr.shared
     
     @Published var escapeActive = false
     @Published var containerAccess = false
@@ -48,9 +49,12 @@ class SandboxEscapeEngine: ObservableObject {
     // MARK: - Core Functions
     
     func readSandboxState(pid: pid_t) -> SandboxState {
+        guard dspmgr.shared.dsready else {
+            return SandboxState(sandboxed: true, containerPath: NSHomeDirectory(), sandboxLabel: 0, sandboxSlot: 0, profileName: "kernel not ready", restrictions: [])
+        }
         let proc = procbypid(pid)
         guard proc != 0 else {
-            return SandboxState(sandboxed: true, containerPath: "", sandboxLabel: 0, sandboxSlot: 0, profileName: "unknown", restrictions: [])
+            return SandboxState(sandboxed: true, containerPath: "", sandboxLabel: 0, sandboxSlot: 0, profileName: "proc not found", restrictions: [])
         }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))

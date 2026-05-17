@@ -84,6 +84,104 @@ class ROPChainBuilderEngine: ObservableObject {
         return gadgets
     }
     
+    // MARK: - File-Based Gadget Scanner (Safe - No Panic)
+    
+    func findGadgetsFromFile(startOffset: UInt64, size: UInt64) -> [ROPGadget] {
+        // Find kernelcache file in Documents
+        let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
+        let kcPath = (docs as NSString).appendingPathComponent("kernelcache")
+        
+        guard FileManager.default.fileExists(atPath: kcPath),
+              let fileHandle = FileHandle(forReadingAtPath: kcPath) else {
+            return []
+        }
+        
+        defer { fileHandle.closeFile() }
+        
+        // Seek to offset (use startOffset as file offset into __TEXT segment)
+        let fileOffset = min(startOffset, UInt64(fileHandle.seekToEndOfFile()))
+        fileHandle.seek(toFileOffset: fileOffset)
+        
+        // Read chunk
+        let readSize = min(Int(size), 1024 * 1024) // Max 1MB at a time
+        let data = fileHandle.readData(ofLength: readSize)
+        guard data.count >= 4 else { return [] }
+        
+        var gadgets: [ROPGadget] = []
+        let kernelBase = dspmgr.shared.kernbase
+        
+        data.withUnsafeBytes { buffer in
+            let ptr = buffer.bindMemory(to: UInt32.self)
+            
+            for i in 0..<(data.count / 4) {
+                let instr = ptr[i]
+                let virtualAddr = kernelBase + startOffset + UInt64(i * 4)
+                
+                // Find RET instructions
+                if instr == 0xD65F03C0 && i >= 2 {
+                    // Analyze preceding instructions
+                    let prev1 = ptr[i - 1]
+                    let prev2 = ptr[i - 2]
+                    
+                    let disasm = ARM64Disassembler.shared
+                    let instr1 = disasm.disassemble(opcode: prev2, address: virtualAddr - 8)
+                    let instr2 = disasm.disassemble(opcode: prev1, address: virtualAddr - 4)
+                    
+                    let instrStr = "\(instr1.mnemonic) \(instr1.operands) ; \(instr2.mnemonic) \(instr2.operands) ; RET"
+                    
+                    var type: GadgetType = .ret
+                    var regs: [String] = []
+                    
+                    if instr1.isLoad || instr2.isLoad {
+                        type = .loadRegister
+                        if instr1.operands.contains("X0") || instr2.operands.contains("X0") { regs.append("X0") }
+                        if instr1.operands.contains("X1") || instr2.operands.contains("X1") { regs.append("X1") }
+                    } else if instr1.isStore || instr2.isStore {
+                        type = .storeRegister
+                    } else if instr1.mnemonic == "ADD" || instr1.mnemonic == "SUB" || instr2.mnemonic == "ADD" || instr2.mnemonic == "SUB" {
+                        type = .arithmetic
+                    } else if instr1.mnemonic == "MOV" || instr2.mnemonic == "MOV" {
+                        type = .loadRegister
+                    }
+                    
+                    if instr1.operands.contains("SP") || instr2.operands.contains("SP") {
+                        type = .stackPivot
+                    }
+                    
+                    gadgets.append(ROPGadget(
+                        address: virtualAddr - 8,
+                        instructions: instrStr,
+                        type: type,
+                        registers: regs,
+                        stackOffset: 0
+                    ))
+                }
+                
+                // Find BR Xn (indirect branch)
+                if (instr & 0xFFFFFC1F) == 0xD61F0000 && i >= 1 {
+                    let rn = (instr >> 5) & 0x1F
+                    let prev = ptr[i - 1]
+                    let disasm = ARM64Disassembler.shared
+                    let prevInstr = disasm.disassemble(opcode: prev, address: virtualAddr - 4)
+                    
+                    let instrStr = "\(prevInstr.mnemonic) \(prevInstr.operands) ; BR X\(rn)"
+                    
+                    gadgets.append(ROPGadget(
+                        address: virtualAddr - 4,
+                        instructions: instrStr,
+                        type: .controlFlow,
+                        registers: ["X\(rn)"],
+                        stackOffset: 0
+                    ))
+                }
+                
+                if gadgets.count >= 500 { break }
+            }
+        }
+        
+        return gadgets
+    }
+    
     private func analyzeGadgetBeforeRet(retAddr: UInt64) -> ROPGadget? {
         // Scan up to 8 instructions before RET
         var instructions: [String] = []
@@ -456,10 +554,21 @@ struct BleedingEdgeROPChainBuilderView: View {
         
         isScanning = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let gadgets = engine.findGadgets(startAddr: addr, size: size)
-            DispatchQueue.main.async {
-                engine.gadgetsFound = gadgets
-                isScanning = false
+            // Try to scan from kernelcache FILE first (safe, no panic)
+            let gadgets = engine.findGadgetsFromFile(startOffset: addr, size: size)
+            
+            if gadgets.isEmpty {
+                // Fallback: scan from live kernel memory (only heap-safe addresses)
+                let liveGadgets = engine.findGadgets(startAddr: addr, size: size)
+                DispatchQueue.main.async {
+                    engine.gadgetsFound = liveGadgets
+                    isScanning = false
+                }
+            } else {
+                DispatchQueue.main.async {
+                    engine.gadgetsFound = gadgets
+                    isScanning = false
+                }
             }
         }
     }
