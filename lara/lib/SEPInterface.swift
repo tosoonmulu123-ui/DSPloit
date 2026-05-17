@@ -320,7 +320,7 @@ class SEPMemoryAccess {
         // Find the shared memory region used for AP-SEP communication
         // This is typically allocated by IOKit
         
-        guard let iokit = KernelPatchfinder.shared.findSymbol("_IOKit") else {
+        guard KernelPatchfinder.shared.findSymbol("_IOKit") != nil else {
             return nil
         }
         

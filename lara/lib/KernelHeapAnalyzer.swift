@@ -204,7 +204,7 @@ class KernelHeapAnalyzer: ObservableObject {
                 autoreleasepool {
                     // Use mach_msg to spray kernel heap
                     var msg = mach_msg_header_t()
-                    msg.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MAKE_SEND, 0)
+                    msg.msgh_bits = UInt32(MACH_MSG_TYPE_MAKE_SEND) & 0x1F
                     msg.msgh_size = mach_msg_size_t(MemoryLayout<mach_msg_header_t>.size)
                     msg.msgh_remote_port = mach_task_self_
                     msg.msgh_local_port = MACH_PORT_NULL

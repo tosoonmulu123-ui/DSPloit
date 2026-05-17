@@ -122,24 +122,24 @@ class MachPortSprayEngine: ObservableObject {
                 let type = types[i]
                 
                 let portType: MachPortInfo.PortType
-                if type & UInt32(MACH_PORT_TYPE_RECEIVE) != 0 {
+                if type & 0x00000001 != 0 {
                     portType = .receive
-                } else if type & UInt32(MACH_PORT_TYPE_SEND) != 0 {
+                } else if type & 0x00010000 != 0 {
                     portType = .send
-                } else if type & UInt32(MACH_PORT_TYPE_SEND_ONCE) != 0 {
+                } else if type & 0x00020000 != 0 {
                     portType = .sendOnce
-                } else if type & UInt32(MACH_PORT_TYPE_PORT_SET) != 0 {
+                } else if type & 0x00040000 != 0 {
                     portType = .portSet
-                } else if type & UInt32(MACH_PORT_TYPE_DEAD_NAME) != 0 {
+                } else if type & 0x00100000 != 0 {
                     portType = .dead
                 } else {
                     portType = .dead
                 }
                 
                 let rights = MachPortInfo.PortRights(
-                    send: type & UInt32(MACH_PORT_TYPE_SEND) != 0,
-                    receive: type & UInt32(MACH_PORT_TYPE_RECEIVE) != 0,
-                    sendOnce: type & UInt32(MACH_PORT_TYPE_SEND_ONCE) != 0
+                    send: type & 0x00010000 != 0,
+                    receive: type & 0x00000001 != 0,
+                    sendOnce: type & 0x00020000 != 0
                 )
                 
                 let portInfo = MachPortInfo(
@@ -277,7 +277,7 @@ class MachPortSprayEngine: ObservableObject {
     
     func destroySprayedPorts() {
         for port in allocatedPorts {
-            mach_port_destroy(mach_task_self_, port)
+            mach_port_deallocate(mach_task_self_, port)
         }
         allocatedPorts.removeAll()
     }

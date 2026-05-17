@@ -117,7 +117,7 @@ class BootChainAnalyzer {
     }
     
     private func parseDeviceTreeProperties(_ addr: UInt64) -> [String: String] {
-        var properties: [String: String] = [:]
+        let properties: [String: String] = [:]
         
         // Parse device tree structure
         // This is a simplified implementation
@@ -234,9 +234,7 @@ class IOMMUHelper {
         // Setup DMA to access arbitrary physical memory
         // This bypasses virtual memory protections
         
-        guard let dartBase = findDARTBase() else { return false }
-        
-        // Find unused DART entry
+        guard findDARTBase() != nil else { return false }
         guard let freeVirtAddr = findFreeDARTEntry() else { return false }
         
         // Map target physical address

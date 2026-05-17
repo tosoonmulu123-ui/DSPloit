@@ -377,7 +377,9 @@ class EntitlementHelper {
     
     static func injectEntitlement(procAddr: UInt64, key: String, value: OSObject) -> Bool {
         // Find proc->p_ucred
-        let ucredAddr = ds_kread64(procAddr + UInt64(off_proc_ucred))
+        let procRo = ds_kread64(procAddr + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { return false }
+        let ucredAddr = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         guard ucredAddr != 0 else { return false }
         
         // Find ucred->cr_label

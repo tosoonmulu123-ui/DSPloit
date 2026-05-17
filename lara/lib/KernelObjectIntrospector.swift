@@ -212,7 +212,7 @@ class KernelObjectIntrospector: ObservableObject {
         // Read first few qwords for heuristic analysis
         let q0 = ds_kread64(address)
         let q1 = ds_kread64(address + 8)
-        let q2 = ds_kread64(address + 16)
+        let _ = ds_kread64(address + 16)
         
         // Check if it's a proc (has linked list pointers and PID)
         if isKernelPointer(q0) && isKernelPointer(q1) {

@@ -1657,7 +1657,7 @@ final class dspmgr: ObservableObject {
         let debugState = ds_kread64(firstThread + 0x180)
         
         let wpIdx = activeWatchpoints.count
-        var wp = HWWatchpoint(index: wpIdx, address: address, size: size, type: type, hitCount: 0, lastValue: currentVal, active: true)
+        let wp = HWWatchpoint(index: wpIdx, address: address, size: size, type: type, hitCount: 0, lastValue: currentVal, active: true)
         
         if debugState != 0 {
             // Write DBGWVR (Watchpoint Value Register) - the address to watch
@@ -1721,7 +1721,7 @@ final class dspmgr: ObservableObject {
         guard dsready else { return [] }
         var entries: [PTEEntry] = []
         
-        let proc = ds_get_our_proc()
+        let _ = ds_get_our_proc()
         let task = ds_get_our_task()
         let pmap = ds_kread64(task + 0x28) // task->map->pmap (approx offset)
         let ttbr = ds_kread64(pmap + 0x08) // pmap->tte (translation table base)
