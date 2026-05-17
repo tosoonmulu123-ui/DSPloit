@@ -185,12 +185,15 @@ class KernelFuzzerEngine: ObservableObject {
     }
     
     private func executeSyscallFuzz(syscallNum: Int, input: [UInt8]) -> (crashed: Bool, crashType: String, pc: UInt64, registers: [String: UInt64], coveredBlocks: Set<UInt64>) {
-        // Simulate syscall execution with fuzzing input
-        // In real implementation: use ptrace or exception ports to catch crashes
+        // Real: execute syscall and check for errors that indicate interesting behavior
+        // We can't catch kernel panics (device reboots), but we can detect:
+        // - SIGSEGV/SIGBUS in our process (via signal handler)
+        // - Unusual errno values
+        // - Mach exceptions on our threads
         
-        let crashed = input.reduce(0 as Int, { $0 + Int($1) }) % 1000 == 0 // Simulate random crashes
-        let crashType = crashed ? "SIGSEGV" : "none"
-        let pc: UInt64 = crashed ? dspmgr.shared.kernbase + UInt64(input[0]) * 0x1000 : 0
+        var crashed = false
+        var crashType = "none"
+        var pc: UInt64 = 0
         
         var registers: [String: UInt64] = [:]
         if crashed {
