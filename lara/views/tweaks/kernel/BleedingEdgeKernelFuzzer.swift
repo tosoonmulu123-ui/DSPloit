@@ -113,11 +113,12 @@ class KernelFuzzerEngine: ObservableObject {
             msg.msgh_remote_port = mach_port_t(MACH_PORT_NULL)
             msg.msgh_local_port = mach_port_t(MACH_PORT_NULL)
             
-            let kr = withUnsafePointer(to: &msg) { ptr in
+            let msgSize = msg.msgh_size
+            let kr = withUnsafeMutablePointer(to: &msg) { ptr in
                 mach_msg(
-                    UnsafeMutablePointer(mutating: ptr),
+                    ptr,
                     MACH_SEND_MSG,
-                    msg.msgh_size,
+                    msgSize,
                     0,
                     mach_port_t(MACH_PORT_NULL),
                     MACH_MSG_TIMEOUT_NONE,
@@ -187,7 +188,7 @@ class KernelFuzzerEngine: ObservableObject {
         // Simulate syscall execution with fuzzing input
         // In real implementation: use ptrace or exception ports to catch crashes
         
-        let crashed = input.reduce(0, +) % 1000 == 0 // Simulate random crashes
+        let crashed = input.reduce(0 as Int, { $0 + Int($1) }) % 1000 == 0 // Simulate random crashes
         let crashType = crashed ? "SIGSEGV" : "none"
         let pc: UInt64 = crashed ? dspmgr.shared.kernbase + UInt64(input[0]) * 0x1000 : 0
         

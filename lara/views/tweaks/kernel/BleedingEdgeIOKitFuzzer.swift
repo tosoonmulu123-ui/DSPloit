@@ -308,6 +308,7 @@ class IOKitFuzzerEngine: ObservableObject {
     
     private func callExternalMethod(_ connect: io_connect_t, selector: UInt32, input: [UInt8]) -> FuzzOutcome {
         var inputData = input
+        let inputCount = inputData.count
         var outputSize: size_t = 4096
         var output = [UInt8](repeating: 0, count: Int(outputSize))
         
@@ -317,7 +318,7 @@ class IOKitFuzzerEngine: ObservableObject {
                     connect,
                     selector,
                     inputPtr.baseAddress,
-                    inputData.count,
+                    inputCount,
                     outputPtr.baseAddress,
                     &outputSize
                 )
