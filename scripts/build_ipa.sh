@@ -18,7 +18,17 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
   archive \
-  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | xcpretty
+  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee /tmp/xcodebuild.log | xcpretty
+
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+  echo ""
+  echo "=== FULL BUILD LOG (errors) ==="
+  grep -A2 "error:" /tmp/xcodebuild.log | tail -100
+  echo ""
+  echo "=== WARNINGS ==="
+  grep "warning:" /tmp/xcodebuild.log | tail -20
+  exit 65
+fi
 
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
 if [ ! -d "$APP_PATH" ]; then
