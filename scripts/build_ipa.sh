@@ -7,6 +7,7 @@ mkdir -p build
 echo "Build Started!"
 echo
 
+set +eo pipefail
 xcodebuild \
   -project lara.xcodeproj \
   -scheme lara \
@@ -18,17 +19,24 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   CODE_SIGN_ENTITLEMENTS="Config/lara.entitlements" \
   archive \
-  -archivePath "$PWD/build/lara.xcarchive" 2>&1 | tee /tmp/xcodebuild.log | xcpretty
+  -archivePath "$PWD/build/lara.xcarchive" > /tmp/xcodebuild_full.log 2>&1
+BUILD_EXIT=$?
+set -eo pipefail
 
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
+if [ $BUILD_EXIT -ne 0 ]; then
   echo ""
-  echo "=== FULL BUILD LOG (errors) ==="
-  grep -A2 "error:" /tmp/xcodebuild.log | tail -100
+  echo "=== BUILD FAILED (exit code $BUILD_EXIT) ==="
   echo ""
-  echo "=== WARNINGS ==="
-  grep "warning:" /tmp/xcodebuild.log | tail -20
-  exit 65
+  echo "=== ERRORS ==="
+  grep -i "error:" /tmp/xcodebuild_full.log | grep -v "error:" | head -50 || true
+  grep " error:" /tmp/xcodebuild_full.log | head -50 || true
+  echo ""
+  echo "=== LAST 50 LINES ==="
+  tail -50 /tmp/xcodebuild_full.log
+  exit $BUILD_EXIT
 fi
+
+cat /tmp/xcodebuild_full.log | xcpretty || true
 
 APP_PATH="$PWD/build/lara.xcarchive/Products/Applications/lara.app"
 if [ ! -d "$APP_PATH" ]; then
