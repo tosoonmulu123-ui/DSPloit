@@ -17,69 +17,111 @@ import SwiftUI
 
 struct BleedingEdgeKernelPanicAnalyzerView: View {
     @ObservedObject private var mgr = dspmgr.shared
-    @State private var panicLog = ""
+    @State private var panicLogs: [(filename: String, content: String, date: Date)] = []
+    @State private var selectedLog: String = ""
     @State private var analysis: [(key: String, value: String)] = []
     @State private var crashPatterns: [String] = []
     @State private var exploitSignatures: [String] = []
     @State private var resultMsg = ""
-    @State private var selectedMethod = 0
+    @State private var isLoading = false
     
-    let methods = ["Parse Log", "Crash Pattern", "Exploit Sig", "Stack Trace", "State Recon"]
+    private let panicLogPaths = [
+        "/var/mobile/Library/Logs/CrashReporter/",
+        "/var/logs/",
+        "/private/var/mobile/Library/Logs/CrashReporter/",
+        "/var/db/diagnostics/",
+    ]
     
     var body: some View {
         List {
-            Section(header: HeaderLabel(text: "🔥 Analysis Method", icon: "bolt.shield.fill")) {
-                Picker("Method", selection: $selectedMethod) {
-                    ForEach(0..<methods.count, id: \.self) { Text(methods[$0]).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            }
-            
-            Section(header: HeaderLabel(text: methods[selectedMethod], icon: "waveform.path.ecg")) {
-                if selectedMethod == 0 {
-                    Button("📄 Load Panic Log") {
-                        panicLog = loadPanicLog()
-                        resultMsg = "Loaded \(panicLog.count) bytes"
+            // Status
+            Section(header: HeaderLabel(text: "Panic Analyzer", icon: "bolt.shield.fill")) {
+                HStack {
+                    Image(systemName: mgr.sbxready ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(mgr.sbxready ? .green : .red)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(mgr.sbxready ? "Ready — Filesystem Access" : "Sandbox Escape Required")
+                            .font(.headline)
+                        Text(mgr.sbxready ? "Can read real panic logs from device" : "Initialize System first")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Button("🔍 Parse Panic Log") {
-                        analysis = parsePanicLog(panicLog)
-                        resultMsg = "Parsed \(analysis.count) fields"
-                    }.disabled(panicLog.isEmpty)
-                } else if selectedMethod == 1 {
-                    Button("🔎 Detect Crash Patterns") {
-                        crashPatterns = detectCrashPatterns(panicLog)
-                        resultMsg = "Found \(crashPatterns.count) patterns"
-                    }.disabled(panicLog.isEmpty)
-                } else if selectedMethod == 2 {
-                    Button("🎯 Scan Exploit Signatures") {
-                        exploitSignatures = scanExploitSignatures(panicLog)
-                        resultMsg = "Found \(exploitSignatures.count) exploit signatures"
-                    }.disabled(panicLog.isEmpty).foregroundStyle(.red)
-                } else if selectedMethod == 3 {
-                    Button("📊 Analyze Stack Trace") {
-                        analysis = analyzeStackTrace(panicLog)
-                        resultMsg = "Analyzed stack trace"
-                    }.disabled(panicLog.isEmpty)
-                } else if selectedMethod == 4 {
-                    Button("🔧 Reconstruct Kernel State") {
-                        analysis = reconstructKernelState()
-                        resultMsg = "Reconstructed kernel state"
-                    }.disabled(!mgr.dsready)
                 }
             }
             
-            if !analysis.isEmpty {
-                Section(header: HeaderLabel(text: "Analysis Results", icon: "chart.bar")) {
-                    ForEach(analysis.indices, id: \.self) { i in
-                        LabeledContent(analysis[i].key) {
-                            Text(analysis[i].value)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.cyan)
+            // Actions
+            Section(header: HeaderLabel(text: "Actions", icon: "bolt.fill")) {
+                Button(action: loadRealPanicLogs) {
+                    HStack {
+                        Label("🔍 Load Real Panic Logs from Device", systemImage: "doc.text.magnifyingglass")
+                        Spacer()
+                        if isLoading { ProgressView() }
+                    }
+                }
+                .disabled(!mgr.sbxready || isLoading)
+                
+                if !selectedLog.isEmpty {
+                    Button("🔬 Parse Selected Log") {
+                        analysis = parsePanicLog(selectedLog)
+                        crashPatterns = detectCrashPatterns(selectedLog)
+                        exploitSignatures = scanExploitSignatures(selectedLog)
+                        resultMsg = "Parsed: \(analysis.count) fields, \(crashPatterns.count) patterns"
+                    }
+                    
+                    Button("📋 Copy Log to Clipboard") {
+                        UIPasteboard.general.string = selectedLog
+                        resultMsg = "Copied to clipboard"
+                    }
+                }
+                
+                Button("🔧 Current Kernel State") {
+                    analysis = reconstructKernelState()
+                    resultMsg = "Live kernel state captured"
+                }
+                .disabled(!mgr.dsready)
+            }
+            
+            // Panic Log Files Found
+            if !panicLogs.isEmpty {
+                Section(header: HeaderLabel(text: "Panic Logs Found (\(panicLogs.count))", icon: "doc.on.doc")) {
+                    ForEach(panicLogs.indices, id: \.self) { i in
+                        Button(action: {
+                            selectedLog = panicLogs[i].content
+                            analysis = parsePanicLog(selectedLog)
+                            crashPatterns = detectCrashPatterns(selectedLog)
+                            exploitSignatures = scanExploitSignatures(selectedLog)
+                        }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(panicLogs[i].filename)
+                                    .font(.system(.caption, design: .monospaced).bold())
+                                    .foregroundStyle(.primary)
+                                Text(panicLogs[i].date, style: .date)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text("\(panicLogs[i].content.count) bytes")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
                 }
             }
             
+            // Analysis Results
+            if !analysis.isEmpty {
+                Section(header: HeaderLabel(text: "Analysis Results (\(analysis.count))", icon: "chart.bar")) {
+                    ForEach(analysis.indices, id: \.self) { i in
+                        LabeledContent(analysis[i].key) {
+                            Text(analysis[i].value)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.cyan)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            
+            // Crash Patterns
             if !crashPatterns.isEmpty {
                 Section(header: HeaderLabel(text: "Crash Patterns (\(crashPatterns.count))", icon: "exclamationmark.triangle")) {
                     ForEach(crashPatterns, id: \.self) { pattern in
@@ -88,6 +130,7 @@ struct BleedingEdgeKernelPanicAnalyzerView: View {
                 }
             }
             
+            // Exploit Signatures
             if !exploitSignatures.isEmpty {
                 Section(header: HeaderLabel(text: "Exploit Signatures (\(exploitSignatures.count))", icon: "shield.slash")) {
                     ForEach(exploitSignatures, id: \.self) { sig in
@@ -96,17 +139,21 @@ struct BleedingEdgeKernelPanicAnalyzerView: View {
                 }
             }
             
-            if !panicLog.isEmpty {
-                Section(header: HeaderLabel(text: "Panic Log", icon: "doc.text")) {
-                    Text(panicLog.prefix(500))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+            // Raw Log
+            if !selectedLog.isEmpty {
+                Section(header: HeaderLabel(text: "Raw Panic Log", icon: "doc.text")) {
+                    ScrollView {
+                        Text(selectedLog)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.green)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 300)
                 }
             }
             
             if !resultMsg.isEmpty {
-                Section(header: HeaderLabel(text: "Result", icon: "info.circle")) {
+                Section(header: HeaderLabel(text: "Status", icon: "info.circle")) {
                     Text(resultMsg).font(.caption).foregroundStyle(.green)
                 }
             }
@@ -114,71 +161,194 @@ struct BleedingEdgeKernelPanicAnalyzerView: View {
         .navigationTitle("🔥 Panic Analyzer").premiumStyling()
     }
     
-    private func loadPanicLog() -> String {
-        return """
-        panic(cpu 0 caller 0xfffffff007e12345): Kernel trap at 0xfffffff007a12345
-        Debugger message: panic
-        Memory ID: 0x6
-        OS version: 21A5326a
-        Kernel version: Darwin Kernel Version 23.0.0
-        KernelCache slide: 0x0000000006e00000
-        KernelCache base:  0xfffffff007e00000
-        Kernel slide:      0x0000000006e00000
-        Kernel text base:  0xfffffff007e00000
-        """
+    // MARK: - Real Panic Log Loading
+    
+    private func loadRealPanicLogs() {
+        isLoading = true
+        panicLogs.removeAll()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var found: [(filename: String, content: String, date: Date)] = []
+            let fm = FileManager.default
+            
+            for basePath in panicLogPaths {
+                guard let files = try? fm.contentsOfDirectory(atPath: basePath) else { continue }
+                
+                for file in files {
+                    // Look for panic logs (.ips, .panic, .crash files)
+                    let lower = file.lowercased()
+                    guard lower.contains("panic") || lower.hasSuffix(".ips") || lower.contains("resetcounter") || lower.contains("kernel") else { continue }
+                    
+                    let fullPath = (basePath as NSString).appendingPathComponent(file)
+                    
+                    // Try to read file content
+                    if let content = try? String(contentsOfFile: fullPath, encoding: .utf8), !content.isEmpty {
+                        let attrs = (try? fm.attributesOfItem(atPath: fullPath)) ?? [:]
+                        let date = (attrs[.modificationDate] as? Date) ?? Date()
+                        found.append((filename: file, content: content, date: date))
+                    } else if mgr.vfsready {
+                        // Try VFS read if direct read fails
+                        if let data = mgr.vfsread(path: fullPath), let content = String(data: data, encoding: .utf8), !content.isEmpty {
+                            found.append((filename: file, content: content, date: Date()))
+                        }
+                    }
+                }
+            }
+            
+            // Sort by date (newest first)
+            found.sort { $0.date > $1.date }
+            
+            DispatchQueue.main.async {
+                self.panicLogs = found
+                self.isLoading = false
+                if found.isEmpty {
+                    self.resultMsg = "No panic logs found. Device may not have panicked recently, or paths not accessible."
+                } else {
+                    self.resultMsg = "Found \(found.count) panic log(s). Tap one to analyze."
+                    // Auto-select newest
+                    if let newest = found.first {
+                        self.selectedLog = newest.content
+                        self.analysis = self.parsePanicLog(newest.content)
+                        self.crashPatterns = self.detectCrashPatterns(newest.content)
+                    }
+                }
+            }
+        }
     }
+    
+    // MARK: - Real Panic Log Parsing
     
     private func parsePanicLog(_ log: String) -> [(key: String, value: String)] {
         var results: [(String, String)] = []
+        
+        // Detect panic type
         if log.contains("Kernel trap") {
             results.append(("Type", "Kernel Trap"))
+        } else if log.contains("Data abort") {
+            results.append(("Type", "Data Abort"))
+        } else if log.contains("Prefetch abort") {
+            results.append(("Type", "Prefetch Abort"))
+        } else if log.contains("panic") {
+            results.append(("Type", "Kernel Panic"))
         }
-        if let range = log.range(of: "KernelCache slide: (0x[0-9a-fA-F]+)", options: .regularExpression) {
-            results.append(("Kernel Slide", String(log[range])))
-        }
-        if let range = log.range(of: "Kernel text base:  (0x[0-9a-fA-F]+)", options: .regularExpression) {
-            results.append(("Kernel Base", String(log[range])))
-        }
-        results.append(("Panic Address", "0xfffffff007e12345"))
-        results.append(("Trap Address", "0xfffffff007a12345"))
+        
+        // Extract kernel slide
+        extractField(log, pattern: "KernelCache slide:\\s*(0x[0-9a-fA-F]+)", key: "Kernel Slide", into: &results)
+        extractField(log, pattern: "Kernel slide:\\s*(0x[0-9a-fA-F]+)", key: "Kernel Slide", into: &results)
+        
+        // Extract kernel base
+        extractField(log, pattern: "Kernel text base:\\s*(0x[0-9a-fA-F]+)", key: "Kernel Base", into: &results)
+        extractField(log, pattern: "KernelCache base:\\s*(0x[0-9a-fA-F]+)", key: "KernelCache Base", into: &results)
+        
+        // Extract panic caller
+        extractField(log, pattern: "panic\\(cpu \\d+ caller (0x[0-9a-fA-F]+)\\)", key: "Panic Caller", into: &results)
+        
+        // Extract trap address
+        extractField(log, pattern: "Kernel trap at (0x[0-9a-fA-F]+)", key: "Trap Address", into: &results)
+        
+        // Extract OS version
+        extractField(log, pattern: "OS version:\\s*(.+)", key: "OS Version", into: &results)
+        
+        // Extract kernel version
+        extractField(log, pattern: "Kernel version:\\s*(.+)", key: "Kernel Version", into: &results)
+        
+        // Extract memory ID
+        extractField(log, pattern: "Memory ID:\\s*(0x[0-9a-fA-F]+)", key: "Memory ID", into: &results)
+        
+        // Extract CPU info
+        extractField(log, pattern: "cpu (\\d+)", key: "CPU", into: &results)
+        
+        // Extract registers if present
+        extractField(log, pattern: "PC\\s*=\\s*(0x[0-9a-fA-F]+)", key: "PC", into: &results)
+        extractField(log, pattern: "LR\\s*=\\s*(0x[0-9a-fA-F]+)", key: "LR", into: &results)
+        extractField(log, pattern: "SP\\s*=\\s*(0x[0-9a-fA-F]+)", key: "SP", into: &results)
+        extractField(log, pattern: "FP\\s*=\\s*(0x[0-9a-fA-F]+)", key: "FP", into: &results)
+        extractField(log, pattern: "FAR\\s*=\\s*(0x[0-9a-fA-F]+)", key: "FAR (Fault Address)", into: &results)
+        extractField(log, pattern: "ESR\\s*=\\s*(0x[0-9a-fA-F]+)", key: "ESR", into: &results)
+        
         return results
+    }
+    
+    private func extractField(_ log: String, pattern: String, key: String, into results: inout [(String, String)]) {
+        if let range = log.range(of: pattern, options: .regularExpression) {
+            let match = String(log[range])
+            // Extract just the value part
+            if let colonRange = match.range(of: ": ") {
+                results.append((key, String(match[colonRange.upperBound...])))
+            } else if let eqRange = match.range(of: "= ") {
+                results.append((key, String(match[eqRange.upperBound...])))
+            } else {
+                results.append((key, match))
+            }
+        }
     }
     
     private func detectCrashPatterns(_ log: String) -> [String] {
         var patterns: [String] = []
-        if log.contains("Kernel trap") { patterns.append("Kernel Trap - Possible NULL dereference") }
-        if log.contains("panic") { patterns.append("Kernel Panic - System crash") }
-        if log.contains("0xfffffff") { patterns.append("Kernel address space access") }
-        patterns.append("Pattern: Memory corruption detected")
-        patterns.append("Pattern: Invalid pointer dereference")
+        
+        if log.contains("Kernel trap") { patterns.append("⚠️ Kernel Trap — hardware exception in kernel mode") }
+        if log.contains("Data abort") { patterns.append("⚠️ Data Abort — invalid memory access") }
+        if log.contains("PPL") || log.contains("ppl") { patterns.append("🛡️ PPL violation detected") }
+        if log.contains("KTRR") || log.contains("ktrr") { patterns.append("🛡️ KTRR violation — text region write attempt") }
+        if log.contains("zone_require") { patterns.append("🔒 Zone require failure — type confusion?") }
+        if log.contains("use after free") || log.contains("UAF") { patterns.append("🐛 Use-After-Free detected") }
+        if log.contains("double free") { patterns.append("🐛 Double Free detected") }
+        if log.contains("heap corruption") { patterns.append("🐛 Heap corruption detected") }
+        if log.contains("stack overflow") { patterns.append("🐛 Stack overflow") }
+        if log.contains("NULL pointer") || log.contains("null dereference") { patterns.append("🐛 NULL pointer dereference") }
+        if log.contains("permission") || log.contains("prot") { patterns.append("🔒 Permission/protection violation") }
+        if log.contains("vm_fault") { patterns.append("💾 VM fault — page not mapped or protected") }
+        if log.contains("pmap_enter") { patterns.append("📄 pmap_enter failure — page table manipulation blocked") }
+        
+        if patterns.isEmpty {
+            patterns.append("ℹ️ No specific crash pattern identified — manual analysis needed")
+        }
+        
         return patterns
     }
     
     private func scanExploitSignatures(_ log: String) -> [String] {
         var sigs: [String] = []
-        sigs.append("⚠️ Suspicious kernel address pattern")
-        sigs.append("⚠️ Possible ROP chain execution")
-        sigs.append("⚠️ Heap spray signature detected")
-        sigs.append("⚠️ UAF exploitation pattern")
+        
+        // Check for addresses that suggest exploitation
+        if log.contains("0x4141414141414141") || log.contains("0x4242424242424242") {
+            sigs.append("🎯 Controlled value in registers — possible exploit attempt")
+        }
+        if log.contains("0xdeadbeef") || log.contains("0xcafebabe") {
+            sigs.append("🎯 Debug marker in crash — intentional trigger")
+        }
+        if log.range(of: "0x[0-9a-f]{16}", options: .regularExpression) != nil {
+            // Check for heap spray patterns
+            if log.contains("0x0000000000000000") {
+                sigs.append("🔍 NULL dereference — possible exploit primitive")
+            }
+        }
+        if log.contains("ROP") || log.contains("gadget") {
+            sigs.append("⚡ ROP/JOP chain execution detected")
+        }
+        if log.contains("IOSurface") || log.contains("iosurface") {
+            sigs.append("🎯 IOSurface involved — common exploit target")
+        }
+        if log.contains("ipc_port") || log.contains("mach_port") {
+            sigs.append("🎯 Mach port involved — IPC exploitation")
+        }
+        
+        if sigs.isEmpty {
+            sigs.append("ℹ️ No known exploit signatures — may be natural crash or new technique")
+        }
+        
         return sigs
     }
     
-    private func analyzeStackTrace(_ log: String) -> [(key: String, value: String)] {
-        return [
-            ("Frame 0", "0xfffffff007e12345 (kernel_trap)"),
-            ("Frame 1", "0xfffffff007a12345 (vm_fault)"),
-            ("Frame 2", "0xfffffff007b12345 (mach_msg_trap)"),
-            ("Frame 3", "0xfffffff007c12345 (thread_exception_return)"),
-        ]
-    }
-    
     private func reconstructKernelState() -> [(key: String, value: String)] {
-        guard mgr.dsready else { return [] }
+        guard mgr.dsready else { return [("Error", "Kernel access not ready")] }
         return [
             ("Kernel Base", String(format: "0x%llx", mgr.kernbase)),
             ("Kernel Slide", String(format: "0x%llx", mgr.kernslide)),
             ("Our Proc", String(format: "0x%llx", ds_get_our_proc())),
             ("Our Task", String(format: "0x%llx", ds_get_our_task())),
+            ("PID", "\(getpid())"),
+            ("UID", "\(getuid())"),
         ]
     }
 }
