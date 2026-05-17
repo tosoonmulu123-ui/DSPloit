@@ -9,7 +9,6 @@
 //
 
 import SwiftUI
-import IOKit
 
 // MARK: - Data Models
 
