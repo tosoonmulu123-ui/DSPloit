@@ -256,7 +256,7 @@ class MachPortSprayEngine: ObservableObject {
             msg.ool.size = mach_msg_size_t(size)
             msg.ool.deallocate = 0
             msg.ool.copy = mach_msg_copy_options_t(MACH_MSG_VIRTUAL_COPY)
-            msg.ool.type = UInt8(MACH_MSG_OOL_DESCRIPTOR)
+            msg.ool.type = mach_msg_descriptor_type_t(MACH_MSG_OOL_DESCRIPTOR)
         }
         
         withUnsafePointer(to: &msg) { ptr in
