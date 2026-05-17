@@ -242,7 +242,7 @@ class KextLoaderEngine: ObservableObject {
         // This is a simplified version - real implementation would use proper kernel APIs
         
         let pageSize = 0x4000 // 16KB
-        let allocSize = ((size + pageSize - 1) / pageSize) * pageSize
+        let _ = ((size + pageSize - 1) / pageSize) * pageSize
         
         // Try to allocate in kernel heap
         // In real implementation, this would call kalloc via kernel R/W

@@ -13,7 +13,7 @@ import Combine
 
 // MARK: - Data Models
 
-struct APFSSnapshot: Identifiable, Codable {
+struct APFSSnapshot: Identifiable, Codable, Hashable {
     let id: UUID
     let name: String
     let mountPoint: String
@@ -225,7 +225,7 @@ class APFSSnapshotManager: ObservableObject {
     }
     
     func listSystemSnapshots(mountPoint: String = "/") -> [APFSSnapshot] {
-        var systemSnapshots: [APFSSnapshot] = []
+        let systemSnapshots: [APFSSnapshot] = []
         
         // Use fs_snapshot_list to enumerate snapshots
         // This is a simplified version - real implementation would use proper C API

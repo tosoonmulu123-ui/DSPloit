@@ -18,7 +18,7 @@ class KernelFuzzerEngine: ObservableObject {
     @Published var crashes: [CrashInfo] = []
     @Published var coverage: [UInt64: Int] = [:]
     
-    struct FuzzTarget: Identifiable {
+    struct FuzzTarget: Identifiable, Hashable {
         let id = UUID()
         let name: String
         let type: TargetType
@@ -119,9 +119,9 @@ class KernelFuzzerEngine: ObservableObject {
                     MACH_SEND_MSG,
                     msg.msgh_size,
                     0,
-                    MACH_PORT_NULL,
+                    mach_port_t(MACH_PORT_NULL),
                     MACH_MSG_TIMEOUT_NONE,
-                    MACH_PORT_NULL
+                    mach_port_t(MACH_PORT_NULL)
                 )
             }
             
@@ -143,11 +143,11 @@ class KernelFuzzerEngine: ObservableObject {
     }
     
     func fuzzIOKit(serviceName: String, iterations: Int) -> (crashes: [CrashInfo], coverage: Int) {
-        var crashes: [CrashInfo] = []
+        let crashes: [CrashInfo] = []
         
         let mainPort: mach_port_t
         if #available(iOS 12.0, *) { mainPort = kIOMainPortDefault }
-        else { mainPort = kIOMasterPortDefault }
+        else { mainPort = mach_port_t(0) }
         
         let service = IOServiceGetMatchingService(mainPort, IOServiceMatching(serviceName))
         guard service != 0 else { return ([], 0) }

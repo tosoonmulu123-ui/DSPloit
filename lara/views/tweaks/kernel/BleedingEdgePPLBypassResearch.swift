@@ -169,7 +169,7 @@ class PPLResearchEngine: ObservableObject {
             // Try via vm_write
             var data = value
             let kr = withUnsafeBytes(of: &data) { buffer in
-                vm_write(mach_task_self_, vm_address_t(address), vm_offset_t(buffer.baseAddress!), mach_msg_type_number_t(8))
+                vm_write(mach_task_self_, vm_address_t(address), vm_offset_t(bitPattern: buffer.baseAddress!), mach_msg_type_number_t(8))
             }
             success = (kr == KERN_SUCCESS)
             errorCode = kr

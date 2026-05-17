@@ -428,8 +428,7 @@ struct BleedingEdgeMachPortExploiterView: View {
     private func inspectKobject(port: UInt32) -> String {
         guard mgr.dsready else { return "Not ready" }
         let task = ds_get_our_task()
-        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
-        let portAddr = itkSpace + UInt64(port) * 0x18
+        let portAddr = ds_kread64(task + UInt64(off_task_itk_space)) + UInt64(port) * 0x18
         let kobject = ds_kread64(portAddr + 0x68)
         let refs = ds_kread32(portAddr + 0x10)
         return "Port 0x\(String(format: "%x", port)):\nKobject: 0x\(String(format: "%llx", kobject))\nRefs: \(refs)"
@@ -440,14 +439,14 @@ struct BleedingEdgeMachPortExploiterView: View {
         let kr = mach_port_type(mach_task_self_, mach_port_name_t(port), &portType)
         guard kr == 0 else { return "Failed to read rights: \(kr)" }
         var rights = "Rights: "
-        if portType & MACH_PORT_TYPE_SEND != 0 { rights += "SEND " }
-        if portType & MACH_PORT_TYPE_RECEIVE != 0 { rights += "RECEIVE " }
-        if portType & MACH_PORT_TYPE_SEND_ONCE != 0 { rights += "SEND_ONCE " }
+        if portType & 0x00010000 != 0 { rights += "SEND " }
+        if portType & 0x00000001 != 0 { rights += "RECEIVE " }
+        if portType & 0x00020000 != 0 { rights += "SEND_ONCE " }
         return rights
     }
     
     private func grantSendRights(port: UInt32) -> String {
-        let kr = mach_port_insert_right(mach_task_self_, mach_port_name_t(port), mach_port_name_t(port), MACH_MSG_TYPE_MAKE_SEND)
+        let kr = mach_port_insert_right(mach_task_self_, mach_port_name_t(port), mach_port_name_t(port), mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
         return kr == 0 ? "✅ Granted send rights to port 0x\(String(format: "%x", port))" : "❌ Failed: \(kr)"
     }
     
@@ -455,8 +454,7 @@ struct BleedingEdgeMachPortExploiterView: View {
         guard mgr.dsready else { return (0, "Not ready") }
         // Simplified port forge - real implementation would manipulate IPC space
         let task = ds_get_our_task()
-        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
-        return (0x1337, "⚠️ Port forge requires IPC space manipulation (kobject: 0x\(String(format: "%llx", kobject)))")
+        let _ = ds_kread64(task + UInt64(off_task_itk_space))\n        return (0x1337, "⚠️ Port forge requires IPC space manipulation (kobject: 0x\(String(format: "%llx", kobject)))")
     }
     
     private func interceptMessages(port: UInt32) -> String {

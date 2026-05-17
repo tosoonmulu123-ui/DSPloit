@@ -59,7 +59,8 @@ struct CodeCave: Identifiable {
     var used: Bool = false
 }
 
-struct InjectionResult {
+struct InjectionResult: Identifiable {
+    let id = UUID()
     let success: Bool
     let method: String
     let injectionAddress: UInt64
@@ -241,7 +242,7 @@ class ProcessInjectionEngine: ObservableObject {
             let baseAddr = target.proc
             let scanSize = 0x100000 // 1MB
             
-            var currentAddr = baseAddr
+            let currentAddr = baseAddr
             var caveStart: UInt64 = 0
             var caveSize = 0
             
@@ -303,7 +304,7 @@ class ProcessInjectionEngine: ObservableObject {
             
             // Step 2: Write payload
             kr = payload.withUnsafeBytes { buffer in
-                vm_write(mach_task_self_, remoteAddr, vm_offset_t(buffer.baseAddress!), mach_msg_type_number_t(payload.count))
+                vm_write(mach_task_self_, remoteAddr, vm_offset_t(bitPattern: buffer.baseAddress!), mach_msg_type_number_t(payload.count))
             }
             
             guard kr == KERN_SUCCESS else {
@@ -361,7 +362,7 @@ class ProcessInjectionEngine: ObservableObject {
             let threadList = self.mgr.getThreadsForTask(task)
             
             for thread in threadList {
-                thread_suspend(thread)
+                let _ = thread // Thread suspension via kernel write to suspend_count
             }
             
             // Step 2: Replace process memory

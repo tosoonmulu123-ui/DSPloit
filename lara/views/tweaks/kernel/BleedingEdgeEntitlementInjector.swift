@@ -111,7 +111,7 @@ class EntitlementInjectionEngine: ObservableObject {
     
     func injectEntitlement_AMFIHook(pid: pid_t, entitlement: String) -> InjectionResult {
         // Method 1: Hook AMFI entitlement check function
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else {
             return InjectionResult(success: false, entitlement: entitlement, method: "AMFI Hook", persistent: true, message: "Process not found")
         }
@@ -146,7 +146,7 @@ class EntitlementInjectionEngine: ObservableObject {
     
     func injectEntitlement_CSBlob(pid: pid_t, entitlement: String) -> InjectionResult {
         // Method 2: Modify code signature blob
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else {
             return InjectionResult(success: false, entitlement: entitlement, method: "CS Blob", persistent: false, message: "Process not found")
         }
@@ -250,7 +250,7 @@ class EntitlementInjectionEngine: ObservableObject {
     
     func verifyEntitlement(pid: pid_t, entitlement: String) -> Bool {
         // Verify if entitlement is active
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return false }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))

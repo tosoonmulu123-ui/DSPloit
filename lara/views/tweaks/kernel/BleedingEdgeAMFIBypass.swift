@@ -51,7 +51,7 @@ class AMFIBypassEngine: ObservableObject {
     // MARK: - Core Functions
     
     func readAMFIState(pid: pid_t) -> AMFIState {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else {
             return AMFIState(csFlags: 0, amfiLabel: 0, amfiSlot: 0, trustCacheAddr: 0, cdhash: [], isPlatformBinary: false, hasGetTaskAllow: false, hasSkipLibraryValidation: false)
         }
@@ -94,7 +94,7 @@ class AMFIBypassEngine: ObservableObject {
     }
     
     func bypassAMFI_CSFlagsPatch(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
@@ -122,7 +122,7 @@ class AMFIBypassEngine: ObservableObject {
     }
     
     func bypassAMFI_LabelNullify(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
@@ -151,7 +151,7 @@ class AMFIBypassEngine: ObservableObject {
         
         // Find dynamic trust cache in kernel
         let kernbase = dspmgr.shared.kernbase
-        let trustCacheSymbol = kernbase + 0x1234000 // Placeholder - needs patchfinder
+        let _ = kernbase + 0x1234000 // Placeholder - needs patchfinder
         
         // In real implementation, we would:
         // 1. Find pmap_trust_cache_rt structure
@@ -197,7 +197,7 @@ class AMFIBypassEngine: ObservableObject {
     }
     
     func bypassAMFI_DisableLibraryValidation(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))

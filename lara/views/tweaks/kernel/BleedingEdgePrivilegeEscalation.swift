@@ -27,7 +27,7 @@ class CredentialForgeEngine: ObservableObject {
     }
     
     func readCredentials(pid: pid_t) -> Credentials {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else {
             return Credentials(uid: 0, gid: 0, svuid: 0, svgid: 0, groups: [], isPlatform: false, isRoot: false)
         }
@@ -48,7 +48,7 @@ class CredentialForgeEngine: ObservableObject {
     }
     
     func forgeCredentials(pid: pid_t, uid: uid_t, gid: gid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
@@ -77,7 +77,7 @@ class CredentialForgeEngine: ObservableObject {
     }
     
     func setPlatformBinary(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))

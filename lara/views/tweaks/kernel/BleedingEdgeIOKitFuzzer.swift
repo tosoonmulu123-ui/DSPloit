@@ -293,17 +293,17 @@ class IOKitFuzzerEngine: ObservableObject {
     // MARK: - Helper Functions
     
     private func setServiceProperty(_ service: io_service_t, key: String, value: Any) -> FuzzOutcome {
-        // Try to set property and detect crashes
-        let cfKey = key as CFString
-        let cfValue = value as CFTypeRef
-        
-        let kr = IORegistryEntrySetCFProperty(service, cfKey, cfValue)
-        
-        if kr == KERN_SUCCESS {
-            return .success
-        } else {
-            return .error
+        // Try to set property via IOConnectSetCFProperty (available on iOS)
+        var connect: io_connect_t = 0
+        let kr = IOServiceOpen(service, mach_task_self_, 0, &connect)
+        if kr == KERN_SUCCESS && connect != 0 {
+            let cfKey = key as CFString
+            let cfValue = value as CFTypeRef
+            let setKr = IOConnectSetCFProperty(connect, cfKey, cfValue)
+            IOServiceClose(connect)
+            return setKr == KERN_SUCCESS ? .success : .error
         }
+        return .error
     }
     
     private func callExternalMethod(_ connect: io_connect_t, selector: UInt32, input: [UInt8]) -> FuzzOutcome {
@@ -327,8 +327,6 @@ class IOKitFuzzerEngine: ObservableObject {
         switch kr {
         case KERN_SUCCESS:
             return .success
-        case kIOReturnBadArgument, kIOReturnUnsupported:
-            return .error
         default:
             return .error
         }
