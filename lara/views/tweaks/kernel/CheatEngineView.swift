@@ -101,6 +101,25 @@ class CheatEngineCore: ObservableObject {
     
     func scanForValue(_ valueStr: String, type: CheatValueType, mode: CheatScanMode, rangeStart: UInt64, rangeEnd: UInt64) {
         guard mgr.dsready, targetProcAddr != 0 else { return }
+        
+        // SAFETY: Don't scan arbitrary ranges — only scan valid kernel heap addresses
+        // Valid heap range for iOS: 0xffffffd000000000 - 0xffffffefFFFFFFFF
+        var safeStart = rangeStart
+        var safeEnd = rangeEnd
+        
+        // If user provided default/invalid range, use target proc's memory region
+        if safeStart < 0xffffffd000000000 || safeEnd > 0xffffffffffff {
+            // Scan around the target proc address (±64KB)
+            safeStart = targetProcAddr > 0x10000 ? targetProcAddr - 0x10000 : targetProcAddr
+            safeEnd = targetProcAddr + 0x10000
+        }
+        
+        // Limit scan size to 256KB max to prevent crash
+        let maxScanSize: UInt64 = 256 * 1024
+        if safeEnd - safeStart > maxScanSize {
+            safeEnd = safeStart + maxScanSize
+        }
+        
         isScanning = true
         scanProgress = 0
         
@@ -110,11 +129,11 @@ class CheatEngineCore: ObservableObject {
             let targetValue = self.parseValue(valueStr, type: type)
             var results: [CheatScanResult] = []
             let step = UInt64(type.byteWidth / 8)
-            let totalRange = rangeEnd - rangeStart
-            var addr = rangeStart
+            let totalRange = safeEnd - safeStart
+            var addr = safeStart
             
             if mode == .exact || mode == .unknown {
-                while addr < rangeEnd && results.count < 500 {
+                while addr < safeEnd && results.count < 500 {
                     let readVal = self.readValueAtAddress(addr, type: type)
                     
                     let match: Bool

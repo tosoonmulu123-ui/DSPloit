@@ -91,7 +91,6 @@ class ROPChainBuilderEngine: ObservableObject {
         let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
         let kcPath = (docs as NSString).appendingPathComponent("kernelcache")
         
-        // Also try alternative paths
         var filePath = kcPath
         if !FileManager.default.fileExists(atPath: filePath) {
             let altPaths = [
@@ -99,111 +98,57 @@ class ROPChainBuilderEngine: ObservableObject {
                 "/var/mobile/Documents/kernelcache",
             ]
             for alt in altPaths {
-                if FileManager.default.fileExists(atPath: alt) {
-                    filePath = alt
-                    break
-                }
+                if FileManager.default.fileExists(atPath: alt) { filePath = alt; break }
             }
         }
         
-        guard FileManager.default.fileExists(atPath: filePath) else {
-            return []
-        }
+        guard FileManager.default.fileExists(atPath: filePath) else { return [] }
         
-        // Read file data safely
-        guard let fileData = try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedIfSafe) else {
-            return []
-        }
+        // Read only a small portion (64KB max) to prevent crash
+        guard let fh = FileHandle(forReadingAtPath: filePath) else { return [] }
+        defer { fh.closeFile() }
         
-        guard fileData.count > 16 else { return [] }
+        let fileSize = fh.seekToEndOfFile()
+        guard fileSize > 100 else { return [] }
         
-        // Find Mach-O magic (0xFEEDFACF) in file — skip IMG4 header if present
-        var machOStart = 0
-        let magic: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self) }
-        
-        if magic != 0xFEEDFACF {
-            // Not a raw Mach-O — search for magic within first 1KB
-            for offset in stride(from: 0, to: min(fileData.count, 4096), by: 4) {
-                let val: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
-                if val == 0xFEEDFACF {
-                    machOStart = offset
-                    break
-                }
-            }
-            if machOStart == 0 {
-                return [] // Can't find Mach-O in file
-            }
-        }
-        
-        // Calculate read range
-        let scanStart = machOStart + Int(startOffset)
-        let scanEnd = min(scanStart + min(Int(size), 256 * 1024), fileData.count - 4)
-        guard scanStart < scanEnd else { return [] }
+        // Skip first 64 bytes (potential IMG4 header), read 64KB
+        let seekTo = min(UInt64(64) + startOffset, fileSize - 64)
+        fh.seek(toFileOffset: seekTo)
+        let chunk = fh.readData(ofLength: min(65536, Int(fileSize - seekTo)))
+        guard chunk.count >= 12 else { return [] }
         
         var gadgets: [ROPGadget] = []
         let kernelBase = dspmgr.shared.kernbase
+        let bytes = [UInt8](chunk)
         
-        for offset in stride(from: scanStart, to: scanEnd, by: 4) {
-            guard offset + 4 <= fileData.count else { break }
+        var i = 0
+        while i + 4 <= bytes.count && gadgets.count < 50 {
+            let instr = UInt32(bytes[i]) | (UInt32(bytes[i+1]) << 8) | (UInt32(bytes[i+2]) << 16) | (UInt32(bytes[i+3]) << 24)
+            let virtualAddr = kernelBase + startOffset + UInt64(i)
             
-            let instr: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
-            let fileRelOffset = UInt64(offset - machOStart)
-            let virtualAddr = kernelBase + fileRelOffset
-            
-            // Find RET instructions
-            if instr == 0xD65F03C0 && offset >= scanStart + 8 {
-                let prev1: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: offset - 4, as: UInt32.self) }
-                let prev2: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: offset - 8, as: UInt32.self) }
+            if instr == 0xD65F03C0 && i >= 8 { // RET
+                let p1 = UInt32(bytes[i-4]) | (UInt32(bytes[i-3]) << 8) | (UInt32(bytes[i-2]) << 16) | (UInt32(bytes[i-1]) << 24)
+                let p2 = UInt32(bytes[i-8]) | (UInt32(bytes[i-7]) << 8) | (UInt32(bytes[i-6]) << 16) | (UInt32(bytes[i-5]) << 24)
                 
-                let disasm = ARM64Disassembler.shared
-                let instr1 = disasm.disassemble(opcode: prev2, address: virtualAddr - 8)
-                let instr2 = disasm.disassemble(opcode: prev1, address: virtualAddr - 4)
+                let d = ARM64Disassembler.shared
+                let i1 = d.disassemble(opcode: p2, address: virtualAddr - 8)
+                let i2 = d.disassemble(opcode: p1, address: virtualAddr - 4)
                 
-                // Skip if both are unknown
-                if instr1.mnemonic == "???" && instr2.mnemonic == "???" { continue }
-                
-                let instrStr = "\(instr1.mnemonic) \(instr1.operands) ; \(instr2.mnemonic) \(instr2.operands) ; RET"
-                
-                var type: GadgetType = .ret
-                var regs: [String] = []
-                
-                if instr1.isLoad || instr2.isLoad { type = .loadRegister }
-                else if instr1.isStore || instr2.isStore { type = .storeRegister }
-                else if instr1.mnemonic == "ADD" || instr1.mnemonic == "SUB" || instr2.mnemonic == "ADD" || instr2.mnemonic == "SUB" { type = .arithmetic }
-                else if instr1.mnemonic == "MOV" || instr2.mnemonic == "MOV" { type = .loadRegister }
-                
-                if instr1.operands.contains("SP") || instr2.operands.contains("SP") { type = .stackPivot }
-                if instr1.operands.contains("X0") { regs.append("X0") }
-                if instr2.operands.contains("X0") { regs.append("X0") }
-                
-                gadgets.append(ROPGadget(
-                    address: virtualAddr - 8,
-                    instructions: instrStr,
-                    type: type,
-                    registers: regs,
-                    stackOffset: 0
-                ))
+                if i1.mnemonic != "???" || i2.mnemonic != "???" {
+                    var type: GadgetType = .ret
+                    if i1.isLoad || i2.isLoad { type = .loadRegister }
+                    else if i1.isStore || i2.isStore { type = .storeRegister }
+                    else if i1.operands.contains("SP") || i2.operands.contains("SP") { type = .stackPivot }
+                    
+                    gadgets.append(ROPGadget(
+                        address: virtualAddr - 8,
+                        instructions: "\(i1.mnemonic) \(i1.operands) ; \(i2.mnemonic) \(i2.operands) ; RET",
+                        type: type, registers: [], stackOffset: 0
+                    ))
+                }
             }
-            
-            // Find BR Xn
-            if (instr & 0xFFFFFC1F) == 0xD61F0000 && offset >= scanStart + 4 {
-                let rn = (instr >> 5) & 0x1F
-                let prev: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: offset - 4, as: UInt32.self) }
-                let disasm = ARM64Disassembler.shared
-                let prevInstr = disasm.disassemble(opcode: prev, address: virtualAddr - 4)
-                
-                gadgets.append(ROPGadget(
-                    address: virtualAddr - 4,
-                    instructions: "\(prevInstr.mnemonic) \(prevInstr.operands) ; BR X\(rn)",
-                    type: .controlFlow,
-                    registers: ["X\(rn)"],
-                    stackOffset: 0
-                ))
-            }
-            
-            if gadgets.count >= 100 { break }
+            i += 4
         }
-        
         return gadgets
     }
     

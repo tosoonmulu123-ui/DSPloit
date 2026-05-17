@@ -435,7 +435,10 @@ struct BleedingEdgeSandboxEscapeEngineView: View {
             if targetPID.isEmpty {
                 targetPID = String(getpid())
             }
-            loadSandboxState()
+            // Only load if kernel is ready — prevents crash
+            if mgr.dsready {
+                loadSandboxState()
+            }
         }
     }
     
