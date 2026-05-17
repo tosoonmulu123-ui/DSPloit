@@ -1,173 +1,216 @@
 # DSPloit Research Guide
 
-## Kernelcache Analysis Results (deep_analyze_v3.py)
+## Device Info
+- **Device:** iPhone XR (N841AP)
+- **iOS:** 18.2 (build 22C152)
+- **Chip:** A12 Bionic
+- **Exploit:** Socket KRW (heap objects only)
 
-### Key Addresses (file offsets from code base 0xe00000)
-| Item | File Offset | Virtual Addr Formula |
-|------|-------------|---------------------|
-| GXF handler | 0xf0c440 | kernel_base + 0x20c440 |
-| PPL check #1 | 0xe33e14 | kernel_base + 0x033e14 |
+---
+
+## Kernelcache Analysis Results
+
+Dari `scripts/deep_analyze_v3.py` pada file `kernelcache.release.iphone11b.decompressed` (52.6 MB).
+
+### Key Addresses
+
+| Item | File Offset | Virtual Address |
+|------|-------------|-----------------|
+| Code section start | 0xe00000 | kernel_base + 0xe00000 |
+| GXF handler | 0xf0c440 | kernel_base + 0xf0c440 - 0xe00000 = kernel_base + 0x10c440 |
+| PPL check pertama | 0xe33e14 | kernel_base + 0x33e14 |
 | pmap_enter (667 branches) | 0x11126c0 | kernel_base + 0x3126c0 |
-| Largest func (106KB) | 0x155e280 | kernel_base + 0x75e280 |
-| IOSurfaceRoot string | 0x0067d03b | (data section) |
+| Fungsi terbesar (106KB) | 0x155e280 | kernel_base + 0x75e280 |
+| IOSurfaceRootUserClient string | 0x0067d03b | (data section) |
 
-### PPL Protection Summary
-- **223** TBNZ/TBZ bit#14 instructions (PPL checks)
-- **7** distinct functions contain PPL checks
-- **50** GXF register accesses (S3_4_C15_C2_7)
-- PPL check pattern: `TBNZ Xn, #14, <ppl_path>`
-  - Normal path: permission = 0x1
-  - PPL path: permission = 0x81, page_size = 0x4000
+**Rumus:** `virtual_address = kernel_base + file_offset`
 
-### IOSurface Analysis
-- **762** IOSurface-related strings
-- IOSurfaceRootUserClient at 0x0067d03b
-- Key methods: set_surface_handle, allocate client shared id, map shared memory
-- AppleAVD uses IOSurface for video decode buffers
+### PPL Protection
 
-### ucred Structure (from type encoding)
+PPL (Page Protection Layer) melindungi halaman memori tertentu dari penulisan.
+
+**Cara kerja:**
+1. Setiap halaman punya atribut di "page attribute table"
+2. **Bit 14** di atribut = halaman dilindungi PPL
+3. Kernel cek bit ini sebelum menulis: `TBNZ Xn, #14, <ppl_path>`
+4. Kalau bit 14 = 1 → kernel pakai permission `0x81` (PPL-protected)
+5. Kalau bit 14 = 0 → kernel pakai permission `0x1` (normal)
+
+**Statistik dari kernelcache:**
+- 223 instruksi TBNZ/TBZ bit#14 (PPL checks)
+- 7 fungsi berbeda mengandung PPL checks
+- 50 akses register GXF (S3_4_C15_C2_7)
+
+**Yang dilindungi PPL:**
+- ucred (uid/gid) → tidak bisa di-overwrite
+- proc_ro → read-only
+- Page tables → tidak bisa dimodifikasi
+- Kernel __TEXT dan __DATA_CONST
+
+**Yang TIDAK dilindungi PPL:**
+- Sandbox label pointer (cr_label → l_perpolicy)
+- vm_map entries
+- Kernel heap objects (yang kita akses via socket KRW)
+
+### GXF (Guarded Execution Facility)
+
+GXF adalah mekanisme hardware Apple untuk masuk/keluar PPL context.
+
+- Register kontrol: `S3_4_C15_C2_7`
+- Handler di file offset: `0xf0c440`
+- 50 akses register GXF ditemukan di kernelcache
+- Untuk masuk PPL context, harus via GXF entry (tidak bisa langsung)
+
+### IOSurface
+
+IOSurface adalah framework Apple untuk shared memory antara proses dan GPU.
+
+**Kenapa penting untuk exploit:**
+- IOSurface bisa map physical memory ke userspace
+- GPU (DMA) mengakses physical memory langsung, bypass CPU page tables
+- Kalau kita bisa kontrol physical page mana yang di-map → bypass PPL
+
+**Dari kernelcache:**
+- 762 string terkait IOSurface
+- IOSurfaceRootUserClient di offset 0x0067d03b
+- Method: set_surface_handle, allocate client shared id, map shared memory
+- AppleAVD (video decoder) pakai IOSurface untuk buffer
+
+### ucred Structure Layout
+
+Dari type encoding string di kernelcache:
+
 ```
-ucred {
-    +0x00: ^ucred_rw     (pointer to ucred_rw)
-    +0x08: ^void
+ucred (total ~0x88 bytes):
+    +0x00: pointer ke ucred_rw
+    +0x08: pointer (void*)
     +0x10: uint64
-    +0x18: posix_cred {   (IIISS[16I]IIIi)
-        +0x18: cr_uid (uint32)
-        +0x1c: cr_ruid (uint32)
-        +0x20: cr_svuid (uint16)
-        +0x22: cr_ngroups (uint16)
-        +0x24: cr_groups[16] (uint32 * 16)
-        +0x64: cr_rgid (uint32)
-        +0x68: cr_svgid (uint32)
-        +0x6c: cr_gmuid (uint32)
-        +0x70: cr_flags (int32)
-    }
-    +0x78: ^label        (pointer to mac_label)
+    +0x18: posix_cred mulai di sini:
+        +0x18: cr_uid      (uint32) ← PPL BLOCKED
+        +0x1c: cr_ruid     (uint32) ← PPL BLOCKED
+        +0x20: cr_svuid    (uint16)
+        +0x22: cr_ngroups  (uint16)
+        +0x24: cr_groups   (uint32 × 16 = 64 bytes)
+        +0x64: cr_rgid     (uint32)
+        +0x68: cr_svgid    (uint32)
+        +0x6c: cr_gmuid    (uint32)
+        +0x70: cr_flags    (int32)
+    +0x78: pointer ke mac_label ← WRITABLE (sandbox escape works here)
     +0x80: au_session
-}
 ```
 
-### Exploitation Vectors
-1. **IOSurface DMA** — GPU writes bypass CPU page tables (and PPL)
-2. **GXF Entry** — Execute in PPL context via ROP → GXF transition
-3. **Race in pmap_enter** — 667 branches = complex logic = timing window
-4. **IOSurface property manipulation** — Controlled kernel object read/write
-
-## ⚠️ PENTING: Apa yang Harus Dikirim ke Sini
-
-Setelah menjalankan langkah-langkah di bawah, **KIRIM** data berikut ke chat:
-
+**Path dari proc ke sandbox:**
 ```
-=== DSPloit Research Data ===
-Date: [tanggal]
-Device: [model iPhone]
-iOS: [versi]
-
---- PHASE 1 ---
-kernel_base: [hex]
-kernel_slide: [hex]
-Exploit: SUCCESS/FAIL
-VFS: YES/NO
-Sandbox Escape: YES/NO
-
---- PHASE 2 ---
-[Copy-paste output dari Object Introspector]
-[Copy-paste output dari Memory Scanner]
-
---- PHASE 3 ---
-[Copy-paste PPL region map]
-[Copy-paste write test results]
-
---- PHASE 4 ---
-[Copy-paste zone enumeration]
-[Copy-paste port spray results]
-
---- PHASE 5 ---
-[Copy-paste gadget list]
-
---- PHASE 6 ---
-[Copy-paste IOKit service list]
-[Copy-paste fuzz results jika ada crash]
-
---- NOTES ---
-[Anomali/crash/unexpected behavior]
+proc (+0x18) → proc_ro (+0x20) → ucred (+0x78) → cr_label → l_perpolicy[sandbox_slot]
 ```
 
-**JANGAN kirim:** screenshot (saya tidak bisa baca), file binary, atau data yang tidak relevan.
+### ROP Gadgets (Confirmed dari kernelcache)
+
+| Offset dari code start | Instruksi | Kegunaan |
+|------------------------|-----------|----------|
+| +0x0008c0 | STR X9, [X8, #0] ; RET | Arbitrary write |
+| +0x0005a8 | MOVZ X0, #0 ; MOVZ X1, #0 ; RET | Return zero |
+| +0x00035c | STR X8, [X0, #80] ; STR X31, [X0, #56] ; RET | Double store |
+| +0x0158b8 | LDR X1, [X0, #8] ; B ; RET | Load from pointer |
+| +0x00c04c | BR X16 ; RET | Indirect branch |
+| +0x005984 | ADD X8, X8, #0x80 ; RET | Pointer advance |
+| +0x0167fc | ADD X10, X8, #1 ; RET | Increment |
+
+**Virtual address gadget:** `kernel_base + 0xe00000 + offset`
 
 ---
 
-## Langkah-Langkah Research
+## Exploitation Vectors (Ranked by Feasibility)
 
-### PHASE 1: Setup (Wajib Pertama)
+### 1. IOSurface DMA Bypass (THEORETICAL)
+**Ide:** GPU menulis ke physical memory langsung, bypass PPL.
+**Langkah:**
+1. Buat IOSurface
+2. Cari physical page yang backing IOSurface
+3. Ganti physical page dengan target (ucred page)
+4. GPU write ke surface = write ke ucred
 
-1. Buka app → Tab 1 (Main)
-2. Tap **"Run Exploit"** → tunggu sampai checkmark hijau
-3. Tap **"Fetch Kernelcache"** → tunggu selesai
-4. Tap **"Initialize System"** → tunggu VFS + Sandbox checkmark
+**Status:** Perlu test apakah DART (IOMMU Apple) memblokir ini.
 
-**Catat:** kernel_base, kernel_slide (terlihat di Debug section)
+### 2. GXF Entry via ROP (THEORETICAL)
+**Ide:** Bangun ROP chain yang trigger GXF entry → execute di PPL context.
+**Langkah:**
+1. Spray gadgets ke kernel heap
+2. Corrupt function pointer ke ROP chain
+3. ROP chain setup register untuk GXF entry
+4. Di PPL context: modify page table → ucred writable
+5. Write uid=0
 
----
+**Status:** Butuh kernel code execution primitive (belum punya).
 
-### PHASE 2: Structure Discovery
+### 3. Race Condition di pmap_enter (THEORETICAL)
+**Ide:** Fungsi pmap_enter punya 667 branches = complex logic = timing window.
+**Langkah:**
+1. Trigger pmap_enter dari 2 thread bersamaan
+2. Race antara PPL check dan actual write
+3. Kalau timing tepat, write lolos tanpa PPL check
 
-5. Tab 2 → **Kernel Exploit Suite** → **Object Introspector**
-6. Tap **"Our Proc"** → tap **"Copy All Fields"** → paste ke Notes
-7. Tap **"Our Task"** → tap **"Copy All Fields"** → paste ke Notes
-8. Back → **Kernel Memory Scanner** → tap **"Auto-Discover All Offsets"**
-9. Tap **"Export Offsets"** → **"Copy to Clipboard"** → paste ke Notes
+**Status:** Sangat sulit, butuh precise timing.
 
----
+### 4. IOSurface Property Manipulation (MOST PROMISING)
+**Ide:** IOSurface properties disimpan sebagai kernel objects di heap.
+**Langkah:**
+1. Buat IOSurface (sudah bisa setelah sandbox escape)
+2. Cari kernel object IOSurface di heap (via socket KRW)
+3. Overwrite property dictionary pointer
+4. IOSurfaceCopyValue → read dari controlled address
+5. IOSurfaceSetValue → write ke controlled address
 
-### PHASE 3: PPL Research
-
-10. Back → **PPL Bypass Research** → tap **"Map PPL Regions"**
-11. Screenshot atau catat semua regions yang muncul
-12. Di "Write Testing" section:
-    - Address: masukkan address dari __DATA region (dari step 10)
-    - Value: `0x4141414141414141`
-    - Method: "Direct KRW" → tap "Test Write Primitive"
-    - Ulangi dengan method "vm_write"
-13. Catat Statistics (Total Attempts, Successful Writes, PPL Blocks)
-
----
-
-### PHASE 4: Heap Analysis
-
-14. Back → **Heap Visualizer** → tap **"Enumerate All Zones"**
-15. Catat top 10 zones dengan usage tertinggi
-16. Back → **Mach Port Spray** → tap **"Enumerate Mach Ports"**
-17. Catat jumlah ports
-18. Tap **"Start Port Spray"** (default config)
-19. Catat hasil (ports created, kernel memory used)
-20. **PENTING:** Tap **"Destroy Sprayed Ports"** setelah selesai
+**Status:** Paling feasible. IOSurface objects ada di heap (yang bisa kita akses).
 
 ---
 
-### PHASE 5: Gadget Finding
+## Apa yang Sudah Berhasil di Device
 
-21. Back → **ROP Chain Builder** → tap **"Locate ROP Gadgets"**
-22. Catat top 10 gadgets (address + instructions)
-23. Kalau ada tombol "Copy", gunakan
-
----
-
-### PHASE 6: IOKit (Opsional, Hati-hati)
-
-24. Back → **IOKit Fuzzer** → tap **"Discover IOKit Services"**
-25. Catat jumlah services dan nama-nama yang menarik
-26. **HANYA jika berani:** Pilih satu service → Fuzz 50 iterations
-27. Kalau ada crash/vulnerability detected, catat detailnya
-
-⚠️ **WARNING:** Fuzzing bisa bikin device reboot. Save semua data dulu.
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Kernel exploit | ✅ | Socket KRW, heap objects only |
+| Sandbox escape | ✅ | Nullify sandbox label |
+| VFS access | ✅ | Read/write filesystem |
+| Process list | ✅ | Via kernel proc iteration |
+| Credential read | ✅ | Bisa baca uid/gid |
+| Credential write | ❌ | PPL blocks ucred writes |
+| Root escalation | ❌ | Butuh PPL bypass |
+| Kernel VA read | ❌ | Panic (non-heap address) |
 
 ---
 
-## Setelah Selesai
+## Cara Pakai Scripts
 
-Copy semua data dari Notes app, format seperti template di atas, dan paste ke chat ini. Saya akan:
-- Analyze offset patterns
-- Identify potential new exploit vectors
-- Suggest next research steps
-- Help port findings ke iOS version lain
+### deep_analyze_v3.py
+```
+cd d:\Backup\Personal\Hp\iPhone\DSPloit\scripts
+python deep_analyze_v3.py
+```
+Output: PPL functions disassembly, GXF registers, IOSurface handlers, ucred layout.
+
+### analyze_kernelcache.py
+```
+python analyze_kernelcache.py ..\kernelcache.release.iphone11b.decompressed
+```
+Output: ROP gadgets, BR gadgets, PPL strings, summary.
+
+---
+
+## Next Steps
+
+1. **Build app** → test 3 crash fixes di device
+2. **Buka IOSurface KRW view** → tap "Open IOSurfaceRoot" (setelah sandbox escape)
+3. **Kalau IOSurface berhasil dibuat** → cari kernel object-nya di heap
+4. **Kalau kernel object ditemukan** → manipulasi property pointer → arbitrary KRW
+5. **Kalau arbitrary KRW berhasil** → write ucred uid=0 → ROOT
+
+---
+
+## Catatan Penting
+
+- `kernel_base` berubah setiap reboot (KASLR) — offsets tetap sama
+- Socket KRW hanya bisa baca/tulis kernel HEAP objects
+- Membaca kernel VA (text/data) langsung → PANIC → device reboot
+- Sandbox escape harus dilakukan sebelum IOSurface bisa diakses
+- Semua offset di atas relatif terhadap file kernelcache, bukan virtual address
