@@ -66,6 +66,82 @@ struct BleedingEdgeIOSurfaceKRWView: View {
                 }
             }
             
+            // Quick Address Buttons (tap to copy or auto-fill)
+            Section(header: HeaderLabel(text: "Quick Addresses (tap to paste)", icon: "doc.on.clipboard")) {
+                Button(action: {
+                    let addr = String(format: "0x%llx", mgr.kernbase)
+                    readAddr = addr
+                    UIPasteboard.general.string = addr
+                }) {
+                    HStack {
+                        Text("kernel_base")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "0x%llx", mgr.kernbase))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.cyan)
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .disabled(!mgr.dsready)
+                
+                Button(action: {
+                    let addr = String(format: "0x%llx", mgr.kernslide)
+                    UIPasteboard.general.string = addr
+                }) {
+                    HStack {
+                        Text("kernel_slide")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "0x%llx", mgr.kernslide))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.orange)
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .disabled(!mgr.dsready)
+                
+                Button(action: {
+                    let proc = ds_get_our_proc()
+                    let addr = String(format: "0x%llx", proc)
+                    readAddr = addr
+                    UIPasteboard.general.string = addr
+                }) {
+                    HStack {
+                        Text("our_proc")
+                            .font(.caption)
+                        Spacer()
+                        Text(mgr.dsready ? String(format: "0x%llx", ds_get_our_proc()) : "—")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.green)
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .disabled(!mgr.dsready)
+                
+                Button(action: {
+                    let task = ds_get_our_task()
+                    let addr = String(format: "0x%llx", task)
+                    readAddr = addr
+                    UIPasteboard.general.string = addr
+                }) {
+                    HStack {
+                        Text("our_task")
+                            .font(.caption)
+                        Spacer()
+                        Text(mgr.dsready ? String(format: "0x%llx", ds_get_our_task()) : "—")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.green)
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .disabled(!mgr.dsready)
+            }
+            
             // Read Test
             Section(header: HeaderLabel(text: "Memory Read (via IOSurface)", icon: "magnifyingglass")) {
                 TextField("Address (hex)", text: $readAddr)
