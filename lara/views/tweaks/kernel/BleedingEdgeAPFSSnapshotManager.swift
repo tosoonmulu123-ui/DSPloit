@@ -39,7 +39,7 @@ struct APFSSnapshot: Identifiable, Codable, Hashable {
     }
 }
 
-struct KernelStateInfo: Codable {
+struct KernelStateInfo: Codable, Hashable {
     let kernelBase: UInt64
     let kernelSlide: UInt64
     let procAddr: UInt64
