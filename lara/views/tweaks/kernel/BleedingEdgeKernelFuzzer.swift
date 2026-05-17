@@ -110,8 +110,8 @@ class KernelFuzzerEngine: ObservableObject {
             var msg = mach_msg_header_t()
             msg.msgh_bits = UInt32(input[0]) | UInt32(input[1]) << 8
             msg.msgh_size = UInt32(input[2]) | UInt32(input[3]) << 8
-            msg.msgh_remote_port = MACH_PORT_NULL
-            msg.msgh_local_port = MACH_PORT_NULL
+            msg.msgh_remote_port = mach_port_t(MACH_PORT_NULL)
+            msg.msgh_local_port = mach_port_t(MACH_PORT_NULL)
             
             let kr = withUnsafePointer(to: &msg) { ptr in
                 mach_msg(

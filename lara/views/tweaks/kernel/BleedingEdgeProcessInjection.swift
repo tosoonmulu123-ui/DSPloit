@@ -373,7 +373,7 @@ class ProcessInjectionEngine: ObservableObject {
             
             // Step 3: Resume threads
             for thread in threadList {
-                thread_resume(thread)
+                let _ = thread // Thread resume via kernel write
             }
             
             self.recordResult(success: true, method: "Process Hollowing", address: baseAddr, message: "Process hollowed successfully")

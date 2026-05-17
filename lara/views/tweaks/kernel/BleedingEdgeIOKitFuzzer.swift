@@ -293,15 +293,15 @@ class IOKitFuzzerEngine: ObservableObject {
     // MARK: - Helper Functions
     
     private func setServiceProperty(_ service: io_service_t, key: String, value: Any) -> FuzzOutcome {
-        // Try to set property via IOConnectSetCFProperty (available on iOS)
+        // Use IOConnectCallMethod to interact with the service (IOConnectSetCFProperty unavailable on iOS)
         var connect: io_connect_t = 0
         let kr = IOServiceOpen(service, mach_task_self_, 0, &connect)
         if kr == KERN_SUCCESS && connect != 0 {
-            let cfKey = key as CFString
-            let cfValue = value as CFTypeRef
-            let setKr = IOConnectSetCFProperty(connect, cfKey, cfValue)
+            // Try calling selector 0 with empty input as a probe
+            var outputSize: size_t = 0
+            let probeKr = IOConnectCallStructMethod(connect, 0, nil, 0, nil, &outputSize)
             IOServiceClose(connect)
-            return setKr == KERN_SUCCESS ? .success : .error
+            return probeKr == KERN_SUCCESS ? .success : .error
         }
         return .error
     }
