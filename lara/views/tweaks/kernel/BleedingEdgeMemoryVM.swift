@@ -454,7 +454,8 @@ struct BleedingEdgeMachPortExploiterView: View {
         guard mgr.dsready else { return (0, "Not ready") }
         // Simplified port forge - real implementation would manipulate IPC space
         let task = ds_get_our_task()
-        let _ = ds_kread64(task + UInt64(off_task_itk_space))\n        return (0x1337, "⚠️ Port forge requires IPC space manipulation (kobject: 0x\(String(format: "%llx", kobject)))")
+        let _ = ds_kread64(task + UInt64(off_task_itk_space))
+        return (0x1337, "⚠️ Port forge requires IPC space manipulation (kobject: 0x\(String(format: "%llx", kobject)))")
     }
     
     private func interceptMessages(port: UInt32) -> String {
