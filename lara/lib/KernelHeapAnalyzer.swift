@@ -207,7 +207,7 @@ class KernelHeapAnalyzer: ObservableObject {
                     msg.msgh_bits = UInt32(MACH_MSG_TYPE_MAKE_SEND) & 0x1F
                     msg.msgh_size = mach_msg_size_t(MemoryLayout<mach_msg_header_t>.size)
                     msg.msgh_remote_port = mach_task_self_
-                    msg.msgh_local_port = MACH_PORT_NULL
+                    msg.msgh_local_port = mach_port_t(MACH_PORT_NULL)
                     msg.msgh_id = Int32(i)
                 }
                 

@@ -397,7 +397,7 @@ class EntitlementHelper {
         dict[key] = value
         
         // Serialize and write back
-        let serialized = dict.serialize()
+        let _ = dict.serialize()
         // Write serialized data back to kernel
         // (This would require kernel write primitive)
         
