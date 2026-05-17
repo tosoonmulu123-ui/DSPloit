@@ -48,7 +48,7 @@ class SandboxEscapeEngine: ObservableObject {
     // MARK: - Core Functions
     
     func readSandboxState(pid: pid_t) -> SandboxState {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else {
             return SandboxState(sandboxed: true, containerPath: "", sandboxLabel: 0, sandboxSlot: 0, profileName: "unknown", restrictions: [])
         }
@@ -104,7 +104,7 @@ class SandboxEscapeEngine: ObservableObject {
     }
     
     func escapeSandbox_LabelNullify(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
@@ -127,7 +127,7 @@ class SandboxEscapeEngine: ObservableObject {
     }
     
     func escapeSandbox_ProfileReplace(pid: pid_t) -> (success: Bool, message: String) {
-        let proc = ds_get_proc_for_pid(pid)
+        let proc = procbypid(pid)
         guard proc != 0 else { return (false, "Process not found") }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
@@ -199,7 +199,7 @@ class SandboxEscapeEngine: ObservableObject {
     
     func escapeSandbox_MACPolicyDisable() -> (success: Bool, message: String) {
         // Find mac_proc_enforce symbol
-        let kernbase = dspmgr.shared.kernbase
+        let _ = dspmgr.shared.kernbase
         let macProcEnforceAddr = dspmgr.shared.getMacProcEnforce()
         
         guard macProcEnforceAddr != 0 else {

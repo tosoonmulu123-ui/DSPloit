@@ -34,7 +34,7 @@ struct TweaksView: View {
                     }
                     .disabled(!mgr.dsready)
                     
-                    NavigationLink(destination: KernelPanicAnalyzerView()) {
+                    NavigationLink(destination: BleedingEdgeKernelPanicAnalyzerView()) {
                         HStack(spacing: 14) {
                             Image(systemName: "bolt.shield.fill")
                                 .font(.title3)
@@ -52,7 +52,7 @@ struct TweaksView: View {
                     }
                     .disabled(!mgr.dsready)
                     
-                    NavigationLink(destination: KernelMemoryInspectorView()) {
+                    NavigationLink(destination: BleedingEdgeKernelMemoryScannerView()) {
                         HStack(spacing: 14) {
                             Image(systemName: "memorychip")
                                 .font(.title3)
