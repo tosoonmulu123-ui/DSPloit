@@ -98,7 +98,8 @@ class IOSurfaceKRWEngine: ObservableObject {
             return (false, "IOSurface creation failed - may need entitlement")
         }
         
-        surfaceID = UInt32(surface.surfaceID)
+        // Use C function for compatibility (surfaceID property requires iOS 18+)
+        surfaceID = IOSurfaceGetID(surface)
         
         // Lock and get base address
         surface.lock(options: [], seed: nil)
