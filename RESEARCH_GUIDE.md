@@ -1,5 +1,58 @@
 # DSPloit Research Guide
 
+## Kernelcache Analysis Results (deep_analyze_v3.py)
+
+### Key Addresses (file offsets from code base 0xe00000)
+| Item | File Offset | Virtual Addr Formula |
+|------|-------------|---------------------|
+| GXF handler | 0xf0c440 | kernel_base + 0x20c440 |
+| PPL check #1 | 0xe33e14 | kernel_base + 0x033e14 |
+| pmap_enter (667 branches) | 0x11126c0 | kernel_base + 0x3126c0 |
+| Largest func (106KB) | 0x155e280 | kernel_base + 0x75e280 |
+| IOSurfaceRoot string | 0x0067d03b | (data section) |
+
+### PPL Protection Summary
+- **223** TBNZ/TBZ bit#14 instructions (PPL checks)
+- **7** distinct functions contain PPL checks
+- **50** GXF register accesses (S3_4_C15_C2_7)
+- PPL check pattern: `TBNZ Xn, #14, <ppl_path>`
+  - Normal path: permission = 0x1
+  - PPL path: permission = 0x81, page_size = 0x4000
+
+### IOSurface Analysis
+- **762** IOSurface-related strings
+- IOSurfaceRootUserClient at 0x0067d03b
+- Key methods: set_surface_handle, allocate client shared id, map shared memory
+- AppleAVD uses IOSurface for video decode buffers
+
+### ucred Structure (from type encoding)
+```
+ucred {
+    +0x00: ^ucred_rw     (pointer to ucred_rw)
+    +0x08: ^void
+    +0x10: uint64
+    +0x18: posix_cred {   (IIISS[16I]IIIi)
+        +0x18: cr_uid (uint32)
+        +0x1c: cr_ruid (uint32)
+        +0x20: cr_svuid (uint16)
+        +0x22: cr_ngroups (uint16)
+        +0x24: cr_groups[16] (uint32 * 16)
+        +0x64: cr_rgid (uint32)
+        +0x68: cr_svgid (uint32)
+        +0x6c: cr_gmuid (uint32)
+        +0x70: cr_flags (int32)
+    }
+    +0x78: ^label        (pointer to mac_label)
+    +0x80: au_session
+}
+```
+
+### Exploitation Vectors
+1. **IOSurface DMA** — GPU writes bypass CPU page tables (and PPL)
+2. **GXF Entry** — Execute in PPL context via ROP → GXF transition
+3. **Race in pmap_enter** — 667 branches = complex logic = timing window
+4. **IOSurface property manipulation** — Controlled kernel object read/write
+
 ## ⚠️ PENTING: Apa yang Harus Dikirim ke Sini
 
 Setelah menjalankan langkah-langkah di bawah, **KIRIM** data berikut ke chat:

@@ -102,20 +102,22 @@ class CheatEngineCore: ObservableObject {
     func scanForValue(_ valueStr: String, type: CheatValueType, mode: CheatScanMode, rangeStart: UInt64, rangeEnd: UInt64) {
         guard mgr.dsready, targetProcAddr != 0 else { return }
         
-        // SAFETY: Don't scan arbitrary ranges — only scan valid kernel heap addresses
-        // Valid heap range for iOS: 0xffffffd000000000 - 0xffffffefFFFFFFFF
+        // SAFETY: Socket KRW can ONLY read kernel heap objects.
+        // Reading arbitrary kernel VA (text, data_const, page tables) causes PANIC.
+        // Valid kernel heap range on iOS A12: roughly 0xffffffd000000000 - 0xffffffefFFFFFFFF
+        // But we can only safely read addresses near known heap objects (proc, task, etc.)
+        
         var safeStart = rangeStart
         var safeEnd = rangeEnd
         
-        // If user provided default/invalid range, use target proc's memory region
-        if safeStart < 0xffffffd000000000 || safeEnd > 0xffffffffffff {
-            // Scan around the target proc address (±64KB)
-            safeStart = targetProcAddr > 0x10000 ? targetProcAddr - 0x10000 : targetProcAddr
-            safeEnd = targetProcAddr + 0x10000
-        }
+        // Always constrain to target proc's neighborhood (known heap object)
+        // This prevents panic from reading invalid/non-heap addresses
+        let scanRadius: UInt64 = 0x10000  // ±64KB around proc
+        safeStart = targetProcAddr > scanRadius ? targetProcAddr - scanRadius : targetProcAddr
+        safeEnd = targetProcAddr + scanRadius
         
-        // Limit scan size to 256KB max to prevent crash
-        let maxScanSize: UInt64 = 256 * 1024
+        // Hard limit: never scan more than 128KB total
+        let maxScanSize: UInt64 = 128 * 1024
         if safeEnd - safeStart > maxScanSize {
             safeEnd = safeStart + maxScanSize
         }

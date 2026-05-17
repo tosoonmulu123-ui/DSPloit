@@ -54,12 +54,21 @@ class SandboxEscapeEngine: ObservableObject {
         }
         let proc = procbypid(pid)
         guard proc != 0 else {
-            return SandboxState(sandboxed: true, containerPath: "", sandboxLabel: 0, sandboxSlot: 0, profileName: "proc not found", restrictions: [])
+            return SandboxState(sandboxed: true, containerPath: NSHomeDirectory(), sandboxLabel: 0, sandboxSlot: 0, profileName: "proc not found", restrictions: [])
         }
         
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        guard procRo != 0 else {
+            return SandboxState(sandboxed: true, containerPath: NSHomeDirectory(), sandboxLabel: 0, sandboxSlot: 0, profileName: "proc_ro null", restrictions: [])
+        }
         let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
+        guard ucred != 0 else {
+            return SandboxState(sandboxed: true, containerPath: NSHomeDirectory(), sandboxLabel: 0, sandboxSlot: 0, profileName: "ucred null", restrictions: [])
+        }
         let label = ds_kread64(ucred + UInt64(off_ucred_cr_label))
+        guard label != 0 else {
+            return SandboxState(sandboxed: false, containerPath: NSHomeDirectory(), sandboxLabel: 0, sandboxSlot: 0, profileName: "no label", restrictions: [])
+        }
         let sandboxLabel = ds_kread64(label + UInt64(off_label_l_perpolicy_sandbox))
         
         var sandboxSlot: UInt64 = 0
@@ -436,8 +445,12 @@ struct BleedingEdgeSandboxEscapeEngineView: View {
                 targetPID = String(getpid())
             }
             // Only load if kernel is ready — prevents crash
+            // Delay slightly to ensure view is fully loaded
             if mgr.dsready {
-                loadSandboxState()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+                    guard mgr.dsready else { return }
+                    loadSandboxState()
+                }
             }
         }
     }

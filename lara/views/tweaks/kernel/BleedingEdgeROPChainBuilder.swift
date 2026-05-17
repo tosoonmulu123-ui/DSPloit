@@ -87,36 +87,53 @@ class ROPChainBuilderEngine: ObservableObject {
     // MARK: - File-Based Gadget Scanner (Safe - No Panic)
     
     func findGadgetsFromFile(startOffset: UInt64, size: UInt64) -> [ROPGadget] {
-        // Find kernelcache file in Documents
+        // Find kernelcache file in Documents or app bundle
         let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
-        let kcPath = (docs as NSString).appendingPathComponent("kernelcache")
+        let possiblePaths = [
+            (docs as NSString).appendingPathComponent("kernelcache"),
+            (docs as NSString).appendingPathComponent("kernelcache.macho"),
+            (docs as NSString).appendingPathComponent("kernelcache.decompressed"),
+            "/var/mobile/Documents/kernelcache",
+        ]
         
-        var filePath = kcPath
-        if !FileManager.default.fileExists(atPath: filePath) {
-            let altPaths = [
-                (docs as NSString).appendingPathComponent("kernelcache.macho"),
-                "/var/mobile/Documents/kernelcache",
-            ]
-            for alt in altPaths {
-                if FileManager.default.fileExists(atPath: alt) { filePath = alt; break }
+        var filePath: String?
+        for path in possiblePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                filePath = path
+                break
             }
         }
         
-        guard FileManager.default.fileExists(atPath: filePath) else { return [] }
-        
-        // Read only a small portion (64KB max) to prevent crash
-        guard let fh = FileHandle(forReadingAtPath: filePath) else { return [] }
+        guard let fp = filePath else { return [] }
+        guard let fh = FileHandle(forReadingAtPath: fp) else { return [] }
         defer { fh.closeFile() }
         
         let fileSize = fh.seekToEndOfFile()
-        guard fileSize > 100 else { return [] }
+        guard fileSize > 0xe00000 + 100 else { return [] }  // Must be large enough for code section
         
         // Code section starts at 0xe00000 in kernelcache fileset
-        // (discovered via analyze_kernelcache.py)
         let codeOffset: UInt64 = 0xe00000
+        
+        // Validate: check if there's actual ARM64 code at this offset
+        fh.seek(toFileOffset: codeOffset)
+        let probe = fh.readData(ofLength: 4096)
+        guard probe.count >= 4096 else { return [] }
+        
+        // Count RET instructions in probe to verify it's code
+        var retCount = 0
+        let probeBytes = [UInt8](probe)
+        for j in stride(from: 0, to: probeBytes.count - 4, by: 4) {
+            let val = UInt32(probeBytes[j]) | (UInt32(probeBytes[j+1]) << 8) |
+                      (UInt32(probeBytes[j+2]) << 16) | (UInt32(probeBytes[j+3]) << 24)
+            if val == 0xD65F03C0 { retCount += 1 }
+        }
+        guard retCount >= 2 else { return [] }  // Not code, bail out
+        
+        // Read 64KB from code section at requested offset
         let seekTo = min(codeOffset + startOffset, fileSize - 64)
         fh.seek(toFileOffset: seekTo)
-        let chunk = fh.readData(ofLength: min(65536, Int(fileSize - seekTo)))
+        let readSize = min(65536, Int(fileSize - seekTo))
+        let chunk = fh.readData(ofLength: readSize)
         guard chunk.count >= 12 else { return [] }
         
         var gadgets: [ROPGadget] = []
@@ -126,7 +143,7 @@ class ROPChainBuilderEngine: ObservableObject {
         var i = 0
         while i + 4 <= bytes.count && gadgets.count < 50 {
             let instr = UInt32(bytes[i]) | (UInt32(bytes[i+1]) << 8) | (UInt32(bytes[i+2]) << 16) | (UInt32(bytes[i+3]) << 24)
-            let virtualAddr = kernelBase + startOffset + UInt64(i)
+            let virtualAddr = kernelBase + codeOffset + startOffset + UInt64(i)
             
             if instr == 0xD65F03C0 && i >= 8 { // RET
                 let p1 = UInt32(bytes[i-4]) | (UInt32(bytes[i-3]) << 8) | (UInt32(bytes[i-2]) << 16) | (UInt32(bytes[i-1]) << 24)
@@ -405,8 +422,8 @@ struct BleedingEdgeROPChainBuilderView: View {
                 .disabled(!mgr.dsready || isScanning)
                 
                 Button("Scan Kernel Text") {
-                    scanAddr = String(format: "0x%llx", mgr.kernbase)
-                    scanSize = "0x100000"
+                    scanAddr = "0x0"  // Start from beginning of code section
+                    scanSize = "0x10000"
                     scanForGadgets()
                 }
                 .disabled(!mgr.dsready || isScanning)
@@ -529,18 +546,15 @@ struct BleedingEdgeROPChainBuilderView: View {
             // Try to scan from kernelcache FILE first (safe, no panic)
             let gadgets = engine.findGadgetsFromFile(startOffset: addr, size: size)
             
-            if gadgets.isEmpty {
-                // Fallback: scan from live kernel memory (only heap-safe addresses)
-                let liveGadgets = engine.findGadgets(startAddr: addr, size: size)
-                DispatchQueue.main.async {
-                    engine.gadgetsFound = liveGadgets
-                    isScanning = false
-                }
-            } else {
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                if gadgets.isEmpty {
+                    // No file-based gadgets found - show message instead of crashing
+                    engine.gadgetsFound = []
+                    engine.chainBuilt = false
+                } else {
                     engine.gadgetsFound = gadgets
-                    isScanning = false
                 }
+                isScanning = false
             }
         }
     }
