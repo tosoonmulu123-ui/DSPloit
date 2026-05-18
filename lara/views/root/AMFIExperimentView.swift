@@ -176,6 +176,18 @@ struct AMFIExperimentView: View {
             let exp12 = self.expForkExec(rc: rc)
             experimentResults.append(exp12)
             
+            // ============================================
+            // Experiment 13: Scan directories for existing binaries
+            // ============================================
+            let exp13 = self.expScanBinaries(rc: rc)
+            experimentResults.append(exp13)
+            
+            // ============================================
+            // Experiment 14: Try spawn binaries that exist
+            // ============================================
+            let exp14 = self.expSpawnExisting(rc: rc)
+            experimentResults.append(exp14)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -470,11 +482,9 @@ struct AMFIExperimentView: View {
     /// This is the classic Unix pattern: fork → child calls execve
     /// Since fork works, maybe execve in the CHILD works too
     private func expForkExec(rc: RemoteCall) -> ExperimentResult {
-        // fork()
         let childPid = RootExecutor.rcall(rc, "fork")
         
         if childPid == 0 {
-            // We're somehow in child context (shouldn't happen via RC)
             return ExperimentResult(name: "fork+exec", success: false, detail: "Unexpected: in child", timestamp: Date())
         }
         
@@ -482,24 +492,131 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: "fork+exec", success: false, detail: "fork failed", timestamp: Date())
         }
         
-        // We're in parent (launchd). Child was forked with PID=childPid.
-        // The child is a copy of launchd — it inherits everything.
-        // But we can't control the child via RC (RC controls parent thread).
-        
-        // Wait for child (it will exit immediately since it's a fork of our thread state)
         let statusAddr = rc.trojanMem + 0x380
         rc[statusAddr].setValue32(0)
         let waitResult = RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, UInt64(WNOHANG))
         let exitStatus = rc[statusAddr].value32()
         
-        // The key insight: child PID exists! If we could inject code into it
-        // (via RemoteCall to the child), we could call execve there.
-        // execve in child won't kill launchd!
-        
         return ExperimentResult(
             name: "fork+exec",
             success: true,
             detail: "✅ fork PID=\(childPid), wait=\(waitResult), status=0x\(String(format: "%x", exitStatus))\n→ Child exists! Could RC into child then execve",
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Scan directories for existing binaries
+    private func expScanBinaries(rc: RemoteCall) -> ExperimentResult {
+        let dirs = ["/sbin", "/usr/sbin", "/usr/libexec", "/usr/bin", "/bin"]
+        var found: [String] = []
+        let statAddr = rc.trojanMem + 0x800
+        
+        // Known binaries to check
+        let binaries = [
+            // /sbin
+            "/sbin/mount", "/sbin/umount", "/sbin/reboot", "/sbin/halt",
+            "/sbin/fsck", "/sbin/launchd", "/sbin/pfctl", "/sbin/ifconfig",
+            "/sbin/route", "/sbin/nologin", "/sbin/ping",
+            // /usr/sbin
+            "/usr/sbin/sysctl", "/usr/sbin/chown", "/usr/sbin/notifyd",
+            "/usr/sbin/cfprefsd", "/usr/sbin/mediaserverd", "/usr/sbin/BTServer",
+            "/usr/sbin/wirelessproxd", "/usr/sbin/mDNSResponder",
+            // /usr/libexec
+            "/usr/libexec/xpcproxy", "/usr/libexec/trustd", "/usr/libexec/amfid",
+            "/usr/libexec/keybagd", "/usr/libexec/securityd", "/usr/libexec/lsd",
+            "/usr/libexec/backboardd", "/usr/libexec/SpringBoard",
+            "/usr/libexec/installd", "/usr/libexec/lockdownd",
+            "/usr/libexec/mobileassetd", "/usr/libexec/ptpd",
+            // /usr/bin
+            "/usr/bin/id", "/usr/bin/env", "/usr/bin/which", "/usr/bin/printf",
+            "/usr/bin/uname", "/usr/bin/whoami", "/usr/bin/sw_vers",
+            "/usr/bin/plutil", "/usr/bin/defaults", "/usr/bin/killall",
+            "/usr/bin/launchctl", "/usr/bin/log", "/usr/bin/open",
+            // /bin
+            "/bin/sh", "/bin/bash", "/bin/zsh", "/bin/ls", "/bin/cp",
+            "/bin/mv", "/bin/rm", "/bin/cat", "/bin/echo", "/bin/mkdir",
+            "/bin/chmod", "/bin/chown", "/bin/kill", "/bin/ps", "/bin/df",
+            "/bin/ln", "/bin/pwd", "/bin/date", "/bin/sleep",
+        ]
+        
+        for bin in binaries {
+            let pathAddr = remote_alloc_str(rc, bin)
+            let ret = RootExecutor.rcall(rc, "stat", pathAddr, statAddr)
+            if ret == 0 {
+                found.append(bin)
+            }
+            RootExecutor.rcall(rc, "free", pathAddr)
+        }
+        
+        let detail: String
+        if found.isEmpty {
+            detail = "No binaries found in standard paths!\niOS 18 moved them to cryptex?"
+        } else {
+            detail = "Found \(found.count) binaries:\n" + found.joined(separator: "\n")
+        }
+        
+        return ExperimentResult(
+            name: "scan binaries (\(binaries.count) checked)",
+            success: !found.isEmpty,
+            detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Try to posix_spawn binaries that we know exist
+    private func expSpawnExisting(rc: RemoteCall) -> ExperimentResult {
+        // First find what exists
+        let candidates = ["/sbin/mount", "/sbin/ping", "/sbin/ifconfig",
+                         "/usr/libexec/xpcproxy", "/usr/libexec/trustd",
+                         "/usr/bin/launchctl", "/usr/sbin/sysctl"]
+        
+        let statAddr = rc.trojanMem + 0x800
+        var existingBins: [String] = []
+        
+        for bin in candidates {
+            let pathAddr = remote_alloc_str(rc, bin)
+            let ret = RootExecutor.rcall(rc, "stat", pathAddr, statAddr)
+            if ret == 0 { existingBins.append(bin) }
+            RootExecutor.rcall(rc, "free", pathAddr)
+        }
+        
+        if existingBins.isEmpty {
+            return ExperimentResult(name: "spawn existing", success: false, detail: "No candidate binaries found", timestamp: Date())
+        }
+        
+        // Try to spawn each existing binary
+        var spawnResults: [String] = []
+        let mem = rc.trojanMem
+        
+        for bin in existingBins.prefix(3) { // max 3 to save time
+            let binAddr = remote_alloc_str(rc, bin)
+            let argvBase = mem + 0x400
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0) // NULL
+            
+            let pidAddr = mem + 0x300
+            rc[pidAddr].setValue32(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            
+            if ret == 0 && pid != 0 {
+                // SUCCESS! Kill it immediately (don't want random processes)
+                RootExecutor.rcall(rc, "kill", UInt64(pid), 9) // SIGKILL
+                spawnResults.append("✅ \(bin) → PID=\(pid)")
+            } else {
+                let err = remote_errno(rc)
+                spawnResults.append("❌ \(bin) → ret=\(ret), err=\(err)")
+            }
+            
+            RootExecutor.rcall(rc, "free", binAddr)
+        }
+        
+        let anySuccess = spawnResults.contains(where: { $0.hasPrefix("✅") })
+        return ExperimentResult(
+            name: "spawn existing binaries",
+            success: anySuccess,
+            detail: spawnResults.joined(separator: "\n"),
             timestamp: Date()
         )
     }
