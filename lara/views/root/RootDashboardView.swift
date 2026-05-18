@@ -40,8 +40,12 @@ struct RootDashboardView: View {
                 
                 // Root Tools
                 Section {
+                    NavigationLink(destination: OneTapJailbreakView()) {
+                        ToolRow(icon: "bolt.fill", title: "One-Tap Jailbreak", subtitle: "Auto-chain: exploit → root in one tap", color: .red)
+                    }
+                    
                     NavigationLink(destination: RootShellView()) {
-                        ToolRow(icon: "terminal.fill", title: "Root Shell", subtitle: "Execute commands as uid=0", color: .red)
+                        ToolRow(icon: "terminal.fill", title: "Root Shell", subtitle: "Execute commands as uid=0", color: .orange)
                     }
                     
                     NavigationLink(destination: RootFileManagerView()) {
@@ -49,11 +53,15 @@ struct RootDashboardView: View {
                     }
                     
                     NavigationLink(destination: RootProcessView()) {
-                        ToolRow(icon: "play.circle.fill", title: "Process Manager", subtitle: "Spawn & manage root processes", color: .orange)
+                        ToolRow(icon: "play.circle.fill", title: "Process Manager", subtitle: "Spawn & manage root processes", color: .green)
                     }
                     
                     NavigationLink(destination: RootPersistenceView()) {
                         ToolRow(icon: "arrow.clockwise.circle.fill", title: "Persistence", subtitle: "LaunchDaemons, KRW stash, boot hooks", color: .purple)
+                    }
+                    
+                    NavigationLink(destination: BootstrapView()) {
+                        ToolRow(icon: "shippingbox.fill", title: "Bootstrap", subtitle: "Setup /var/jb, package manager, SSH", color: .cyan)
                     }
                 } header: {
                     Text("Root Tools")
