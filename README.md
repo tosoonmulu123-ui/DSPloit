@@ -1,6 +1,6 @@
 <div align="center">
   <br>
-  <a href="https://discord.gg/gw8PcRF3Jr"><img src="https://github.com/rooootdev/dsploit/blob/main/dsploit.png?raw=true" alt="DSPloit Logo" width="200"></a>
+  <a href="https://discord.gg/gw8PcRF3Jr"><img src="https://github.com/royan/dsploit/blob/main/dsploit.png?raw=true" alt="DSPloit Logo" width="200"></a>
   <br>
   <h1>DSPloit</h1>
 
@@ -12,17 +12,17 @@
   <a href="https://discord.gg/gw8PcRF3Jr">
     <img src="https://img.shields.io/badge/Discord-Join%20Server-7289DA.svg" alt="Discord">
   </a>
-  <a href="https://github.com/rooootdev/dsploit/stargazers">
-    <img src="https://img.shields.io/github/stars/rooootdev/dsploit?style=social" alt="GitHub stars">
+  <a href="https://github.com/royan/dsploit/stargazers">
+    <img src="https://img.shields.io/github/stars/royan/dsploit?style=social" alt="GitHub stars">
   </a>
-  <a href="https://github.com/rooootdev/dsploit/issues">
-    <img src="https://img.shields.io/github/issues/rooootdev/dsploit" alt="GitHub issues">
+  <a href="https://github.com/royan/dsploit/issues">
+    <img src="https://img.shields.io/github/issues/royan/dsploit" alt="GitHub issues">
   </a>
-  <a href="https://github.com/rooootdev/dsploit/releases">
-    <img src="https://img.shields.io/github/v/release/rooootdev/dsploit" alt="Release">
+  <a href="https://github.com/royan/dsploit/releases">
+    <img src="https://img.shields.io/github/v/release/royan/dsploit" alt="Release">
   </a>
-  <a href="https://github.com/rooootdev/dsploit/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/rooootdev/dsploit/build.yml?branch=main&style=flat&logo=github" alt="GitHub Actions">
+  <a href="https://github.com/royan/dsploit/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/royan/dsploit/build.yml?branch=main&style=flat&logo=github" alt="GitHub Actions">
   </a>
 </p>
 
@@ -54,10 +54,10 @@ Important Notes:
 - Issues involving DSPloit not working on either unsupported or *technically* supported versions will be closed immediately.
 
 <p align="center">
-  <a href="https://celloserenity.github.io/altdirect/?url=https://raw.githubusercontent.com/rooootdev/dsploit/refs/heads/main/source.json" target="_blank">
+  <a href="https://celloserenity.github.io/altdirect/?url=https://raw.githubusercontent.com/royan/dsploit/refs/heads/main/source.json" target="_blank">
     <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/AltSource_Blue.png?raw=true" alt="Add AltSource" width="200">
   </a>
-  <a href="https://github.com/rooootdev/dsploit/releases/download/0.1/dsploit_v0.1.ipa" target="_blank">
+  <a href="https://github.com/royan/dsploit/releases/download/0.1/dsploit_v0.1.ipa" target="_blank">
     <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true" alt="Download .ipa" width="200">
   </a>
 </p>
@@ -122,7 +122,7 @@ Important Notes:
 - opa334 for the kernel exploit poc, ChOma and XPF
 - AppInstaller iOS for help with offsets
 - AlfieCG for libgrabkernel2
-- Everyone who contributed! (Visible <a href="https://github.com/rooootdev/dsploit/graphs/contributors">Here</a>)
+- Everyone who contributed! (Visible <a href="https://github.com/royan/dsploit/graphs/contributors">Here</a>)
 
 <br> 
 <div align="center">a beautiful kexploit ❤️</div>

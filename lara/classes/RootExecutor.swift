@@ -40,6 +40,29 @@ final class RootExecutor: ObservableObject {
         globallogger.log("(root) \(msg)")
     }
     
+    // MARK: - Remote Call Helper
+    
+    /// Call a C function in the remote process (replaces ObjC RemoteArbCall macro)
+    /// Returns the function's return value as UInt64
+    @discardableResult
+    static func rcall(_ rc: RemoteCall, _ name: String, _ args: UInt64...) -> UInt64 {
+        let RTLD_DEFAULT = UnsafeMutableRawPointer(bitPattern: -2)
+        let ptr = dlsym(RTLD_DEFAULT, name)
+        var argsCopy = args.isEmpty ? [UInt64(0)] : Array(args)
+        let argCount = UInt(args.count)
+        return name.withCString { cName -> UInt64 in
+            UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
+                rc.doStable(
+                    withTimeout: 5,
+                    functionName: UnsafeMutablePointer(mutating: cName),
+                    functionPointer: ptr,
+                    args: buffer.baseAddress,
+                    argCount: argCount
+                )
+            })
+        }
+    }
+    
     // MARK: - Core: Execute block as root
     
     /// Execute a series of operations in launchd context (uid=0)
@@ -108,8 +131,8 @@ final class RootExecutor: ObservableObject {
     
     func verifyRoot() {
         executeAsRoot(operation: "verify_root") { rc in
-            let uid = RemoteArbCall(rc, getuid)
-            let pid = RemoteArbCall(rc, getpid)
+            let uid = RootExecutor.rcall(rc, "getuid")
+            let pid = RootExecutor.rcall(rc, "getpid")
             let msg = "uid=\(uid), pid=\(pid)"
             return (uid == 0, msg, UInt64(uid))
         }
@@ -125,11 +148,11 @@ final class RootExecutor: ObservableObject {
             let pathAddr = remote_alloc_str(rc, path)
             let flags: UInt64 = UInt64(O_WRONLY | O_CREAT | O_TRUNC)
             let mode: UInt64 = 0o644
-            let fd = RemoteArbCall(rc, open, pathAddr, flags, mode)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, flags, mode)
             
             guard fd != UInt64(bitPattern: -1) else {
                 let err = remote_errno(rc)
-                RemoteArbCall(rc, free, pathAddr)
+                RootExecutor.rcall(rc, "free", pathAddr)
                 return (false, "open failed: errno=\(err)", 0)
             }
             
@@ -147,15 +170,15 @@ final class RootExecutor: ObservableObject {
                     rc.remote_write(writeAddr, from: buffer.baseAddress!.advanced(by: written), size: UInt64(toWrite))
                     
                     // write(fd, buf, len)
-                    let n = RemoteArbCall(rc, write, fd, writeAddr, UInt64(toWrite))
+                    let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(toWrite))
                     if n == 0 || n == UInt64(bitPattern: -1) { break }
                     written += Int(n)
                 }
             }
             
             // close(fd)
-            RemoteArbCall(rc, close, fd)
-            RemoteArbCall(rc, free, pathAddr)
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "free", pathAddr)
             
             let success = written == content.count
             return (success, success ? "Wrote \(written) bytes to \(path)" : "Partial write: \(written)/\(content.count)", UInt64(written))
@@ -191,13 +214,13 @@ final class RootExecutor: ObservableObject {
             rc[pidAddr].setValue32(0)
             
             // posix_spawn(&pid, binary, NULL, NULL, argv, NULL)
-            let result = RemoteArbCall(rc, posix_spawn, pidAddr, binAddr, 0, 0, argvBase, 0)
+            let result = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
             let spawnedPid = rc[pidAddr].value32()
             
             // Free allocated strings
-            RemoteArbCall(rc, free, binAddr)
+            RootExecutor.rcall(rc, "free", binAddr)
             for ptr in argvPtrs where ptr != 0 && ptr != binAddr {
-                RemoteArbCall(rc, free, ptr)
+                RootExecutor.rcall(rc, "free", ptr)
             }
             
             if result == 0 && spawnedPid != 0 {
@@ -213,8 +236,8 @@ final class RootExecutor: ObservableObject {
     func chownAsRoot(path: String, uid: UInt32, gid: UInt32) {
         executeAsRoot(operation: "chown") { rc in
             let pathAddr = remote_alloc_str(rc, path)
-            let result = RemoteArbCall(rc, chown, pathAddr, UInt64(uid), UInt64(gid))
-            RemoteArbCall(rc, free, pathAddr)
+            let result = RootExecutor.rcall(rc, "chown", pathAddr, UInt64(uid), UInt64(gid))
+            RootExecutor.rcall(rc, "free", pathAddr)
             return (result == 0, result == 0 ? "chown \(uid):\(gid) \(path)" : "chown failed: errno=\(remote_errno(rc))", UInt64(result))
         }
     }
@@ -222,8 +245,8 @@ final class RootExecutor: ObservableObject {
     func chmodAsRoot(path: String, mode: UInt16) {
         executeAsRoot(operation: "chmod") { rc in
             let pathAddr = remote_alloc_str(rc, path)
-            let result = RemoteArbCall(rc, chmod, pathAddr, UInt64(mode))
-            RemoteArbCall(rc, free, pathAddr)
+            let result = RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(mode))
+            RootExecutor.rcall(rc, "free", pathAddr)
             return (result == 0, result == 0 ? "chmod \(String(format: "%o", mode)) \(path)" : "chmod failed: errno=\(remote_errno(rc))", UInt64(result))
         }
     }
@@ -231,8 +254,8 @@ final class RootExecutor: ObservableObject {
     func mkdirAsRoot(path: String) {
         executeAsRoot(operation: "mkdir") { rc in
             let pathAddr = remote_alloc_str(rc, path)
-            let result = RemoteArbCall(rc, mkdir, pathAddr, 0o755)
-            RemoteArbCall(rc, free, pathAddr)
+            let result = RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+            RootExecutor.rcall(rc, "free", pathAddr)
             return (result == 0 || remote_errno(rc) == EEXIST, "mkdir \(path) (ret=\(result))", UInt64(result))
         }
     }
@@ -316,9 +339,9 @@ final class RootExecutor: ObservableObject {
             let pathAddr = remote_alloc_str(rc, path)
             
             // open(path, O_RDONLY)
-            let fd = RemoteArbCall(rc, open, pathAddr, UInt64(O_RDONLY), 0)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_RDONLY), 0)
             guard fd != UInt64(bitPattern: -1) else {
-                RemoteArbCall(rc, free, pathAddr)
+                RootExecutor.rcall(rc, "free", pathAddr)
                 DispatchQueue.main.async { completion(nil) }
                 return (false, "open failed: errno=\(remote_errno(rc))", 0)
             }
@@ -326,7 +349,7 @@ final class RootExecutor: ObservableObject {
             // read(fd, buf, maxSize)
             let bufAddr = mem + 0x800
             let readSize = min(maxSize, 0x3000) // max 12KB per operation
-            let n = RemoteArbCall(rc, read, fd, bufAddr, UInt64(readSize))
+            let n = RootExecutor.rcall(rc, "read", fd, bufAddr, UInt64(readSize))
             
             var data: Data?
             if n > 0 && n < UInt64(readSize + 1) {
@@ -335,8 +358,8 @@ final class RootExecutor: ObservableObject {
                 data = Data(buffer)
             }
             
-            RemoteArbCall(rc, close, fd)
-            RemoteArbCall(rc, free, pathAddr)
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "free", pathAddr)
             
             DispatchQueue.main.async { completion(data) }
             return (n > 0, "Read \(n) bytes from \(path)", n)
@@ -362,18 +385,18 @@ final class RootExecutor: ObservableObject {
             
             // Check current mount flags
             let statfsAddr = rc.trojanMem + 0x800
-            let result = RemoteArbCall(rc, statfs, pathAddr, statfsAddr)
+            let result = RootExecutor.rcall(rc, "statfs", pathAddr, statfsAddr)
             
             if result == 0 {
                 // Read f_flags from statfs struct (offset 0x28 on arm64)
                 let flags = rc[statfsAddr + 0x28].value32()
                 let isReadOnly = (flags & UInt32(MNT_RDONLY)) != 0
                 
-                RemoteArbCall(rc, free, pathAddr)
+                RootExecutor.rcall(rc, "free", pathAddr)
                 return (true, "/private/var flags=0x\(String(format: "%x", flags)) readonly=\(isReadOnly)", UInt64(flags))
             }
             
-            RemoteArbCall(rc, free, pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
             return (false, "statfs failed", 0)
         }
     }

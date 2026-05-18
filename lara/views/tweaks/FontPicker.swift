@@ -206,7 +206,7 @@ private func viewfontfile(path: String, size: CGFloat) -> Font {
 
 private let fontkey = "customfonts"
 private let fontrepokey = "fontrepos"
-private let defaultrepo = "https://raw.githubusercontent.com/rooootdev/dsploitfonts/main/fonts.json"
+private let defaultrepo = "https://raw.githubusercontent.com/royan/dsploitfonts/main/fonts.json"
 
 private func load() -> [importedfont] {
     guard let storeddata = UserDefaults.standard.data(forKey: fontkey),
@@ -440,7 +440,7 @@ struct FontRepoView: View {
                 } header: {
                     Text("Repos")
                 } footer: {
-                    Text("Make a repo by forking the [template repo](https://github.com/rooootdev/dsploitfonts/) on GitHub and adding your custom fonts there.")
+                    Text("Make a repo by forking the [template repo](https://github.com/royan/dsploitfonts/) on GitHub and adding your custom fonts there.")
                 }
             }
             .navigationTitle("Font Repos")

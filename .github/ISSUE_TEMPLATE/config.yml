@@ -4,11 +4,11 @@ contact_links:
     url: https://discord.gg/gw8PcRF3Jr
     about: Ask questions, get install help, or chat with the community before filing an issue.
   - name: README & Documentation
-    url: https://github.com/rooootdev/dsploit#readme
+    url: https://github.com/royan/dsploit#readme
     about: Check the README for install instructions, supported devices, and common issues.
   - name: Existing Issues
-    url: https://github.com/rooootdev/dsploit/issues?q=is%3Aissue
+    url: https://github.com/royan/dsploit/issues?q=is%3Aissue
     about: Search open and closed issues before submitting — your problem may already be reported or fixed.
   - name: Source & Releases
-    url: https://github.com/rooootdev/dsploit/releases
+    url: https://github.com/royan/dsploit/releases
     about: Make sure you're on the latest release before reporting a bug.

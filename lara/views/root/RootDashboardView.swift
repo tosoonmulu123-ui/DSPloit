@@ -84,7 +84,7 @@ struct RootDashboardView: View {
                         Text("iOS 18.2 root exploit — iPhone XR (A12)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("Based on [lara](https://github.com/rooootdev/lara) by rooootdev")
+                        Text("Based on [lara](https://github.com/royan) by royan")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
