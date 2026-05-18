@@ -1217,7 +1217,7 @@ struct AMFIExperimentView: View {
             }
             
             // Destroy amfid RC (don't keep it alive — might crash amfid)
-            amfid.destroyRemoteCall()
+            amfid.destroy()
             detail += "\namfid RC destroyed (cleanup)\n"
             
         } else {
@@ -1235,7 +1235,7 @@ struct AMFIExperimentView: View {
                 detail += "✅ RC to amfid with MIG bypass WORKS!\n"
                 let pid2 = RootExecutor.rcall(amfid2, "getpid")
                 detail += "getpid: \(pid2)\n"
-                amfid2.destroyRemoteCall()
+                amfid2.destroy()
             } else {
                 detail += "❌ MIG bypass also failed: \(RemoteCall.lastInitError() ?? "unknown")\n"
                 detail += "\nAlternative: use kernel task port manipulation\n"
