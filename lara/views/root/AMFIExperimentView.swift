@@ -219,6 +219,18 @@ struct AMFIExperimentView: View {
             let exp19 = self.expVerifySpawnReturn(rc: rc)
             experimentResults.append(exp19)
             
+            // ============================================
+            // Experiment 20: Fix PID + spawn with pipe for output
+            // ============================================
+            let exp20 = self.expSpawnWithPipe(rc: rc)
+            experimentResults.append(exp20)
+            
+            // ============================================
+            // Experiment 21: Scan cryptex usr/libexec contents
+            // ============================================
+            let exp21 = self.expScanCryptexLibexec(rc: rc)
+            experimentResults.append(exp21)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -885,6 +897,151 @@ struct AMFIExperimentView: View {
             name: "verify spawn return",
             success: isReal,
             detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Spawn with pipe-based output capture
+    /// Instead of file redirect, use pipe() + dup2 pattern
+    /// Also: fix PID by using remote memory write directly
+    private func expSpawnWithPipe(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Strategy: since posix_spawn works (ret=0) but PID isn't captured,
+        // and output file is empty, try a different approach:
+        // 1. Create a file with known content BEFORE spawn
+        // 2. Spawn /bin/df (which we know exists and ret=0)
+        // 3. Use posix_spawn_file_actions to redirect stdout
+        // 4. Sleep to let process finish
+        // 5. Read the output file
+        
+        // Step 1: Write output file path
+        let outFile = "/tmp/.dsp_pipe_test"
+        let outAddr = remote_alloc_str(rc, outFile)
+        
+        // Delete old file if exists
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        
+        // Step 2: Setup file actions — redirect fd 1 (stdout) to file
+        let actionsAddr = mem + 0x100
+        // posix_spawn_file_actions_t is opaque, typically pointer-sized
+        rc[actionsAddr].setValue64(0)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+        
+        // addopen(actions, 1, path, O_WRONLY|O_CREAT|O_TRUNC, 0644)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        // stderr too
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 2, outAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
+        
+        // Step 3: Spawn /bin/df
+        let binAddr = remote_alloc_str(rc, "/bin/df")
+        let argvBase = mem + 0x400
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+        
+        let pidAddr = mem + 0x2E0
+        rc[pidAddr].setValue64(0xDEAD) // sentinel to detect if it gets written
+        
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, argvBase, 0)
+        
+        // Read PID area (check multiple offsets)
+        let pidVal0 = rc[pidAddr].value32()
+        let pidVal4 = rc[pidAddr + 4].value32()
+        let pidFull = rc[pidAddr].value64()
+        
+        // Step 4: Wait — since we might not have PID, just sleep
+        RootExecutor.rcall(rc, "usleep", 1000000) // 1 second
+        
+        // Also try waitpid(-1) to reap any child
+        let statusAddr = mem + 0x380
+        rc[statusAddr].setValue32(0)
+        let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+        let waitStatus = rc[statusAddr].value32()
+        
+        // Step 5: Read output file
+        let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+        var output = ""
+        if readFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 2000)
+            if n > 0 && n < 2001 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+            }
+            RootExecutor.rcall(rc, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let detail = """
+        posix_spawn ret=\(ret)
+        pid area: 0x\(String(format: "%x", pidVal0)) | +4: 0x\(String(format: "%x", pidVal4)) | full: 0x\(String(format: "%llx", pidFull))
+        waitpid(-1, WNOHANG): ret=\(waitRet), status=0x\(String(format: "%x", waitStatus))
+        output file: \(readFd != UInt64(bitPattern: -1) ? "opened" : "MISSING")
+        output (\(output.count) chars): \(output.prefix(300))
+        """
+        
+        return ExperimentResult(
+            name: "spawn /bin/df + pipe fix",
+            success: !output.isEmpty,
+            detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Scan cryptex usr/libexec for available binaries
+    private func expScanCryptexLibexec(rc: RemoteCall) -> ExperimentResult {
+        let dirs = [
+            "/private/preboot/Cryptexes/OS/usr/libexec",
+            "/System/Cryptexes/OS/usr/libexec",
+            "/private/preboot/Cryptexes/OS/usr/lib",
+            "/System/Cryptexes/OS/usr/lib",
+        ]
+        
+        var allEntries: [String] = []
+        
+        for dir in dirs {
+            let pathAddr = remote_alloc_str(rc, dir)
+            let dirPtr = RootExecutor.rcall(rc, "opendir", pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            
+            if dirPtr == 0 { continue }
+            
+            var entries: [String] = []
+            for _ in 0..<100 {
+                let dirent = RootExecutor.rcall(rc, "readdir", dirPtr)
+                if dirent == 0 { break }
+                
+                var nameBuf = [UInt8](repeating: 0, count: 256)
+                rc.remoteRead(dirent + 21, to: &nameBuf, size: 256)
+                let name = String(cString: nameBuf + [0])
+                
+                if name != "." && name != ".." {
+                    entries.append(name)
+                }
+            }
+            RootExecutor.rcall(rc, "closedir", dirPtr)
+            
+            if !entries.isEmpty {
+                allEntries.append("\(dir)/ (\(entries.count) items):")
+                allEntries.append(contentsOf: entries.prefix(20).map { "  \($0)" })
+                if entries.count > 20 {
+                    allEntries.append("  ... +\(entries.count - 20) more")
+                }
+            }
+        }
+        
+        return ExperimentResult(
+            name: "cryptex libexec scan",
+            success: !allEntries.isEmpty,
+            detail: allEntries.isEmpty ? "No entries found" : allEntries.joined(separator: "\n"),
             timestamp: Date()
         )
     }
