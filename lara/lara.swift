@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum taboptions {
-    case applying, root, files, logs
+    case applying, root, logs
 }
 
 let g_isunsupported: Bool = isunsupported()
@@ -58,16 +58,7 @@ struct DSPloit: App {
                     }
                     .tag(taboptions.root)
                 
-                // File manager
-                if showfmintabs {
-                    SantanderView(startPath: "/")
-                        .tabItem {
-                            Image(systemName: "folder.fill")
-                        }
-                        .tag(taboptions.files)
-                }
-                
-                // this too
+                // Logs tab
                 if logsdisplaymode == .tabs {
                     LogsView(logger: globallogger)
                         .tabItem {
