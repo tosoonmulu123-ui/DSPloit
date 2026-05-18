@@ -130,17 +130,8 @@ struct DSPloit: App {
     }
 
     private func handlebg() {
-        guard mgr.rcready else { return }
-
-        var bgTask: UIBackgroundTaskIdentifier = .invalid
-
-        bgTask = UIApplication.shared.beginBackgroundTask(withName: "RemoteCallCleanup") {
-            endbgtask(&bgTask)
-        }
-
-        mgr.rcdestroy {
-            self.endbgtask(&bgTask)
-        }
+        // Don't destroy RC on background — we need it for root operations
+        // RC will be auto-reconnected by RootExecutor if it dies naturally
     }
 
     private func endbgtask(_ task: inout UIBackgroundTaskIdentifier) {
