@@ -354,17 +354,21 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp37)
             
             // ============================================
-            // Experiment 38: Multiple spawn attempts
-            // Binary EXECUTES (confirmed!) — try many times for output
+            // Experiment 38: Multiple spawn attempts (REDUCED to 2)
             // ============================================
             let exp38 = self.expMultipleSpawns(rc: rc)
             experimentResults.append(exp38)
             
             // ============================================
-            // Experiment 39: Kernel fd patch before spawn
+            // Experiment 39: Kernel fd — DISABLED (causes panic)
+            // fd table is in zone not accessible via socket KRW
             // ============================================
-            let exp39 = self.expKernelFdPatch(rc: rc)
-            experimentResults.append(exp39)
+            experimentResults.append(ExperimentResult(
+                name: "kernel fd (DISABLED)",
+                success: false,
+                detail: "⚠️ Disabled — fd table in inaccessible kernel zone.\nReading fd entries via socket KRW causes panic.",
+                timestamp: Date()
+            ))
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2653,7 +2657,7 @@ struct AMFIExperimentView: View {
         let mem = rc.trojanMem
         var results: [String] = []
         
-        for attempt in 1...5 {
+        for attempt in 1...2 {
             let outFile = "/tmp/.dsp_multi_\(attempt)"
             let outAddr = remote_alloc_str(rc, outFile)
             RootExecutor.rcall(rc, "unlink", outAddr)
@@ -2704,7 +2708,7 @@ struct AMFIExperimentView: View {
         
         let anyOutput = results.contains(where: { $0.contains("✅") })
         return ExperimentResult(
-            name: "multiple spawn attempts (5x)",
+            name: "multiple spawn attempts (2x)",
             success: anyOutput,
             detail: results.joined(separator: "\n"),
             timestamp: Date()
