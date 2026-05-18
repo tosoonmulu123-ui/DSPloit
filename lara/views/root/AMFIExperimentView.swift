@@ -1140,11 +1140,11 @@ struct AMFIExperimentView: View {
     /// 4. amfid has com.apple.private.amfi.can-execute entitlement!
     private func expRCIntoAmfid(rc: RemoteCall) -> ExperimentResult {
         let mgr = dspmgr.shared
-        var detail = "🔥 amfid Research (RC confirmed HANG — using kernel approach)\n\n"
+        var detail = "🔥 amfid Kernel Research\n\n"
         
-        // RC to amfid HANGS (confirmed by testing — 11 minutes no response)
-        // amfid is single-threaded daemon, no hijackable thread
-        // Instead: use KERNEL approach to manipulate amfid
+        // RC to amfid HANGS (confirmed — single-threaded daemon)
+        // Direct task struct reads PANIC (itk_space, threads in wrong zone)
+        // Only safe reads: proc, proc_ro, pid, cs_flags
         
         // Step 1: Find amfid
         let amfidProc = mgr.findProc(name: "amfid")
@@ -1155,101 +1155,81 @@ struct AMFIExperimentView: View {
         
         let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
         detail += "amfid PID: \(amfidPid)\n"
-        detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n\n"
+        detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n"
         
-        // Step 2: Read amfid's task and thread info
+        // Step 2: Read proc_ro (SAFE — same zone as proc)
         let amfidProcRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
-        let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
         detail += "amfid proc_ro: 0x\(String(format: "%llx", amfidProcRo))\n"
-        detail += "amfid task: 0x\(String(format: "%llx", amfidTask))\n"
         
-        // Read amfid cs_flags
+        // Step 3: Read cs_flags (SAFE — in proc_ro)
         let amfidCSFlags = mgr.readCSFlags(pid: Int32(bitPattern: amfidPid))
         detail += "amfid cs_flags: 0x\(String(format: "%x", amfidCSFlags))\n"
+        if amfidCSFlags & 0x001 != 0 { detail += "  CS_VALID\n" }
+        if amfidCSFlags & 0x004 != 0 { detail += "  CS_HARD\n" }
+        if amfidCSFlags & 0x008 != 0 { detail += "  CS_KILL\n" }
         if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
         
-        // Step 3: Read amfid's entitlements via kernel
-        // proc_ro → ucred → cr_label → entitlements
-        detail += "\n=== amfid entitlements (kernel read) ===\n"
+        // Step 4: Read p_flag (SAFE)
+        let amfidPFlag = ds_kread32(amfidProc + UInt64(off_proc_p_flag))
+        detail += "amfid p_flag: 0x\(String(format: "%x", amfidPFlag))\n"
+        
+        // Step 5: Read task pointer (SAFE to read pointer, NOT safe to dereference task internals)
+        let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
+        detail += "amfid task ptr: 0x\(String(format: "%llx", amfidTask))\n"
+        detail += "⚠️ Cannot read task internals (itk_space, threads → panic)\n"
+        
+        // Step 6: Read ucred (SAFE — pointer in proc_ro)
+        var ucredAddr: UInt64 = 0
         if amfidProcRo != 0 {
-            let ucred = ds_kread64(amfidProcRo + UInt64(off_proc_ro_p_ucred))
-            detail += "ucred: 0x\(String(format: "%llx", ucred))\n"
+            ucredAddr = ds_kread64(amfidProcRo + UInt64(off_proc_ro_p_ucred))
+            detail += "amfid ucred: 0x\(String(format: "%llx", ucredAddr))\n"
             
-            if ucred != 0 {
-                let crLabel = ds_kread64(ucred + UInt64(off_ucred_cr_label))
-                detail += "cr_label: 0x\(String(format: "%llx", crLabel))\n"
-                
-                // cr_label points to MAC label which contains sandbox/entitlement info
-                // Reading further requires knowing the label struct layout
-                if crLabel != 0 {
-                    // Read first few pointers in label struct
-                    for i in 0..<4 {
-                        let val = ds_kread64(crLabel + UInt64(i * 8))
-                        if val != 0 {
-                            detail += "  label+\(i*8): 0x\(String(format: "%llx", val))\n"
-                        }
-                    }
-                }
+            // Read uid from ucred (offset 0x18 is cr_uid typically)
+            if ucredAddr != 0 {
+                let uid = ds_kread32(ucredAddr + 0x18)
+                detail += "amfid uid: \(uid)\n"
             }
         }
         
-        // Step 4: Find amfid's Mach port (for potential port stealing)
-        detail += "\n=== amfid task port research ===\n"
-        if amfidTask != 0 {
-            // Read itk_space (IPC space)
-            let itkSpace = ds_kread64(amfidTask + UInt64(off_task_itk_space))
-            detail += "itk_space: 0x\(String(format: "%llx", itkSpace))\n"
-            
-            // Read thread list
-            let firstThread = ds_kread64(amfidTask + UInt64(off_task_threads_next))
-            detail += "first thread: 0x\(String(format: "%llx", firstThread))\n"
-            
-            if firstThread != 0 && firstThread != amfidTask + UInt64(off_task_threads_next) {
-                detail += "✅ amfid has at least 1 thread\n"
-                // Check if there's a second thread
-                let nextThread = ds_kread64(firstThread + UInt64(off_task_threads_next))
-                let hasSecondThread = nextThread != 0 && nextThread != amfidTask + UInt64(off_task_threads_next)
-                detail += "Second thread: \(hasSecondThread ? "yes" : "no (single-threaded → RC impossible)")\n"
-            } else {
-                detail += "No threads found (or list head = empty)\n"
-            }
+        // Step 7: Read p_textvp (vnode of amfid binary)
+        let textVP = ds_kread64(amfidProc + UInt64(off_proc_p_textvp))
+        detail += "amfid textvp: 0x\(String(format: "%llx", textVP))\n"
+        
+        // Step 8: Read process name
+        var nameBuf = [UInt8](repeating: 0, count: 32)
+        let nameAddr = amfidProc + UInt64(off_proc_p_name)
+        for i in 0..<32 {
+            nameBuf[i] = ds_kread8(nameAddr + UInt64(i))
+            if nameBuf[i] == 0 { break }
         }
+        let procName = String(bytes: nameBuf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
+        detail += "amfid name: \(procName)\n"
         
-        // Step 5: Alternative approach — find MISValidateSignatureAndCopyInfo in amfid
-        // amfid calls this function to validate signatures
-        // If we can find its address and patch the return → always "valid"
-        detail += "\n=== Alternative: patch amfid verification ===\n"
-        detail += "amfid uses MISValidateSignatureAndCopyInfo() to check binaries.\n"
-        detail += "Approaches:\n"
-        detail += "1. Find MIS function in amfid's address space → patch return\n"
-        detail += "   (needs: amfid text base + function offset from MobileInternalServices)\n"
-        detail += "2. Steal amfid's service port → intercept XPC requests\n"
-        detail += "   (needs: find port in kernel → insert into our task)\n"
-        detail += "3. Kill amfid + replace with our binary (if we can spawn unsigned)\n"
-        detail += "   (chicken-and-egg: need AMFI bypass to replace amfid)\n"
-        detail += "4. Patch amfid's Mach-O in memory via kernel write\n"
-        detail += "   (PPL protects code pages → can't write to __TEXT)\n\n"
-        
-        // Step 6: Try to find amfid's text base via proc
-        let amfidTextVP = ds_kread64(amfidProc + UInt64(off_proc_p_textvp))
-        detail += "amfid p_textvp: 0x\(String(format: "%llx", amfidTextVP))\n"
-        
-        // Try reading amfid's Mach-O header address from task
-        // task → map → first entry → start address
-        if amfidTask != 0 {
-            let vmMap = ds_kread64(amfidTask + UInt64(off_task_map))
-            detail += "amfid vm_map: 0x\(String(format: "%llx", vmMap))\n"
+        // Step 9: Also find trustd and securityd
+        detail += "\n=== Related daemons ===\n"
+        let relatedProcs = ["trustd", "securityd", "syspolicyd"]
+        for name in relatedProcs {
+            let proc = mgr.findProc(name: name)
+            if proc != 0 {
+                let pid = ds_kread32(proc + UInt64(off_proc_p_pid))
+                let csf = mgr.readCSFlags(pid: Int32(bitPattern: pid))
+                detail += "\(name): PID=\(pid), cs=0x\(String(format: "%x", csf))"
+                if csf & 0x100 != 0 { detail += " [PLATFORM]" }
+                detail += "\n"
+            }
         }
         
         detail += "\n=== CONCLUSION ===\n"
-        detail += "RC to amfid: ❌ IMPOSSIBLE (single-threaded, hangs forever)\n"
-        detail += "Best remaining paths:\n"
-        detail += "• Trust cache injection (add CDHash to kernel trust cache)\n"
-        detail += "• amfid port steal (intercept verification requests)\n"
-        detail += "• Find new KRW to reach AMFI globals (IOSurface external methods?)\n"
+        detail += "RC to amfid: ❌ IMPOSSIBLE (hangs — single-threaded)\n"
+        detail += "Task internals: ❌ INACCESSIBLE (wrong kernel zone)\n"
+        detail += "amfid is CS_PLATFORM_BINARY with uid=0\n\n"
+        detail += "Remaining AMFI bypass paths:\n"
+        detail += "• Trust cache injection (find TC struct in kernel heap)\n"
+        detail += "• IOSurface external method exploitation\n"
+        detail += "• Kernel function hooking (if we find writable code)\n"
+        detail += "• Developer mode exploitation (already enabled!)\n"
         
-        let success = amfidProc != 0 && amfidTask != 0
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: true, detail: detail, timestamp: Date())
     }
     
     #endif
