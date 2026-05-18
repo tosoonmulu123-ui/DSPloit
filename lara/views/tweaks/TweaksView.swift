@@ -14,61 +14,25 @@ struct TweaksView: View {
     var body: some View {
         NavigationStack {
             List {
-                // Kernel Exploits - Top Priority Section
-                Section(header: HeaderLabel(text: "Kernel Exploits", icon: "bolt.shield.fill")) {
-                    NavigationLink(destination: KernelExploitDashboardView()) {
+                // Root Operations
+                Section(header: HeaderLabel(text: "Root", icon: "person.badge.key.fill")) {
+                    NavigationLink(destination: RootDashboardView()) {
                         HStack(spacing: 14) {
-                            Image(systemName: "cpu")
+                            Image(systemName: "person.badge.key.fill")
                                 .font(.title3)
                                 .foregroundStyle(.red)
                                 .frame(width: 32)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Kernel Exploit Suite")
+                                Text("Root Operations")
                                     .font(.subheadline.weight(.semibold))
-                                Text("71+ bleeding-edge kernel exploit tools")
+                                Text("Shell, file manager, spawn, persistence")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
                         .padding(.vertical, 3)
                     }
-                    .disabled(!mgr.dsready)
-                    
-                    NavigationLink(destination: BleedingEdgeKernelPanicAnalyzerView()) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "bolt.shield.fill")
-                                .font(.title3)
-                                .foregroundStyle(.orange)
-                                .frame(width: 32)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Kernel Panic Analyzer")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("Super detailed panic log analysis")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 3)
-                    }
-                    .disabled(!mgr.dsready)
-                    
-                    NavigationLink(destination: BleedingEdgeKernelMemoryScannerView()) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "memorychip")
-                                .font(.title3)
-                                .foregroundStyle(.blue)
-                                .frame(width: 32)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Memory Inspector")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("Live kernel memory hex viewer & editor")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 3)
-                    }
-                    .disabled(!mgr.dsready)
+                    .disabled(!mgr.rcready)
                 }
                 
                 Section(header: HeaderLabel(text: "SpringBoard", icon: "house")) {

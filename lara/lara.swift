@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum taboptions {
-    case applying, tweaks, files, logs
+    case applying, root, tweaks, files, logs
 }
 
 let g_isunsupported: Bool = isunsupported()
@@ -51,6 +51,12 @@ struct DSPloit: App {
                         Image(systemName: "wrench.and.screwdriver.fill")
                     }
                     .tag(taboptions.applying)
+                
+                RootDashboardView()
+                    .tabItem {
+                        Image(systemName: "person.badge.key.fill")
+                    }
+                    .tag(taboptions.root)
                 
                 // this has gotta fucking go
                 TweaksView(mgr: mgr)
