@@ -129,11 +129,11 @@ struct StepRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: done ? "checkmark.circle.fill" : (active ? "circle.dotted" : "circle"))
-                .foregroundStyle(done ? .green : (active ? .blue : .secondary))
+                .foregroundStyle(done ? Color.green : (active ? Color.blue : Color.secondary))
                 .font(.body)
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(done ? .primary : (active ? .blue : .secondary))
+                .foregroundStyle(done ? Color.primary : (active ? Color.blue : Color.secondary))
             Spacer()
             if active {
                 ProgressView()
