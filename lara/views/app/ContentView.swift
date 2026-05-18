@@ -318,7 +318,7 @@ struct JBStep: View {
             
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(done ? .primary : (active ? .blue : .secondary))
+                .foregroundStyle(done ? Color.primary : (active ? Color.blue : Color.secondary))
             
             Spacer()
             
