@@ -206,6 +206,19 @@ struct AMFIExperimentView: View {
             let exp17 = self.expSpawnWithOutput(rc: rc, binary: "/bin/df", args: ["df", "-h"])
             experimentResults.append(exp17)
             
+            // ============================================
+            // Experiment 18: List cryptex directory contents
+            // ============================================
+            let exp18 = self.expListCryptexDirs(rc: rc)
+            experimentResults.append(exp18)
+            
+            // ============================================
+            // Experiment 19: Verify posix_spawn return value
+            // (is ret=0 from posix_spawn or from RC wrapper?)
+            // ============================================
+            let exp19 = self.expVerifySpawnReturn(rc: rc)
+            experimentResults.append(exp19)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -718,6 +731,159 @@ struct AMFIExperimentView: View {
         return ExperimentResult(
             name: "cryptex scan (\(cryptexPaths.count) paths)",
             success: !found.isEmpty,
+            detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: List contents of cryptex directories using opendir/readdir
+    private func expListCryptexDirs(rc: RemoteCall) -> ExperimentResult {
+        let dirsToList = [
+            "/private/preboot/Cryptexes/OS",
+            "/System/Cryptexes/OS",
+            "/System/Cryptexes",
+            "/private/preboot/Cryptexes",
+        ]
+        
+        var allResults: [String] = []
+        
+        for dir in dirsToList {
+            let pathAddr = remote_alloc_str(rc, dir)
+            let dirPtr = RootExecutor.rcall(rc, "opendir", pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            
+            if dirPtr == 0 {
+                allResults.append("\(dir)/: (cannot open)")
+                continue
+            }
+            
+            var entries: [String] = []
+            for _ in 0..<50 {
+                let dirent = RootExecutor.rcall(rc, "readdir", dirPtr)
+                if dirent == 0 { break }
+                
+                var nameBuf = [UInt8](repeating: 0, count: 256)
+                rc.remoteRead(dirent + 21, to: &nameBuf, size: 256)
+                let name = String(cString: nameBuf + [0])
+                
+                if name != "." && name != ".." {
+                    var dtype: UInt8 = 0
+                    rc.remoteRead(dirent + 20, to: &dtype, size: 1)
+                    let prefix = dtype == 4 ? "📁" : "  "
+                    entries.append("\(prefix) \(name)")
+                }
+            }
+            RootExecutor.rcall(rc, "closedir", dirPtr)
+            
+            if entries.isEmpty {
+                allResults.append("\(dir)/: (empty)")
+            } else {
+                allResults.append("\(dir)/:")
+                allResults.append(contentsOf: entries.map { "  \($0)" })
+            }
+        }
+        
+        // Also try to find bin/sh by scanning deeper
+        // If we found subdirs, scan them too
+        let deeperPaths = [
+            "/private/preboot/Cryptexes/OS/usr",
+            "/private/preboot/Cryptexes/OS/bin",
+            "/private/preboot/Cryptexes/OS/System",
+            "/System/Cryptexes/OS/usr",
+            "/System/Cryptexes/OS/bin",
+            "/System/Cryptexes/OS/System",
+        ]
+        
+        for dir in deeperPaths {
+            let pathAddr = remote_alloc_str(rc, dir)
+            let dirPtr = RootExecutor.rcall(rc, "opendir", pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            
+            if dirPtr == 0 { continue }
+            
+            var entries: [String] = []
+            for _ in 0..<30 {
+                let dirent = RootExecutor.rcall(rc, "readdir", dirPtr)
+                if dirent == 0 { break }
+                
+                var nameBuf = [UInt8](repeating: 0, count: 256)
+                rc.remoteRead(dirent + 21, to: &nameBuf, size: 256)
+                let name = String(cString: nameBuf + [0])
+                
+                if name != "." && name != ".." {
+                    var dtype: UInt8 = 0
+                    rc.remoteRead(dirent + 20, to: &dtype, size: 1)
+                    let prefix = dtype == 4 ? "📁" : "  "
+                    entries.append("\(prefix) \(name)")
+                }
+            }
+            RootExecutor.rcall(rc, "closedir", dirPtr)
+            
+            if !entries.isEmpty {
+                allResults.append("\(dir)/:")
+                allResults.append(contentsOf: entries.map { "  \($0)" })
+            }
+        }
+        
+        return ExperimentResult(
+            name: "list cryptex dirs",
+            success: true,
+            detail: allResults.joined(separator: "\n"),
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Verify if posix_spawn ret=0 is real
+    /// Write return value to memory and read back (not rely on RC return)
+    private func expVerifySpawnReturn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Strategy: call posix_spawn and store return in a known location
+        // Then read that location to verify
+        
+        // First test with a binary we KNOW doesn't exist
+        let fakeBin = remote_alloc_str(rc, "/nonexistent_binary_xyz")
+        let argvBase = mem + 0x400
+        rc[argvBase].setValue64(fakeBin)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x2F0
+        rc[pidAddr].setValue64(0)
+        
+        let fakeRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, fakeBin, 0, 0, argvBase, 0)
+        let fakePid = rc[pidAddr].value32()
+        RootExecutor.rcall(rc, "free", fakeBin)
+        
+        // Now test with /sbin/mount (known to exist)
+        let realBin = remote_alloc_str(rc, "/sbin/mount")
+        rc[argvBase].setValue64(realBin)
+        rc[argvBase + 8].setValue64(0)
+        rc[pidAddr].setValue64(0)
+        
+        let realRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, realBin, 0, 0, argvBase, 0)
+        let realPid = rc[pidAddr].value32()
+        
+        // If real binary spawned, kill it
+        if realPid != 0 {
+            RootExecutor.rcall(rc, "kill", UInt64(realPid), 9)
+        }
+        RootExecutor.rcall(rc, "free", realBin)
+        
+        // Also try getpid right after to see if we're still in launchd
+        let ourPid = RootExecutor.rcall(rc, "getpid")
+        
+        let detail = """
+        Fake binary (/nonexistent): ret=\(fakeRet), pid=\(fakePid)
+        Real binary (/sbin/mount):  ret=\(realRet), pid=\(realPid)
+        Still in launchd: pid=\(ourPid)
+        
+        If fake ret≠0 and real ret=0 → posix_spawn return is REAL
+        If both ret=0 → RC wrapper always returns 0 (unreliable)
+        """
+        
+        let isReal = fakeRet != realRet || fakeRet != 0
+        return ExperimentResult(
+            name: "verify spawn return",
+            success: isReal,
             detail: detail,
             timestamp: Date()
         )
