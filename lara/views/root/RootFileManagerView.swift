@@ -133,7 +133,7 @@ struct RootFileManagerView: View {
             }
             
             var items: [FileEntry] = []
-            for _ in 0..<300 {
+            for _ in 0..<50 { // limit to 50 entries to prevent watchdog
                 let dirent = RootExecutor.rcall(rc, "readdir", dir)
                 if dirent == 0 { break }
                 
