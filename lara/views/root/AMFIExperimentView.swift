@@ -2721,7 +2721,6 @@ struct AMFIExperimentView: View {
         let hasSuccess = detail.contains("🎉") || detail.contains("✅ WROTE")
         return ExperimentResult(name: "sysctl CS variables", success: hasSuccess, detail: detail, timestamp: Date())
     }
-    }
     
     /// NVRAM approach: write boot-args to disable CS enforcement
     /// IOKit NVRAM access from root context
