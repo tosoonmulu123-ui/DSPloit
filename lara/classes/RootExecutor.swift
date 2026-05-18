@@ -68,17 +68,44 @@ final class RootExecutor: ObservableObject {
     /// Execute a series of operations in launchd context (uid=0)
     /// The block receives the RemoteCall instance and must complete quickly (<3s)
     /// After the block returns, launchd thread is released immediately
+    /// Auto-reconnects SpringBoard RC if it died
     #if !DISABLE_REMOTECALL
     func executeAsRoot(
         operation: String,
         block: @escaping (RemoteCall) -> (success: Bool, message: String, value: UInt64)
     ) {
-        guard mgr.dsready, mgr.rcready else {
-            appendLog("❌ Need kernel + SpringBoard RC ready")
+        guard mgr.dsready else {
+            appendLog("❌ Kernel not ready — run exploit first")
             return
         }
         
         isExecuting = true
+        
+        // Auto-reconnect SpringBoard RC if it died
+        if !mgr.rcready {
+            appendLog("[\(operation)] RC dead — reconnecting SpringBoard...")
+            mgr.rcinit(process: "SpringBoard", migbypass: false) { [weak self] success in
+                guard let self else { return }
+                if success {
+                    self.appendLog("[\(operation)] ✅ SpringBoard reconnected")
+                    self.doExecuteAsRoot(operation: operation, block: block)
+                } else {
+                    self.appendLog("[\(operation)] ❌ SpringBoard reconnect failed")
+                    DispatchQueue.main.async {
+                        self.lastResult = RootOpResult(operation: operation, success: false, message: "RC reconnect failed", returnValue: 0, timestamp: Date())
+                        self.isExecuting = false
+                    }
+                }
+            }
+        } else {
+            doExecuteAsRoot(operation: operation, block: block)
+        }
+    }
+    
+    private func doExecuteAsRoot(
+        operation: String,
+        block: @escaping (RemoteCall) -> (success: Bool, message: String, value: UInt64)
+    ) {
         appendLog("[\(operation)] Connecting to launchd...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
