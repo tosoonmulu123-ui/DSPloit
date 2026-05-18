@@ -21,12 +21,10 @@ struct RootDashboardView: View {
                     // Status Card
                     StatusCard()
                     
-                    // Root Tools Grid
-                    if root.rootConfirmed || jb.isJailbroken {
+                    // Root Tools Grid — show when RC ready
+                    if mgr.rcready || root.rootConfirmed || jb.isJailbroken {
                         ToolsGrid()
                     }
-                    
-                    // To unjailbreak: kill app from background (resprings SpringBoard)
                     
                     // About
                     AboutSection()

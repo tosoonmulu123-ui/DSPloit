@@ -601,6 +601,8 @@ final class dspmgr: ObservableObject {
                     self.rcLastError = nil
                     self.rcrunning = false
                     self.rcready = true
+                    // Root is available once RC is ready (proven: launchd getuid()=0)
+                    RootExecutor.shared.rootConfirmed = true
                 } else {
                     self.logmsg("remote call init failed on \(process)")
                     let error = RemoteCall.lastInitError()

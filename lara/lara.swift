@@ -19,13 +19,11 @@ var weonadebugbuild_pjbweouttahereexclamationmark: Bool = false
 struct DSPloit: App {
     @StateObject private var mgr = dspmgr.shared
     @StateObject private var iconthememgr = IconThemeManager.shared
-    @StateObject private var jbEngine = JailbreakEngine.shared
     @Environment(\.scenePhase) var scenephase
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
     @AppStorage("keepAlive") private var keepalive: Bool = false
     @AppStorage("showFMInTabs") private var showfmintabs: Bool = true
     @AppStorage("logsdisplaymode") private var logsdisplaymode: logsdisplaymode = .toolbar
-    @AppStorage("autoJailbreak") private var autojailbreak: Bool = true
     @State private var selectedtab: taboptions = .applying
     
     init() {
