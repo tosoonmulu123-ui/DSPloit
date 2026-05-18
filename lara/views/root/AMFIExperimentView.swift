@@ -320,6 +320,19 @@ struct AMFIExperimentView: View {
             let exp32 = self.expSpawnFlags(rc: rc)
             experimentResults.append(exp32)
             
+            // ============================================
+            // Experiment 33: PROVE execution by creating a file
+            // Spawn process that CREATES a file (not stdout)
+            // ============================================
+            let exp33 = self.expProveByFile(rc: rc)
+            experimentResults.append(exp33)
+            
+            // ============================================
+            // Experiment 34: pipe() + dup2 before spawn
+            // ============================================
+            let exp34 = self.expPipeBeforeSpawn(rc: rc)
+            experimentResults.append(exp34)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2203,6 +2216,141 @@ struct AMFIExperimentView: View {
         """
         
         return ExperimentResult(name: "spawn /bin/ps + env", success: ret == 0 && !output.isEmpty, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Output Capture Research (processes spawn but output empty)
+    
+    /// PROVE binary execution by having it CREATE a file
+    /// Instead of capturing stdout, make the binary do something observable
+    /// /bin/df writes to stdout — but what if we use /sbin/mount -t to create mount?
+    /// Simpler: use touch-like behavior via spawn args
+    private func expProveByFile(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let proofFile = "/tmp/.dsp_spawn_proof_\(arc4random())"
+        
+        // Strategy: spawn /bin/df but redirect via shell-like mechanism
+        // Actually — we KNOW spawn works (PIDs returned)
+        // The question is: does the binary ACTUALLY EXECUTE its code?
+        // Or does AMFI kill it immediately after spawn?
+        
+        // Test: spawn /sbin/mount (no args = prints mount table to stdout)
+        // Then check: did the process run long enough to do anything?
+        // We can check by looking at its exit status
+        
+        let binAddr = remote_alloc_str(rc, "/sbin/mount")
+        let argvBase = mem + 0x1C00
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+        
+        let pidAddr = mem + 0x1A00
+        rc[pidAddr].setValue64(0)
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+        
+        // Wait with BLOCKING waitpid (not WNOHANG) — wait for child to finish
+        RootExecutor.rcall(rc, "usleep", 500000) // 0.5s first
+        let statusAddr = mem + 0x1B00
+        rc[statusAddr].setValue32(0xFFFF) // sentinel
+        let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, 0) // BLOCKING
+        let rawStatus = rc[statusAddr].value32()
+        
+        // Decode exit status
+        let exited = (rawStatus & 0x7F) == 0 // WIFEXITED
+        let exitCode = (rawStatus >> 8) & 0xFF // WEXITSTATUS
+        let signaled = (rawStatus & 0x7F) != 0 && (rawStatus & 0x7F) != 0x7F // WIFSIGNALED
+        let termSig = rawStatus & 0x7F // WTERMSIG
+        
+        // Also: check /proc or /dev for evidence of execution
+        // Try reading /dev/fd of the process (won't work after exit)
+        
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let detail = """
+        posix_spawn(/sbin/mount): ret=\(ret)
+        waitpid (BLOCKING): ret=\(waitRet)
+        raw status: 0x\(String(format: "%x", rawStatus))
+        WIFEXITED: \(exited), exit code: \(exitCode)
+        WIFSIGNALED: \(signaled), signal: \(termSig)
+        
+        exit code 0 → binary ran successfully!
+        signal 9 (SIGKILL) → AMFI killed it immediately
+        signal 6 (SIGABRT) → binary crashed
+        0xFFFF unchanged → waitpid didn't write (no child?)
+        """
+        
+        let success = exited && exitCode == 0
+        return ExperimentResult(name: "prove execution (exit status)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// pipe() before spawn — parent creates pipe, child inherits write end
+    private func expPipeBeforeSpawn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Create pipe: pipe(fds) → fds[0]=read, fds[1]=write
+        let pipeFds = mem + 0x1A00
+        rc[pipeFds].setValue64(0)
+        let pipeRet = RootExecutor.rcall(rc, "pipe", pipeFds)
+        let readFd = rc[pipeFds].value32()
+        let writeFd = rc[pipeFds + 4].value32()
+        
+        guard pipeRet == 0 && readFd != 0 else {
+            return ExperimentResult(name: "pipe+spawn", success: false, detail: "pipe() failed: \(pipeRet), fds=\(readFd)/\(writeFd)", timestamp: Date())
+        }
+        
+        // Save launchd's original stdout
+        let origStdout = RootExecutor.rcall(rc, "dup", 1)
+        
+        // Redirect stdout to pipe write end
+        RootExecutor.rcall(rc, "dup2", UInt64(writeFd), 1)
+        
+        // Spawn /bin/df — child inherits stdout (which is now pipe write end)
+        let binAddr = remote_alloc_str(rc, "/bin/df")
+        let argvBase = mem + 0x1C00
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x1E00
+        rc[pidAddr].setValue64(0)
+        
+        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+        
+        // IMMEDIATELY restore launchd's stdout
+        RootExecutor.rcall(rc, "dup2", origStdout, 1)
+        RootExecutor.rcall(rc, "close", origStdout)
+        RootExecutor.rcall(rc, "close", UInt64(writeFd)) // close write end in parent
+        
+        // Wait for child
+        RootExecutor.rcall(rc, "usleep", 1500000) // 1.5s
+        let statusAddr = mem + 0x1B00
+        RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, 0)
+        
+        // Read from pipe read end
+        let bufAddr = mem + 0x800
+        let n = RootExecutor.rcall(rc, "read", UInt64(readFd), bufAddr, 3000)
+        
+        var output = ""
+        if n > 0 && n < 3001 {
+            var buf = [UInt8](repeating: 0, count: Int(n))
+            rc.remoteRead(bufAddr, to: &buf, size: n)
+            output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+        }
+        
+        // Close read end
+        RootExecutor.rcall(rc, "close", UInt64(readFd))
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let detail = """
+        pipe(): read_fd=\(readFd), write_fd=\(writeFd)
+        dup2(write_fd, stdout): done
+        posix_spawn(/bin/df): ret=\(spawnRet)
+        restore stdout: done
+        close write end: done
+        wait 1.5s + waitpid: done
+        read(pipe_read): \(n) bytes
+        
+        OUTPUT:
+        \(output.isEmpty ? "(empty — child didn't write to inherited stdout)" : output.prefix(500))
+        """
+        
+        return ExperimentResult(name: "pipe() + inherited stdout", success: !output.isEmpty, detail: detail, timestamp: Date())
     }
     #endif
 }
