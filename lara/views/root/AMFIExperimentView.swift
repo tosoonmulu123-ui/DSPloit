@@ -2637,47 +2637,90 @@ struct AMFIExperimentView: View {
             let val = rc[valAddr].value32()
             let size = rc[sizeAddr].value64()
             
-            if ret == 0 && val != 0xDEAD {
-                detail += "✅ \(name) = \(val) (size=\(size))\n"
-            } else if ret == 0 {
-                detail += "  \(name) = (read ok, val unchanged)\n"
+            // ret=0 means success, anything else = failure
+            // But RemoteCall returns UInt — -1 becomes 0xFFFF...
+            let success = (ret == 0)
+            
+            if success {
+                detail += "✅ \(name) = \(val) (size=\(size), ret=0)\n"
             } else {
-                // Try errno
-                let err = remote_errno(rc)
-                if err == 2 { // ENOENT
-                    detail += "  \(name) — not found\n"
-                } else {
-                    detail += "  \(name) — error \(err)\n"
-                }
+                detail += "  \(name) — ret=\(ret) (failed)\n"
             }
             
             RootExecutor.rcall(rc, "free", nameAddr)
         }
         
-        // Try WRITING to vm.cs_enforcement_disable (if it exists)
-        detail += "\nTrying to WRITE sysctls...\n"
-        let writeTargets = ["vm.cs_enforcement_disable", "security.mac.proc_enforce", "security.mac.vnode_enforce"]
+        // Try WRITING sysctls
+        detail += "\nTrying to WRITE (set to 0 to disable enforcement)...\n"
+        let writeTargets: [(String, UInt32)] = [
+            ("security.mac.proc_enforce", 0),      // 0 = disable
+            ("security.mac.vnode_enforce", 0),      // 0 = disable
+            ("vm.cs_enforcement_disable", 1),       // 1 = disable
+            ("vm.cs_force_kill", 0),                // 0 = don't kill
+            ("vm.cs_force_hard", 0),                // 0 = don't hard enforce
+        ]
         
-        for name in writeTargets {
+        for (name, newVal) in writeTargets {
             let nameAddr = remote_alloc_str(rc, name)
             let valAddr = mem + 0x1A00
-            rc[valAddr].setValue32(1) // try setting to 1
+            rc[valAddr].setValue32(newVal)
             
-            // sysctlbyname(name, NULL, NULL, &newval, sizeof(int))
+            // sysctlbyname(name, NULL, NULL, &newval, 4)
             let ret = RootExecutor.rcall(rc, "sysctlbyname", nameAddr, 0, 0, valAddr, 4)
             
             if ret == 0 {
-                detail += "✅ WROTE \(name) = 1 SUCCESS!\n"
+                detail += "✅ WROTE \(name) = \(newVal) — SUCCESS!\n"
             } else {
-                let err = remote_errno(rc)
-                detail += "  \(name) write failed (err=\(err))\n"
+                detail += "  \(name) = \(newVal) — ret=\(ret) (0=ok, else=fail)\n"
             }
             
             RootExecutor.rcall(rc, "free", nameAddr)
         }
         
-        let hasSuccess = detail.contains("✅")
+        // After writes, try spawning copied binary to test effect
+        detail += "\nTesting spawn after sysctl writes...\n"
+        let srcPath = remote_alloc_str(rc, "/bin/df")
+        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_sysctl_test")
+        
+        // Quick copy
+        let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            for _ in 0..<50 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
+                if n == 0 || n > 2048 { break }
+                RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
+            }
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "close", dstFd)
+            
+            // Spawn copy
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(dstPath)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x1E00
+            rc[pidAddr].setValue64(0)
+            
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, 0, argvBase, 0)
+            RootExecutor.rcall(rc, "usleep", 500000)
+            let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            detail += "posix_spawn(copy): ret=\(spawnRet), wait=\(waitRet)\n"
+            if spawnRet == 0 {
+                detail += "🎉🎉🎉 COPIED BINARY SPAWNED!!! SYSCTL BYPASS WORKS!!!\n"
+            } else {
+                detail += "Still blocked (ret=\(spawnRet))\n"
+            }
+            
+            RootExecutor.rcall(rc, "unlink", dstPath)
+        }
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+        
+        let hasSuccess = detail.contains("🎉") || detail.contains("✅ WROTE")
         return ExperimentResult(name: "sysctl CS variables", success: hasSuccess, detail: detail, timestamp: Date())
+    }
     }
     
     /// NVRAM approach: write boot-args to disable CS enforcement
