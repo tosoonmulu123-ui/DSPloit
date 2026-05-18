@@ -2509,6 +2509,9 @@ struct AMFIExperimentView: View {
     }
     
     /// Spawn from SpringBoard context instead of launchd
+    private func expSpawnFromSpringBoard() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "spawn from SpringBoard", success: false, detail: "SpringBoard RC not available", timestamp: Date())
         }
         
         let mem = sb.trojanMem
