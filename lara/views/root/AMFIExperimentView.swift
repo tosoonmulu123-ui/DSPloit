@@ -566,9 +566,8 @@ struct AMFIExperimentView: View {
     /// Experiment: Try to posix_spawn binaries that we know exist
     private func expSpawnExisting(rc: RemoteCall) -> ExperimentResult {
         // First find what exists
-        let candidates = ["/sbin/mount", "/sbin/ping", "/sbin/ifconfig",
-                         "/usr/libexec/xpcproxy", "/usr/libexec/trustd",
-                         "/usr/bin/launchctl", "/usr/sbin/sysctl"]
+        let candidates = ["/sbin/mount", "/usr/libexec/xpcproxy", "/usr/libexec/trustd",
+                         "/bin/ps", "/bin/df", "/sbin/launchd"]
         
         let statAddr = rc.trojanMem + 0x800
         var existingBins: [String] = []
@@ -588,25 +587,35 @@ struct AMFIExperimentView: View {
         var spawnResults: [String] = []
         let mem = rc.trojanMem
         
-        for bin in existingBins.prefix(3) { // max 3 to save time
+        for bin in existingBins.prefix(3) {
             let binAddr = remote_alloc_str(rc, bin)
             let argvBase = mem + 0x400
             rc[argvBase].setValue64(binAddr)
             rc[argvBase + 8].setValue64(0) // NULL
             
-            let pidAddr = mem + 0x300
-            rc[pidAddr].setValue32(0)
+            // Use a dedicated address for pid output, clear it first
+            let pidAddr = mem + 0x2F0
+            rc[pidAddr].setValue64(0) // clear 8 bytes
             
             let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
-            let pid = rc[pidAddr].value32()
             
-            if ret == 0 && pid != 0 {
-                // SUCCESS! Kill it immediately (don't want random processes)
-                RootExecutor.rcall(rc, "kill", UInt64(pid), 9) // SIGKILL
-                spawnResults.append("✅ \(bin) → PID=\(pid)")
+            // Read pid (try both 32-bit and 64-bit)
+            let pid32 = rc[pidAddr].value32()
+            let pid64 = rc[pidAddr].value64()
+            let err = remote_errno(rc)
+            
+            if ret == 0 {
+                // ret=0 means posix_spawn SUCCEEDED!
+                // pid might be 0 if it wrote to wrong offset, but spawn worked
+                let pidStr = pid32 != 0 ? "PID=\(pid32)" : (pid64 != 0 ? "PID64=\(pid64)" : "PID=? (ret=0!)")
+                spawnResults.append("✅ \(bin) → \(pidStr) ret=0 SPAWN SUCCESS!")
+                
+                // Try to kill if we got a PID
+                if pid32 != 0 {
+                    RootExecutor.rcall(rc, "kill", UInt64(pid32), 9)
+                }
             } else {
-                let err = remote_errno(rc)
-                spawnResults.append("❌ \(bin) → ret=\(ret), err=\(err)")
+                spawnResults.append("❌ \(bin) → ret=\(ret), err=\(err), pid32=\(pid32)")
             }
             
             RootExecutor.rcall(rc, "free", binAddr)
