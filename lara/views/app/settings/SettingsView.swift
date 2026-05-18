@@ -47,6 +47,7 @@ struct SettingsView: View {
     @AppStorage("fmRecursiveSearch") private var fmRecursiveSearch: Bool = false
     
     @AppStorage("rcDockUnlimited") private var rcDockUnlimited: Bool = false
+    @AppStorage("autoJailbreak") private var autoJailbreak: Bool = true
     
     var body: some View {
         NavigationStack {
@@ -206,6 +207,10 @@ struct SettingsView: View {
                 Section(header: HeaderLabel(text: "RemoteCall", icon: "syringe")) {
                     Toggle("Stash KRW primitives", isOn: $stashKRW)
                     Toggle("Allow >10 dock icons", isOn: $rcDockUnlimited)
+                }
+                
+                Section(header: HeaderLabel(text: "Jailbreak", icon: "bolt.shield.fill")) {
+                    Toggle("Auto-jailbreak on launch", isOn: $autoJailbreak)
                 }
                 #endif
             }

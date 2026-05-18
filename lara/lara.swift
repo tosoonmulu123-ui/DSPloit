@@ -19,11 +19,13 @@ var weonadebugbuild_pjbweouttahereexclamationmark: Bool = false
 struct DSPloit: App {
     @StateObject private var mgr = dspmgr.shared
     @StateObject private var iconthememgr = IconThemeManager.shared
+    @StateObject private var jbEngine = JailbreakEngine.shared
     @Environment(\.scenePhase) var scenephase
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
     @AppStorage("keepAlive") private var keepalive: Bool = false
     @AppStorage("showFMInTabs") private var showfmintabs: Bool = true
     @AppStorage("logsdisplaymode") private var logsdisplaymode: logsdisplaymode = .toolbar
+    @AppStorage("autoJailbreak") private var autojailbreak: Bool = true
     @State private var selectedtab: taboptions = .applying
     
     init() {
@@ -98,9 +100,17 @@ struct DSPloit: App {
                     init_offsets()
                     offsets_init()
                     iconthememgr.startPendingFixupIfPossible()
-                    // beautiful name root
-                    // thanks
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
+                    
+                    // Auto-jailbreak on launch
+                    #if !DISABLE_REMOTECALL
+                    if autojailbreak && !jbEngine.isJailbroken && !jbEngine.isRunning {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            selectedtab = .root
+                            jbEngine.runFullChain()
+                        }
+                    }
+                    #endif
                 } else {
                     Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by DSPloit. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
                 }

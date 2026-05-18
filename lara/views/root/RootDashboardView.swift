@@ -63,6 +63,10 @@ struct RootDashboardView: View {
                     NavigationLink(destination: BootstrapView()) {
                         ToolRow(icon: "shippingbox.fill", title: "Bootstrap", subtitle: "Setup /var/jb, package manager, SSH", color: .cyan)
                     }
+                    
+                    NavigationLink(destination: TweaksManagerView()) {
+                        ToolRow(icon: "paintbrush.fill", title: "Tweaks", subtitle: "SpringBoard mods, status bar, dock", color: .pink)
+                    }
                 } header: {
                     Text("Root Tools")
                 }
