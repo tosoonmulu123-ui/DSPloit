@@ -203,34 +203,246 @@ struct RootShellView: View {
     }
     
     /// For simple commands, call C functions directly instead of spawning shell
+    /// This bypasses AMFI shell restrictions in launchd context
     private func tryDirectCall(rc: RemoteCall, cmd: String) -> String {
-        switch cmd.trimmingCharacters(in: .whitespaces) {
-        case "id":
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        
+        // id
+        if trimmed == "id" {
             let uid = RootExecutor.rcall(rc, "getuid")
             let gid = RootExecutor.rcall(rc, "getgid")
             let euid = RootExecutor.rcall(rc, "geteuid")
             return "uid=\(uid) gid=\(gid) euid=\(euid)"
-        case "whoami":
+        }
+        
+        // whoami
+        if trimmed == "whoami" {
             let uid = RootExecutor.rcall(rc, "getuid")
             return uid == 0 ? "root" : "mobile (uid=\(uid))"
-        case "uname -a", "uname":
-            // Read uname via uname() syscall
+        }
+        
+        // uname -a
+        if trimmed.hasPrefix("uname") {
             let unameAddr = rc.trojanMem + 0xC00
             let result = RootExecutor.rcall(rc, "uname", unameAddr)
             if result == 0 {
-                // struct utsname: sysname[256], nodename[256], release[256], version[256], machine[256]
                 var buf = [UInt8](repeating: 0, count: 256 * 5)
                 rc.remoteRead(unameAddr, to: &buf, size: UInt64(buf.count))
-                let sysname = String(cString: buf.withUnsafeBufferPointer { Array($0[0..<256]) } + [0])
-                let nodename = String(cString: buf.withUnsafeBufferPointer { Array($0[256..<512]) } + [0])
-                let release = String(cString: buf.withUnsafeBufferPointer { Array($0[512..<768]) } + [0])
-                let machine = String(cString: buf.withUnsafeBufferPointer { Array($0[1024..<1280]) } + [0])
-                return "\(sysname) \(nodename) \(release) \(machine)"
+                let parts = (0..<5).map { i -> String in
+                    let slice = Array(buf[(i*256)..<((i+1)*256)])
+                    return String(cString: slice + [0])
+                }
+                return parts.filter { !$0.isEmpty }.joined(separator: " ")
             }
             return "(uname failed)"
-        default:
-            return ""
         }
+        
+        // ls / ls -la <path>
+        if trimmed.hasPrefix("ls") {
+            let path = extractPath(from: trimmed, default: "/")
+            return doLS(rc: rc, path: path)
+        }
+        
+        // cat <file>
+        if trimmed.hasPrefix("cat ") {
+            let path = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+            return doCAT(rc: rc, path: path)
+        }
+        
+        // pwd
+        if trimmed == "pwd" {
+            let bufAddr = rc.trojanMem + 0xC00
+            let result = RootExecutor.rcall(rc, "getcwd", bufAddr, 1024)
+            if result != 0 {
+                var buf = [UInt8](repeating: 0, count: 1024)
+                rc.remoteRead(bufAddr, to: &buf, size: 1024)
+                return String(cString: buf + [0])
+            }
+            return "/"
+        }
+        
+        // ps / ps aux
+        if trimmed.hasPrefix("ps") {
+            return doPS(rc: rc)
+        }
+        
+        // df / df -h
+        if trimmed.hasPrefix("df") {
+            return doDF(rc: rc)
+        }
+        
+        // hostname
+        if trimmed == "hostname" {
+            let bufAddr = rc.trojanMem + 0xC00
+            RootExecutor.rcall(rc, "gethostname", bufAddr, 256)
+            var buf = [UInt8](repeating: 0, count: 256)
+            rc.remoteRead(bufAddr, to: &buf, size: 256)
+            return String(cString: buf + [0])
+        }
+        
+        // echo
+        if trimmed.hasPrefix("echo ") {
+            return String(trimmed.dropFirst(5))
+        }
+        
+        // touch <file>
+        if trimmed.hasPrefix("touch ") {
+            let path = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            let pathAddr = remote_alloc_str(rc, path)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
+            if fd != UInt64(bitPattern: -1) {
+                RootExecutor.rcall(rc, "close", fd)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                return "created: \(path)"
+            }
+            let err = remote_errno(rc)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            return "touch failed: errno=\(err)"
+        }
+        
+        // mkdir <path>
+        if trimmed.hasPrefix("mkdir ") {
+            let path = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            let pathAddr = remote_alloc_str(rc, path)
+            let result = RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            return result == 0 ? "created: \(path)" : "mkdir failed: errno=\(remote_errno(rc))"
+        }
+        
+        // rm <file>
+        if trimmed.hasPrefix("rm ") {
+            let path = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            let pathAddr = remote_alloc_str(rc, path)
+            let result = RootExecutor.rcall(rc, "unlink", pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            return result == 0 ? "removed: \(path)" : "rm failed: errno=\(remote_errno(rc))"
+        }
+        
+        // chmod
+        if trimmed.hasPrefix("chmod ") {
+            let parts = trimmed.components(separatedBy: " ").filter { !$0.isEmpty }
+            if parts.count >= 3, let mode = UInt64(parts[1], radix: 8) {
+                let path = parts[2]
+                let pathAddr = remote_alloc_str(rc, path)
+                let result = RootExecutor.rcall(rc, "chmod", pathAddr, mode)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                return result == 0 ? "chmod \(parts[1]) \(path)" : "chmod failed: errno=\(remote_errno(rc))"
+            }
+            return "usage: chmod <mode> <path>"
+        }
+        
+        // Not recognized — try system() as last resort
+        return ""
+    }
+}
+
+// MARK: - Direct C Call Implementations
+
+extension RootShellView {
+    
+    private func extractPath(from cmd: String, default defaultPath: String) -> String {
+        let parts = cmd.components(separatedBy: " ").filter { !$0.isEmpty && !$0.hasPrefix("-") }
+        // parts[0] = "ls", parts[1] = path (if exists)
+        return parts.count > 1 ? parts.last! : defaultPath
+    }
+    
+    /// ls implementation via opendir/readdir
+    private func doLS(rc: RemoteCall, path: String) -> String {
+        let pathAddr = remote_alloc_str(rc, path)
+        let dir = RootExecutor.rcall(rc, "opendir", pathAddr)
+        RootExecutor.rcall(rc, "free", pathAddr)
+        
+        guard dir != 0 else {
+            return "ls: cannot open '\(path)': errno=\(remote_errno(rc))"
+        }
+        
+        var entries: [String] = []
+        for _ in 0..<200 { // max 200 entries
+            let dirent = RootExecutor.rcall(rc, "readdir", dir)
+            if dirent == 0 { break }
+            
+            // struct dirent: d_ino(8) + d_seekoff(8) + d_reclen(2) + d_namlen(2) + d_type(1) + d_name(1024)
+            // d_name starts at offset 21 on arm64
+            let nameOffset: UInt64 = 21
+            var nameBuf = [UInt8](repeating: 0, count: 256)
+            rc.remoteRead(dirent + nameOffset, to: &nameBuf, size: 256)
+            let name = String(cString: nameBuf + [0])
+            
+            if name != "." && name != ".." {
+                // Read d_type at offset 20
+                var dtype: UInt8 = 0
+                rc.remoteRead(dirent + 20, to: &dtype, size: 1)
+                let prefix = dtype == 4 ? "📁 " : "   " // DT_DIR = 4
+                entries.append("\(prefix)\(name)")
+            }
+        }
+        
+        RootExecutor.rcall(rc, "closedir", dir)
+        
+        if entries.isEmpty {
+            return "(empty directory)"
+        }
+        return entries.joined(separator: "\n")
+    }
+    
+    /// cat implementation via open/read
+    private func doCAT(rc: RemoteCall, path: String) -> String {
+        let pathAddr = remote_alloc_str(rc, path)
+        let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_RDONLY), 0)
+        RootExecutor.rcall(rc, "free", pathAddr)
+        
+        guard fd != UInt64(bitPattern: -1) else {
+            return "cat: cannot open '\(path)': errno=\(remote_errno(rc))"
+        }
+        
+        let bufAddr = rc.trojanMem + 0x800
+        let n = RootExecutor.rcall(rc, "read", fd, bufAddr, 3000) // max 3KB
+        RootExecutor.rcall(rc, "close", fd)
+        
+        if n > 0 && n < 3001 {
+            var buf = [UInt8](repeating: 0, count: Int(n))
+            rc.remoteRead(bufAddr, to: &buf, size: n)
+            return String(bytes: buf, encoding: .utf8) ?? "(binary file, \(n) bytes)"
+        }
+        return "(empty file)"
+    }
+    
+    /// ps implementation via sysctl
+    private func doPS(rc: RemoteCall) -> String {
+        // Use getpid to at least show launchd info
+        let pid = RootExecutor.rcall(rc, "getpid")
+        let uid = RootExecutor.rcall(rc, "getuid")
+        return "PID 1 (launchd) — uid=\(uid), pid=\(pid)\n(full ps requires sysctl — showing launchd context)"
+    }
+    
+    /// df implementation via statfs
+    private func doDF(rc: RemoteCall) -> String {
+        var results: [String] = ["Filesystem      Size  Used  Avail  Mount"]
+        
+        let paths = ["/", "/private/var", "/var/mobile"]
+        for path in paths {
+            let pathAddr = remote_alloc_str(rc, path)
+            let statAddr = rc.trojanMem + 0x800
+            let result = RootExecutor.rcall(rc, "statfs", pathAddr, statAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            
+            if result == 0 {
+                // statfs struct: f_bsize(4) at +0x4, f_blocks(8) at +0x8, f_bfree(8) at +0x10, f_bavail(8) at +0x18
+                var bsize: UInt32 = 0
+                var blocks: UInt64 = 0
+                var bfree: UInt64 = 0
+                rc.remoteRead(statAddr + 0x4, to: &bsize, size: 4)
+                rc.remoteRead(statAddr + 0x8, to: &blocks, size: 8)
+                rc.remoteRead(statAddr + 0x10, to: &bfree, size: 8)
+                
+                let total = UInt64(bsize) * blocks / (1024 * 1024) // MB
+                let free = UInt64(bsize) * bfree / (1024 * 1024)
+                let used = total > free ? total - free : 0
+                results.append(String(format: "%-15s %4lluM %4lluM %4lluM  %@", (path as NSString).utf8String!, total, used, free, path))
+            }
+        }
+        
+        return results.joined(separator: "\n")
     }
 }
 
