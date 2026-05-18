@@ -10,6 +10,7 @@
 #import "darksword.h"
 #import "offsets.h"
 #import "utils.h"
+#import "persistence.h"
 #import "vnode.h"
 #import "apfs.h"
 #import "vfs.h"
