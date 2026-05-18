@@ -101,16 +101,6 @@ struct DSPloit: App {
                     offsets_init()
                     iconthememgr.startPendingFixupIfPossible()
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
-                    
-                    // Auto-jailbreak on launch (up to RemoteCall only)
-                    #if !DISABLE_REMOTECALL
-                    if autojailbreak && !mgr.dsready && !jbEngine.isRunning {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                            selectedtab = .root
-                            jbEngine.runFullChain()
-                        }
-                    }
-                    #endif
                 } else {
                     Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by DSPloit. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
                 }

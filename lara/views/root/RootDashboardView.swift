@@ -26,10 +26,7 @@ struct RootDashboardView: View {
                         ToolsGrid()
                     }
                     
-                    // Remove Jailbreak
-                    if jb.isJailbroken {
-                        RemoveSection()
-                    }
+                    // To unjailbreak: kill app from background (resprings SpringBoard)
                     
                     // About
                     AboutSection()

