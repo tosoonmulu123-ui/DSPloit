@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  DSPloit
 //
-//  Created by ruter on 23.03.26.
+//  Setup tab — exploit chain controls
 //
 
 import SwiftUI
@@ -10,267 +10,167 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var mgr: dspmgr
-    @ObservedObject private var logger = globallogger
+    @ObservedObject private var jb = JailbreakEngine.shared
     @AppStorage("selectedMethod") private var selectedmethod: method = .hybrid
     @AppStorage("logsdisplaymode") private var selectedlogsdisplaymode: logsdisplaymode = .toolbar
-    @AppStorage("loggerNoBS") private var loggernobs: Bool = true
     
-    @State private var showSettings: Bool = false
-    @State private var dlingkcache: Bool = false
+    @State private var showSettings = false
+    @State private var dlingkcache = false
     
-    init() {
-        globallogger.capture()
-    }
+    init() { globallogger.capture() }
     
     var body: some View {
         NavigationStack {
-            List {
-                AlertsSection
-                KRWSection
-                RCSection
-                ActionsSection
-                DebugSection
-                InlineLogsSection
-            }
-            .navigationTitle("DSPloit")
-            .toolbar {
-                if selectedlogsdisplaymode == .toolbar {
-                    Button(action: {
-                        mgr.showLogs.toggle()
-                    }) {
-                        Image(systemName: "terminal")
+            ScrollView {
+                VStack(spacing: 16) {
+                    // Exploit Chain Card
+                    ExploitChainCard()
+                    
+                    // Actions
+                    ActionsCard()
+                    
+                    // Kernel Info
+                    if mgr.dsready {
+                        KernelInfoCard()
                     }
                 }
-                Button(action: {
-                    showSettings.toggle()
-                }) {
-                    Image(systemName: "gear")
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+            .navigationTitle("Setup")
+            .background(Color(.systemGroupedBackground))
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { showSettings.toggle() }) {
+                        Image(systemName: "gear")
+                    }
                 }
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
         }
-        .premiumStyling()
     }
     
-    private var AlertsSection: some View {
-        Section {
-            if !mgr.hasOffsets {
-                PlainAlert(title: "No offsets found!", icon: "exclamationmark.triangle.fill", text: "Kernelcache offsets are missing. Click \"Run Exploit\" and then fetch the offsets.")
-            }
-        }
-    }
+    // MARK: - Exploit Chain Card
     
-    private var KRWSection: some View {
-        Section {
-            LabeledContent(content: {
-                if mgr.dsready {
-                    Image(systemName: "checkmark.circle")
-                } else if mgr.dsrunning {
-                    HStack {
-                        Text("\(Int(mgr.dsprogress * 100))%")
-                        ProgressView()
-                    }
-                } else if mgr.dsattempted && mgr.dsfailed {
-                    Image(systemName: "xmark.circle")
-                }
-            }) {
-                Button("Run Exploit", action: {
-                    offsets_init()
-                    mgr.run()
-                })
-                .disabled(mgr.dsready || mgr.dsrunning || isdebugged())
+    @ViewBuilder
+    private func ExploitChainCard() -> some View {
+        VStack(spacing: 12) {
+            // Steps
+            StepButton(
+                label: "Kernel Exploit",
+                icon: "bolt.shield.fill",
+                status: mgr.dsready ? .done : (mgr.dsrunning ? .running : .idle),
+                progress: mgr.dsprogress
+            ) {
+                offsets_init()
+                mgr.run()
             }
+            .disabled(mgr.dsready || mgr.dsrunning || isdebugged())
             
-            if !mgr.hasOffsets {
-                Button {
-                    guard !dlingkcache else { return }
-                    dlingkcache = true
-
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        let fetched = fetchkcache()
-
-                        if fetched {
-                            DispatchQueue.main.async {
-                                mgr.hasOffsets = true
-                                dlingkcache = false
-                            }
-                            return
-                        }
-
-                        let dlkc = dlkcache()
-
-                        DispatchQueue.main.async {
-                            mgr.hasOffsets = dlkc
-                            dlingkcache = false
-                        }
-                    }
-                } label: {
-                    if dlingkcache {
-                        HStack {
-                            Text("Fetching Kernelcache...")
-                            Spacer()
-                            ProgressView()
-                        }
-                    } else {
-                        Text("Fetch Kernelcache")
-                    }
-                }
-                .disabled(dlingkcache || !mgr.dsready)
-            } else {
-                if selectedmethod == .hybrid {
-                    LabeledContent(content: {
-                        if mgr.vfsready && mgr.sbxready {
-                            Image(systemName: "checkmark.circle")
-                        } else if mgr.vfsrunning || mgr.sbxrunning {
-                            HStack {
-                                Text("Running...")
-                                ProgressView()
-                            }
-                        } else if (mgr.vfsattempted && mgr.vfsfailed) || (mgr.sbxattempted && mgr.sbxfailed) {
-                            Image(systemName: "xmark.circle")
-                        }
-                    }) {
-                        Button("Initialize System", action: {
-                            mgr.vfsinit()
-                            mgr.sbxescape()
-                        })
-                        .disabled(!mgr.hasOffsets || !mgr.dsready || mgr.vfsrunning || mgr.sbxrunning || (mgr.vfsready && mgr.sbxready))
-                    }
-                }
-                
-                // initalize vfs
-                if selectedmethod == .vfs {
-                    LabeledContent(content: {
-                        if mgr.vfsready {
-                            Image(systemName: "checkmark.circle")
-                        } else if mgr.vfsrunning {
-                            HStack {
-                                Text("\(Int(mgr.dsprogress * 100))%")
-                                ProgressView()
-                            }
-                        } else if mgr.vfsattempted && mgr.vfsfailed {
-                            Image(systemName: "xmark.circle")
-                        }
-                    }) {
-                        Button("Initialize VFS", action: {
-                            mgr.vfsinit()
-                        })
-                        .disabled(!mgr.dsready || mgr.vfsready || mgr.vfsrunning || isdebugged())
-                    }
-                }
-                
-                // escape sandbox
-                if selectedmethod == .sbx {
-                    LabeledContent(content: {
-                        if mgr.sbxready {
-                            Image(systemName: "checkmark.circle")
-                        } else if mgr.sbxrunning {
-                            HStack {
-                                Text("Running...")
-                                ProgressView()
-                            }
-                        } else if mgr.sbxattempted && mgr.sbxfailed {
-                            Image(systemName: "xmark.circle")
-                        }
-                    }) {
-                        Button("Escape Sandbox", action: {
-                            mgr.sbxescape()
-                        })
-                        .disabled(!mgr.dsready || mgr.sbxready || mgr.sbxrunning || isdebugged())
-                    }
-                }
+            StepButton(
+                label: "Initialize System",
+                icon: "server.rack",
+                status: (mgr.vfsready && mgr.sbxready) ? .done : (mgr.vfsrunning || mgr.sbxrunning ? .running : .idle),
+                progress: mgr.vfsprogress
+            ) {
+                mgr.vfsinit()
+                mgr.sbxescape()
             }
-        } header: {
-            HeaderLabel(text: "Kernel Read Write", icon: "externaldrive")
-        } footer: {
-            if isdebugged() {
-                Text("Not available while a debugger is attached.")
-            }
-        }
-    }
-    
-    private var RCSection: some View {
-        Group {
+            .disabled(!mgr.dsready || (mgr.vfsready && mgr.sbxready))
+            
             #if !DISABLE_REMOTECALL
-            Section {
-                // init remotecall
-                LabeledContent(content: {
-                    if mgr.rcready {
-                        Image(systemName: "checkmark.circle")
-                    } else if mgr.rcrunning {
-                        HStack {
-                            Text("Running...")
-                            ProgressView()
-                        }
-                    } else if mgr.rcfailed {
-                        Image(systemName: "xmark.circle")
-                    }
-                }) {
-                    Button("Initalize RemoteCall", action: {
-                        mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
-                            if success {
-                                mgr.logmsg("rc init succeeded!")
-                                let pid = mgr.rccall(name: "getpid")
-                                mgr.logmsg("remote getpid() returned: \(pid)")
-                            } else {
-                                mgr.logmsg("rc init failed")
-                                mgr.rcfailed = true
-                            }
-                        }
-                    })
-                    .disabled(!mgr.dsready || isdebugged() || mgr.rcrunning || mgr.rcready)
+            StepButton(
+                label: "RemoteCall (SpringBoard)",
+                icon: "link.circle.fill",
+                status: mgr.rcready ? .done : (mgr.rcrunning ? .running : (mgr.rcfailed ? .failed : .idle)),
+                progress: 0
+            ) {
+                mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
+                    if !success { mgr.rcfailed = true }
                 }
-                
-                // destroy remotecall
-                if mgr.rcready {
-                    Button("Destroy Remotecall", action: {
-                        mgr.rcdestroy()
-                    })
-                }
-            } header: {
-                HeaderLabel(text: "RemoteCall", icon: "syringe")
-            } footer: {
-                if let error = mgr.rcLastError ?? mgr.sbProc?.lastError {
-                    Text("Error: \(error)")
-                        .foregroundColor(.red)
-                }
-                if RemoteCall.isLiveContainerRuntime() && !RemoteCall.isLiveProcessRuntime() {
-                    Text("RemoteCall needs a PAC-enabled LiveContainer launch context. The main exploit may still work when RemoteCall is unavailable.")
-                }
-                if isdebugged() {
-                    Text("Not available when a debugger is attached.")
-                }
-                Text("RemoteCall is relatively unstable and may not work properly.")
             }
+            .disabled(!mgr.dsready || mgr.rcready || mgr.rcrunning || isdebugged())
             #endif
+            
+            // Error display
+            if let error = mgr.rcLastError ?? mgr.sbProc?.lastError {
+                Text(error)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+            }
         }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
     }
     
-    private var ActionsSection: some View {
-        Section(header: HeaderLabel(text: "Actions", icon: "wrench.and.screwdriver")) {
-            Button("Safe Respring", action: {
+    // MARK: - Actions Card
+    
+    @ViewBuilder
+    private func ActionsCard() -> some View {
+        VStack(spacing: 0) {
+            ActionRow(icon: "arrow.clockwise", label: "Safe Respring", color: .blue) {
                 safeRespring()
-            })
-            .disabled(!mgr.rcready)
+            }
             
-            Button("Panic!", action: {
+            Divider().padding(.leading, 44)
+            
+            ActionRow(icon: "arrow.counterclockwise", label: "Re-init RemoteCall", color: .orange) {
+                #if !DISABLE_REMOTECALL
+                mgr.rcfailed = false
+                mgr.rcLastError = nil
+                mgr.rcinit(process: "SpringBoard", migbypass: false) { _ in }
+                #endif
+            }
+            
+            Divider().padding(.leading, 44)
+            
+            ActionRow(icon: "exclamationmark.triangle.fill", label: "Panic!", color: .red) {
                 mgr.panic()
-            })
-            .foregroundStyle(.red)
-            
-            if isdebugged() {
-                Button("Detach Debugger", action: {
-                    exit(0)
-                })
             }
         }
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
     }
+    
+    // MARK: - Kernel Info
+    
+    @ViewBuilder
+    private func KernelInfoCard() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("KERNEL")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            
+            HStack {
+                Text("Base")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "0x%llx", mgr.kernbase))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Text("Slide")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "0x%llx", mgr.kernslide))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.purple)
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+    }
+    
+    // MARK: - Safe Respring
     
     private func safeRespring() {
         #if !DISABLE_REMOTECALL
-        // Try RC-based respring first (cleanest)
         if mgr.rcready, let sb = mgr.sbProc {
             let sel = remote_sel(sb, "terminateWithSuccess")
             let app = remote_getClass(sb, "UIApplication")
@@ -280,89 +180,121 @@ struct ContentView: View {
         }
         #endif
         
-        // Fallback: kill SpringBoard via kernel (find proc, write p_flag to force exit)
+        // Fallback: kill SpringBoard via kernel
         if mgr.dsready {
             let sbProc = mgr.findProc(name: "SpringBoard")
             if sbProc != 0 {
-                // Send SIGKILL to SpringBoard PID
                 let pid = Int32(ds_kread32(sbProc + 0x68))
-                kill(pid, SIGKILL)
+                if pid > 0 { kill(pid, SIGKILL) }
                 return
             }
         }
         
-        // Last resort: old WebKit method
+        // Last resort
         mgr.respring()
     }
+}
+
+// MARK: - Step Button Component
+
+enum StepStatus {
+    case idle, running, done, failed
+}
+
+struct StepButton: View {
+    let label: String
+    let icon: String
+    let status: StepStatus
+    let progress: Double
+    let action: () -> Void
     
-    private var DebugSection: some View {
-        Group {
-            if weonadebugbuild_pjbweouttahereexclamationmark {
-                if mgr.dsready {
-                    Section(header: HeaderLabel(text: "Debug Only", icon: "ant")) {
-                        LabeledContent("kernel_base") {
-                            Text(String(format: "0x%llx", mgr.kernbase))
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                        LabeledContent("kernel_slide") {
-                            Text(String(format: "0x%llx", mgr.kernslide))
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(statusColor.opacity(0.12))
+                        .frame(width: 36, height: 36)
+                    
+                    if status == .running {
+                        Circle()
+                            .trim(from: 0, to: max(progress, 0.1))
+                            .stroke(statusColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .frame(width: 36, height: 36)
+                            .rotationEffect(.degrees(-90))
                     }
+                    
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 14))
+                        .foregroundStyle(statusColor)
+                }
+                
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                
+                Spacer()
+                
+                switch status {
+                case .done:
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .running:
+                    ProgressView().scaleEffect(0.7)
+                case .failed:
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                case .idle:
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var statusColor: Color {
+        switch status {
+        case .done: return .green
+        case .running: return .blue
+        case .failed: return .red
+        case .idle: return .secondary
         }
     }
-
-    @ViewBuilder
-    private var InlineLogsSection: some View {
-        if selectedlogsdisplaymode == .content {
-            Section {
-                ScrollView {
-                    if loggernobs {
-                        let combined = logger.logs.joined(separator: "\n")
-                        Text(combined)
-                            .font(.system(size: 13, design: .monospaced))
-                            .lineSpacing(1)
-                            .textSelection(.enabled)
-                            .onTapGesture {
-                                UIPasteboard.general.string = combined
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            }
-                    } else {
-                        ForEach(Array(logger.logs.enumerated()), id: \.offset) { _, log in
-                            Text(log)
-                                .font(.system(size: 13, design: .monospaced))
-                                .lineSpacing(1)
-                                .textSelection(.enabled)
-                                .onTapGesture {
-                                    UIPasteboard.general.string = log
-                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                }
-                        }
-                    }
-                }
-                .frame(height: 250)
-                
-                Button("Copy All") {
-                    UIPasteboard.general.string = logger.logs.joined(separator: "\n\n")
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                }
-                
-                Button("Clear") {
-                    logger.clear()
-                }
-                .foregroundColor(.red)
-            } header: {
-                HeaderLabel(text: "Logs", icon: "terminal")
-            }
+    
+    private var statusIcon: String {
+        switch status {
+        case .done: return "checkmark"
+        case .running: return icon
+        case .failed: return "xmark"
+        case .idle: return icon
         }
     }
 }
 
-#Preview {
-    ContentView()
-        .environmentObject(dspmgr())
+struct ActionRow: View {
+    let icon: String
+    let label: String
+    let color: Color
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(color)
+                    .frame(width: 24)
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundStyle(color)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+    }
 }

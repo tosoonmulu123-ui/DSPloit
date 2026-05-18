@@ -29,11 +29,11 @@ struct TweaksManagerView: View {
             
             // SpringBoard Tweaks
             Section {
-                TweakButton(title: "Hide Icon Labels", subtitle: "Remove text under app icons", icon: "textformat.size.smaller") {
+                TweakButton(title: "Hide Icon Labels", subtitle: "⚠️ Will cause respring", icon: "textformat.size.smaller") {
                     applyTweak("hide_icon_labels")
                 }
                 
-                TweakButton(title: "5-Icon Dock", subtitle: "Fit 5 icons in the dock", icon: "dock.rectangle") {
+                TweakButton(title: "5-Icon Dock", subtitle: "⚠️ Will cause respring", icon: "dock.rectangle") {
                     applyTweak("five_icon_dock")
                 }
                 
