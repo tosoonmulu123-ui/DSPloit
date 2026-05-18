@@ -145,6 +145,9 @@ struct RootDashboardView: View {
                 NavigationLink(destination: RootPersistenceView()) {
                     ToolCard(icon: "arrow.clockwise", title: "Persist", color: .purple)
                 }
+                NavigationLink(destination: AMFIExperimentView()) {
+                    ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
+                }
             }
         }
     }
@@ -194,7 +197,14 @@ struct RootDashboardView: View {
     // MARK: - Remove Jailbreak
     
     private func removeJailbreak() {
+        // Immediately hide tools (don't wait for async)
+        jb.isJailbroken = false
+        root.rootConfirmed = false
+        
         #if !DISABLE_REMOTECALL
+        // Destroy RC to fully "unjailbreak"
+        mgr.rcdestroy()
+        
         root.executeAsRoot(operation: "remove_jailbreak") { rc in
             let dirs = [
                 "/var/jb/Library/LaunchDaemons",
@@ -224,8 +234,6 @@ struct RootDashboardView: View {
             
             DispatchQueue.main.async {
                 UserDefaults.standard.removeObject(forKey: "KRWPrimitive")
-                self.jb.isJailbroken = false
-                self.root.rootConfirmed = false
             }
             
             return (true, "Cleaned \(removed) items", UInt64(removed))
