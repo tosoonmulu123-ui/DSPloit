@@ -55,6 +55,12 @@ struct AMFIExperimentView: View {
                 }
                 .disabled(isRunning || !mgr.rcready)
                 
+                Button(action: runAmfidRC) {
+                    Label("Test amfid RC (Exp 60)", systemImage: "bolt.shield")
+                        .foregroundStyle(.orange)
+                }
+                .disabled(isRunning || !mgr.rcready)
+                
                 TextField("Binary path", text: $customBinary)
                     .font(.system(.caption, design: .monospaced))
             } header: {
@@ -138,10 +144,15 @@ struct AMFIExperimentView: View {
             
             // ============================================
             // 🔥🔥🔥🔥🔥🔥 Experiment 60: RemoteCall into amfid!
-            // amfid PID=52 found! RC into it → control code signing!
+            // ⚠️ DISABLED in batch run — RC init can hang/timeout
+            // Use "Test amfid RC" button separately
             // ============================================
-            let exp60 = self.expRCIntoAmfid(rc: rc)
-            experimentResults.append(exp60)
+            experimentResults.append(ExperimentResult(
+                name: "🔥🔥🔥🔥🔥🔥 RC→amfid",
+                success: false,
+                detail: "⚠️ Skipped in batch run (RC init can hang)\nUse 'Test amfid RC' button to run separately",
+                timestamp: Date()
+            ))
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -160,6 +171,21 @@ struct AMFIExperimentView: View {
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "test_binary") { rc in
             let result = self.expPosixSpawn(rc: rc, binary: path, name: "posix_spawn \(path)")
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+            }
+            return (result.success, result.detail, 0)
+        }
+        #endif
+    }
+    
+    private func runAmfidRC() {
+        isRunning = true
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "amfid_rc") { rc in
+            let result = self.expRCIntoAmfid(rc: rc)
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
