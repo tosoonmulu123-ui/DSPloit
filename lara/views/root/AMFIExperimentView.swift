@@ -2646,8 +2646,9 @@ struct AMFIExperimentView: View {
                 
                 if create2 == 0 {
                     detail += "Still can't find IOSurfaceCreate\n"
-                    return ExperimentResult(name: "🔥 IOSurface KRW", success: false, detail: detail, timestamp: Date())
                 }
+                // Either way, return from guard — we'll re-enter logic below
+                return ExperimentResult(name: "🔥 IOSurface KRW", success: create2 != 0, detail: detail + "\nRe-run experiment to use loaded framework.", timestamp: Date())
             } else {
                 let errPtr = RootExecutor.rcall(rc, "dlerror")
                 var errStr = ""
