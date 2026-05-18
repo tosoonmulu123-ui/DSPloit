@@ -17,6 +17,7 @@ struct AMFIExperimentView: View {
     
     @State private var results: [ExperimentResult] = []
     @State private var isRunning = false
+    @State private var runningLabel = ""
     @State private var customBinary = "/usr/bin/id"
     
     struct ExperimentResult: Identifiable {
@@ -29,24 +30,50 @@ struct AMFIExperimentView: View {
     
     var body: some View {
         List {
-            // Info
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("AMFI blocks unsigned binary execution even as root.")
-                        .font(.caption)
-                    Text("These experiments test different spawn methods to find what works.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            // Status Banner
+            if isRunning {
+                Section {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(.red)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Running: \(runningLabel)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.red)
+                            Text("Do NOT close app — will cause panic!")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 }
-            } header: {
-                Label("About", systemImage: "info.circle")
             }
             
             // Experiments
             Section {
                 Button(action: runAllExperiments) {
-                    Label("Run All Experiments", systemImage: "play.circle.fill")
-                        .foregroundStyle(.red)
+                    HStack {
+                        Label("Run All (Exp 54-59)", systemImage: "play.circle.fill")
+                            .foregroundStyle(isRunning ? .gray : .red)
+                        Spacer()
+                        if isRunning && runningLabel.contains("All") {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        }
+                    }
+                }
+                .disabled(isRunning || !mgr.rcready)
+                
+                Button(action: runAmfidRC) {
+                    HStack {
+                        Label("⚡ amfid RC (Exp 60)", systemImage: "bolt.shield")
+                            .foregroundStyle(isRunning ? .gray : .orange)
+                        Spacer()
+                        if isRunning && runningLabel.contains("amfid") {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        }
+                    }
                 }
                 .disabled(isRunning || !mgr.rcready)
                 
@@ -55,16 +82,13 @@ struct AMFIExperimentView: View {
                 }
                 .disabled(isRunning || !mgr.rcready)
                 
-                Button(action: runAmfidRC) {
-                    Label("Test amfid RC (Exp 60)", systemImage: "bolt.shield")
-                        .foregroundStyle(.orange)
-                }
-                .disabled(isRunning || !mgr.rcready)
-                
                 TextField("Binary path", text: $customBinary)
                     .font(.system(.caption, design: .monospaced))
             } header: {
                 Label("Experiments", systemImage: "flask")
+            } footer: {
+                Text("⚠️ amfid RC may take 5-10s or hang. Do NOT kill app while running!")
+                    .font(.system(size: 9))
             }
             
             // Results
@@ -77,6 +101,10 @@ struct AMFIExperimentView: View {
                                     .foregroundStyle(r.success ? .green : .red)
                                 Text(r.name)
                                     .font(.caption.bold())
+                                Spacer()
+                                Text(r.timestamp, style: .time)
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.tertiary)
                             }
                             Text(r.detail)
                                 .font(.system(size: 10, design: .monospaced))
@@ -86,11 +114,26 @@ struct AMFIExperimentView: View {
                         .padding(.vertical, 2)
                     }
                 } header: {
-                    Label("Results (\(results.count))", systemImage: "list.bullet")
+                    HStack {
+                        Label("Results (\(results.count))", systemImage: "list.bullet")
+                        Spacer()
+                        if !results.isEmpty {
+                            Button("Clear") { results.removeAll() }
+                                .font(.caption2)
+                        }
+                    }
+                }
+            } else if !isRunning {
+                Section {
+                    Text("No results yet. Tap 'Run All' to start.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Label("Results", systemImage: "list.bullet")
                 }
             }
         }
-        .navigationTitle("AMFI Experiments")
+        .navigationTitle("AMFI Lab")
         .navigationBarTitleDisplayMode(.inline)
     }
     
@@ -98,6 +141,7 @@ struct AMFIExperimentView: View {
     
     private func runAllExperiments() {
         isRunning = true
+        runningLabel = "All Experiments (54-59)..."
         results.removeAll()
         
         #if !DISABLE_REMOTECALL
@@ -157,6 +201,7 @@ struct AMFIExperimentView: View {
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
+                self.runningLabel = ""
             }
             
             let successCount = experimentResults.filter { $0.success }.count
@@ -167,6 +212,7 @@ struct AMFIExperimentView: View {
     
     private func testSingleBinary(_ path: String) {
         isRunning = true
+        runningLabel = "Testing \(path)..."
         
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "test_binary") { rc in
@@ -174,6 +220,7 @@ struct AMFIExperimentView: View {
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
+                self.runningLabel = ""
             }
             return (result.success, result.detail, 0)
         }
@@ -182,6 +229,7 @@ struct AMFIExperimentView: View {
     
     private func runAmfidRC() {
         isRunning = true
+        runningLabel = "amfid RC (may take 10s)..."
         
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "amfid_rc") { rc in
@@ -189,6 +237,7 @@ struct AMFIExperimentView: View {
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
+                self.runningLabel = ""
             }
             return (result.success, result.detail, 0)
         }
