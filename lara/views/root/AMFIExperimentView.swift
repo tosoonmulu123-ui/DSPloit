@@ -1583,7 +1583,8 @@ struct AMFIExperimentView: View {
             canWriteCode = (readBack == 0x42)
             // Restore
             if canWriteCode {
-                rc.remote_write(testAddr, from: &origByte, size: 1)
+                var restore = origByte
+                rc.remote_write(testAddr, from: &restore, size: 1)
             }
         }
         
