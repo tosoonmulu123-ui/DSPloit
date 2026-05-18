@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum taboptions {
-    case applying, root, tweaks, files, logs
+    case applying, root, files, logs
 }
 
 let g_isunsupported: Bool = isunsupported()
@@ -58,15 +58,7 @@ struct DSPloit: App {
                     }
                     .tag(taboptions.root)
                 
-                // this has gotta fucking go
-                TweaksView(mgr: mgr)
-                    .tabItem {
-                        Image(systemName: "ant.fill")
-                    }
-                    .tag(taboptions.tweaks)
-                
-                
-                // i'm gonna strangle you root (the weight of your actions will crush you)
+                // File manager
                 if showfmintabs {
                     SantanderView(startPath: "/")
                         .tabItem {

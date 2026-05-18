@@ -10,6 +10,8 @@ import SwiftUI
 struct RootDashboardView: View {
     @ObservedObject private var root = RootExecutor.shared
     @ObservedObject private var mgr = dspmgr.shared
+    @State private var proofResult = ""
+    @State private var proofSuccess = false
     
     var body: some View {
         NavigationStack {
@@ -72,8 +74,29 @@ struct RootDashboardView: View {
                         }
                     }
                     .disabled(!mgr.rcready || root.isExecuting)
+                    
+                    Button(action: { proofOfRoot() }) {
+                        HStack {
+                            Label("Proof of Root", systemImage: "doc.badge.checkmark")
+                            Spacer()
+                            if !proofResult.isEmpty {
+                                Image(systemName: proofSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundStyle(proofSuccess ? .green : .red)
+                            }
+                        }
+                    }
+                    .disabled(!mgr.rcready || root.isExecuting)
+                    
+                    if !proofResult.isEmpty {
+                        Text(proofResult)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(proofSuccess ? .green : .red)
+                            .textSelection(.enabled)
+                    }
                 } header: {
                     Text("Quick Actions")
+                } footer: {
+                    Text("Proof of Root writes a file to /var/root/ and reads it back — only possible as uid=0.")
                 }
                 
                 // Credits
@@ -94,6 +117,75 @@ struct RootDashboardView: View {
             }
             .navigationTitle("DSPloit")
         }
+    }
+    
+    // MARK: - Proof of Root
+    
+    private func proofOfRoot() {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let content = "DSPloit root proof — written at \(timestamp) by uid=0"
+        let path = "/var/root/dsploit_proof_\(timestamp).txt"
+        
+        proofResult = "Writing to \(path)..."
+        proofSuccess = false
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "proof_of_root") { rc in
+            // Step 1: Write file to /var/root/ (only root can write here)
+            let pathAddr = remote_alloc_str(rc, path)
+            let flags = UInt64(O_WRONLY | O_CREAT | O_TRUNC)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, flags, 0o644)
+            
+            guard fd != UInt64(bitPattern: -1) else {
+                let err = remote_errno(rc)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                DispatchQueue.main.async {
+                    self.proofResult = "❌ open() failed: errno=\(err)"
+                    self.proofSuccess = false
+                }
+                return (false, "open failed: errno=\(err)", 0)
+            }
+            
+            // Write content
+            let contentAddr = remote_alloc_str(rc, content)
+            let written = RootExecutor.rcall(rc, "write", fd, contentAddr, UInt64(content.utf8.count))
+            RootExecutor.rcall(rc, "close", fd)
+            
+            // Step 2: Read it back to verify
+            let fd2 = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_RDONLY), 0)
+            var readBack = ""
+            if fd2 != UInt64(bitPattern: -1) {
+                let bufAddr = rc.trojanMem + 0x800
+                let n = RootExecutor.rcall(rc, "read", fd2, bufAddr, 256)
+                if n > 0 {
+                    var buf = [UInt8](repeating: 0, count: Int(n))
+                    rc.remoteRead(bufAddr, to: &buf, size: n)
+                    readBack = String(bytes: buf, encoding: .utf8) ?? ""
+                }
+                RootExecutor.rcall(rc, "close", fd2)
+            }
+            
+            // Step 3: Get uid to confirm
+            let uid = RootExecutor.rcall(rc, "getuid")
+            
+            RootExecutor.rcall(rc, "free", pathAddr)
+            RootExecutor.rcall(rc, "free", contentAddr)
+            
+            let success = written > 0 && readBack.contains("DSPloit root proof") && uid == 0
+            let msg = """
+            uid=\(uid) | wrote \(written) bytes
+            path: \(path)
+            readback: \(readBack.prefix(60))
+            """
+            
+            DispatchQueue.main.async {
+                self.proofResult = msg
+                self.proofSuccess = success
+            }
+            
+            return (success, msg, written)
+        }
+        #endif
     }
     
     private var statusColor: Color {
