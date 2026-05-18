@@ -24,7 +24,7 @@ struct RootShellView: View {
         var isLoading: Bool
     }
     
-    private let outputPath = "/tmp/.dsploit_shell_out"
+    private let outputPath = "/tmp/.dsploit_shell_out" // legacy, kept for compat
     
     var body: some View {
         VStack(spacing: 0) {
@@ -104,12 +104,14 @@ struct RootShellView: View {
                 HStack(spacing: 8) {
                     QuickCmd("id") { run("id") }
                     QuickCmd("whoami") { run("whoami") }
-                    QuickCmd("ls /var/root") { run("ls -la /var/root/") }
+                    QuickCmd("ps") { run("ps") }
+                    QuickCmd("df") { run("df") }
+                    QuickCmd("mount") { run("mount") }
+                    QuickCmd("ls /var/root") { run("ls /var/root/") }
+                    QuickCmd("ls /var/jb") { run("ls /var/jb/") }
                     QuickCmd("uname -a") { run("uname -a") }
-                    QuickCmd("ps aux") { run("ps aux") }
-                    QuickCmd("df -h") { run("df -h") }
-                    QuickCmd("ls /var/jb") { run("ls -la /var/jb/") }
                     QuickCmd("cat /etc/passwd") { run("cat /etc/passwd") }
+                    QuickCmd("hostname") { run("hostname") }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -134,7 +136,6 @@ struct RootShellView: View {
     
     private func executeCommand() {
         guard !command.isEmpty, !isExecuting else { return }
-        // Don't check mgr.rcready here — executeAsRoot handles auto-reconnect
         
         let cmd = command
         command = ""
@@ -145,61 +146,136 @@ struct RootShellView: View {
         let idx = history.count - 1
         
         #if !DISABLE_REMOTECALL
-        // Execute command with output capture
-        // Use system() which is simpler than posix_spawn and works in launchd context
-        // system("command > /tmp/out 2>&1") is equivalent to fork+exec+wait
         root.executeAsRoot(operation: "shell") { [self] rc in
-            // Method: use system() — it's a single call that handles everything
-            // system() calls /bin/sh -c internally
-            let fullCmd = "\(cmd) > \(self.outputPath) 2>&1"
-            let cmdAddr = remote_alloc_str(rc, fullCmd)
-            
-            // Try system() first — simplest approach
-            let systemResult = RootExecutor.rcall(rc, "system", cmdAddr)
-            
-            // Read output file
-            let outPathAddr = remote_alloc_str(rc, self.outputPath)
-            let fd = RootExecutor.rcall(rc, "open", outPathAddr, UInt64(O_RDONLY), 0)
-            
-            var output = ""
-            if fd != UInt64(bitPattern: -1) {
-                let bufAddr = rc.trojanMem + 0x800
-                let n = RootExecutor.rcall(rc, "read", fd, bufAddr, 4000)
-                if n > 0 && n < 4001 {
-                    var buf = [UInt8](repeating: 0, count: Int(n))
-                    rc.remoteRead(bufAddr, to: &buf, size: n)
-                    output = String(bytes: buf, encoding: .utf8) ?? "(binary output)"
+            // First try direct C call (fastest, no spawn needed)
+            let directOutput = self.tryDirectCall(rc: rc, cmd: cmd)
+            if !directOutput.isEmpty {
+                DispatchQueue.main.async {
+                    if idx < self.history.count {
+                        self.history[idx] = ShellEntry(command: cmd, output: directOutput, success: true, isLoading: false)
+                    }
+                    self.isExecuting = false
                 }
-                RootExecutor.rcall(rc, "close", fd)
-            } else {
-                // open failed — maybe system() didn't work either
-                // Try alternative: just call the command function directly
-                // For simple commands like "id", "getuid", we can call C functions
-                output = self.tryDirectCall(rc: rc, cmd: cmd)
+                return (true, directOutput.prefix(50).description, 0)
             }
             
-            // Cleanup
-            RootExecutor.rcall(rc, "unlink", outPathAddr)
-            RootExecutor.rcall(rc, "free", cmdAddr)
-            RootExecutor.rcall(rc, "free", outPathAddr)
+            // Try binary spawn with output capture (proven pattern)
+            let spawnOutput = self.tryBinarySpawn(rc: rc, cmd: cmd)
+            if !spawnOutput.isEmpty {
+                DispatchQueue.main.async {
+                    if idx < self.history.count {
+                        self.history[idx] = ShellEntry(command: cmd, output: spawnOutput, success: true, isLoading: false)
+                    }
+                    self.isExecuting = false
+                }
+                return (true, spawnOutput.prefix(50).description, 0)
+            }
             
-            let success = !output.isEmpty || systemResult == 0
-            
+            // Nothing worked
             DispatchQueue.main.async {
                 if idx < self.history.count {
-                    self.history[idx] = ShellEntry(
-                        command: cmd,
-                        output: output.isEmpty ? (success ? "(executed, no output)" : "(failed: ret=\(systemResult))") : output.trimmingCharacters(in: .whitespacesAndNewlines),
-                        success: success,
-                        isLoading: false
-                    )
+                    self.history[idx] = ShellEntry(command: cmd, output: "(command not available — no shell on iOS 18)", success: false, isLoading: false)
                 }
                 self.isExecuting = false
             }
-            
-            return (success, output.prefix(100).description, systemResult)
+            return (false, "not available", 0)
         }
         #endif
+    }
+    
+    // MARK: - Binary Spawn (proven pattern from AMFI experiments)
+    
+    /// Spawn a real binary with posix_spawn + file_actions stdout redirect
+    /// Works for: /bin/ps, /bin/df, /sbin/mount, /sbin/ifconfig
+    private func tryBinarySpawn(rc: RemoteCall, cmd: String) -> String {
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        let parts = trimmed.components(separatedBy: " ").filter { !$0.isEmpty }
+        guard let cmdName = parts.first else { return "" }
+        
+        // Map command names to actual binary paths that exist on iOS 18.2
+        let binaryMap: [String: String] = [
+            "ps": "/bin/ps",
+            "df": "/bin/df",
+            "mount": "/sbin/mount",
+            "umount": "/sbin/umount",
+            "ifconfig": "/sbin/ifconfig",
+            "route": "/sbin/route",
+            "ping": "/sbin/ping",
+            "fsck": "/sbin/fsck",
+            "pfctl": "/sbin/pfctl",
+        ]
+        
+        guard let binaryPath = binaryMap[cmdName] else { return "" }
+        
+        let mem = rc.trojanMem
+        let outFile = "/tmp/.dsp_cmd_out"
+        let outAddr = remote_alloc_str(rc, outFile)
+        
+        // Clean old output
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        
+        // Setup file actions: redirect stdout+stderr to file
+        let actionsAddr = mem + 0x100
+        rc[actionsAddr].setValue64(0)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 2, outAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
+        
+        // Build argv from command parts
+        let binAddr = remote_alloc_str(rc, binaryPath)
+        let argvBase = mem + 0x400
+        var argAddrs: [UInt64] = []
+        for part in parts {
+            argAddrs.append(remote_alloc_str(rc, part))
+        }
+        for (i, addr) in argAddrs.enumerated() {
+            rc[argvBase + UInt64(i * 8)].setValue64(addr)
+        }
+        rc[argvBase + UInt64(argAddrs.count * 8)].setValue64(0) // NULL
+        
+        // Spawn
+        let pidAddr = mem + 0x2E0
+        rc[pidAddr].setValue64(0)
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, argvBase, 0)
+        
+        guard ret == 0 else {
+            // Cleanup
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+            RootExecutor.rcall(rc, "free", outAddr)
+            RootExecutor.rcall(rc, "free", binAddr)
+            for a in argAddrs { RootExecutor.rcall(rc, "free", a) }
+            return ""
+        }
+        
+        // Wait for process to finish
+        RootExecutor.rcall(rc, "usleep", 1000000) // 1 second
+        let statusAddr = mem + 0x380
+        RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+        
+        // Read output
+        var output = ""
+        let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+        if readFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 3500)
+            if n > 0 && n < 3501 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+            }
+            RootExecutor.rcall(rc, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        for a in argAddrs { RootExecutor.rcall(rc, "free", a) }
+        
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     /// For simple commands, call C functions directly instead of spawning shell
