@@ -411,12 +411,14 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp44)
             
             // ============================================
-            // Experiment 45: RemoteCall memory read as new KRW
-            // launchd can read ANY memory in its address space
-            // Kernel maps some zones into launchd's space!
+            // Experiment 45: RC memory — DISABLED (may crash launchd)
             // ============================================
-            let exp45 = self.expRCMemoryAccess(rc: rc)
-            experimentResults.append(exp45)
+            experimentResults.append(ExperimentResult(
+                name: "RC memory (DISABLED)",
+                success: false,
+                detail: "⚠️ Disabled — reading invalid addresses crashes launchd → panic",
+                timestamp: Date()
+            ))
             
             DispatchQueue.main.async {
                 self.results = experimentResults
