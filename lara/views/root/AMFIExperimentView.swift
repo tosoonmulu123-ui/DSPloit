@@ -376,12 +376,21 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp40)
             
             // ============================================
-            // 🔥🔥 Experiment 41: PATCH cs_enforcement_disable!
-            // Variable pointed to by __DATA_CONST pointer
-            // Actual variable is in __DATA (writable!)
+            // 🔥🔥 Experiment 41: cs_enforcement_disable — DISABLED
             // ============================================
-            let exp41 = self.expPatchCSEnforcementDisable(rc: rc)
-            experimentResults.append(exp41)
+            experimentResults.append(ExperimentResult(
+                name: "🔥🔥 CS_ENFORCEMENT (prev: DISABLED)",
+                success: false,
+                detail: "Previous attempt wrote to wrong address → panic.\nNew target found via code tracing: 0xfffffff00a3304e8",
+                timestamp: Date()
+            ))
+            
+            // ============================================
+            // 🔥 Experiment 42: SAFE READ of cs_enforcement candidate
+            // Only READ — no write! Verify address is accessible first.
+            // ============================================
+            let exp42 = self.expSafeReadCSVar(rc: rc)
+            experimentResults.append(exp42)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2382,6 +2391,64 @@ struct AMFIExperimentView: View {
             
             return ExperimentResult(name: "🔥 PATCH CS ENFORCEMENT", success: false, detail: detail, timestamp: Date())
         }
+    }
+    
+    /// 🔥 SAFE READ: Test if cs_enforcement_disable candidate is accessible
+    /// Address 0xfffffff00a3304e8 found via code tracing (references cs_enforcement_disable string)
+    /// ONLY READS — no write, no panic risk (unless address is in bad zone)
+    private func expSafeReadCSVar(rc: RemoteCall) -> ExperimentResult {
+        let mgr = dspmgr.shared
+        let slide = mgr.kernslide
+        
+        // Target: 0xfffffff00a3304e8 (found by tracing code that refs "cs_enforcement_disable")
+        let candidateUnslid: UInt64 = 0xfffffff00a3304e8
+        let candidateAddr = candidateUnslid + slide
+        
+        var detail = "🔥 Safe read of cs_enforcement_disable candidate\n\n"
+        detail += "Unslid VA: 0x\(String(format: "%llx", candidateUnslid))\n"
+        detail += "Slide: 0x\(String(format: "%llx", slide))\n"
+        detail += "Runtime addr: 0x\(String(format: "%llx", candidateAddr))\n\n"
+        
+        // Check if address looks valid
+        let isValid = ds_isvalid(candidateAddr)
+        detail += "ds_isvalid: \(isValid)\n\n"
+        
+        guard isValid else {
+            detail += "❌ Address not valid for KRW — would panic!\n"
+            detail += "This address might be in a different zone.\n"
+            return ExperimentResult(name: "🔥 SAFE READ cs_var", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // SAFE READ using ds_kread32_safe (returns 0 on failure instead of panic)
+        let val32 = ds_kread32_safe(candidateAddr)
+        detail += "Read (32-bit safe): 0x\(String(format: "%08x", val32))\n"
+        
+        // Also read nearby values to understand context
+        detail += "\nContext (±32 bytes):\n"
+        for offset in stride(from: -32, through: 32, by: 4) {
+            let addr = candidateAddr + UInt64(bitPattern: Int64(offset))
+            if ds_isvalid(addr) {
+                let v = ds_kread32_safe(addr)
+                let marker = offset == 0 ? " ← TARGET" : ""
+                if v != 0 || offset == 0 {
+                    detail += "  +\(offset): 0x\(String(format: "%08x", v))\(marker)\n"
+                }
+            }
+        }
+        
+        detail += "\n"
+        if val32 == 0 {
+            detail += "Value is 0 — could be cs_enforcement_disable (disabled=0, enabled would be non-zero)\n"
+            detail += "NEXT: Try writing 1 to this address and test spawn\n"
+            detail += "⚠️ Only do this if you're OK with potential panic\n"
+        } else if val32 == 1 {
+            detail += "Value is 1 — already set! (or this is a different variable)\n"
+        } else {
+            detail += "Value is 0x\(String(format: "%x", val32)) — probably NOT a flag variable\n"
+            detail += "Flags are typically 0 or 1. This might be wrong address.\n"
+        }
+        
+        return ExperimentResult(name: "🔥 SAFE READ cs_var", success: isValid, detail: detail, timestamp: Date())
     }
     
     /// 🔥🔥 Patch cs_enforcement_disable — the REAL disable flag!
