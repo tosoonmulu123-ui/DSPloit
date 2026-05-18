@@ -180,7 +180,7 @@ class AlternativeKRWEngine: ObservableObject {
             self.log("Pipe created: read_fd=\(fds[0]), write_fd=\(fds[1])")
             
             // Write marker data to pipe so buffer gets allocated
-            let marker: UInt64 = 0xDEAD_C0DE_PIPE_BUF
+            let marker: UInt64 = 0xDEAD_C0DE_1234_5678
             var markerData = marker
             let written = Darwin.write(self.pipeWriteFD, &markerData, 8)
             self.log("Wrote \(written) bytes to pipe (marker: 0x\(String(format: "%llx", marker)))")
@@ -386,7 +386,7 @@ class AlternativeKRWEngine: ObservableObject {
             
             // Step 2: Send OOL message with known marker data
             let oolSize = 0x4000 // 1 page
-            let marker: UInt64 = 0xCAFE_BABE_OOL_MSG0
+            let marker: UInt64 = 0xCAFE_BABE_0000_0001
             var oolData = Data(count: oolSize)
             oolData.withUnsafeMutableBytes { ptr in
                 // Fill with marker pattern
