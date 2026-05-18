@@ -342,14 +342,14 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         
         // Step 1: Allocate a mach port for exception handling
         var excPort: mach_port_t = 0
-        var kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &excPort)
+        var kr = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &excPort)
         guard kr == KERN_SUCCESS else {
             report += String(format: "mach_port_allocate failed: %d\n", kr)
             rootResult = report
             return
         }
         
-        kr = mach_port_insert_right(mach_task_self(), excPort, excPort, mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
+        kr = mach_port_insert_right(mach_task_self_, excPort, excPort, mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
         guard kr == KERN_SUCCESS else {
             report += String(format: "mach_port_insert_right failed: %d\n", kr)
             rootResult = report
@@ -360,10 +360,10 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         
         // Step 2: Set as task exception port
         kr = task_set_exception_ports(
-            mach_task_self(),
-            exception_mask_t(EXC_MASK_ALL),
+            mach_task_self_,
+            exception_mask_t(EXC_MASK_BAD_ACCESS | EXC_MASK_BREAKPOINT),
             excPort,
-            Int32(EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES),
+            Int32(bitPattern: UInt32(EXCEPTION_DEFAULT) | UInt32(MACH_EXCEPTION_CODES)),
             ARM_THREAD_STATE64
         )
         report += String(format: "task_set_exception_ports: %d (%@)\n\n", kr, kr == KERN_SUCCESS ? "OK" : "FAIL")
@@ -398,7 +398,7 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         if ieObject == 0 {
             report += "ie_object is 0 — port entry not found at this index.\n"
             report += "Port name encoding may differ on iOS 18.\n"
-            mach_port_deallocate(mach_task_self(), excPort)
+            mach_port_deallocate(mach_task_self_, excPort)
             rootResult = report
             return
         }
@@ -427,7 +427,7 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         }
         
         // Cleanup
-        mach_port_deallocate(mach_task_self(), excPort)
+        mach_port_deallocate(mach_task_self_, excPort)
         
         report += "\n=== DONE ===\n"
         rootResult = report
