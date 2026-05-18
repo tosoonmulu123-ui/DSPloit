@@ -353,6 +353,19 @@ struct AMFIExperimentView: View {
             let exp37 = self.expGPUResearch(rc: rc)
             experimentResults.append(exp37)
             
+            // ============================================
+            // Experiment 38: Multiple spawn attempts
+            // Binary EXECUTES (confirmed!) — try many times for output
+            // ============================================
+            let exp38 = self.expMultipleSpawns(rc: rc)
+            experimentResults.append(exp38)
+            
+            // ============================================
+            // Experiment 39: Kernel fd patch before spawn
+            // ============================================
+            let exp39 = self.expKernelFdPatch(rc: rc)
+            experimentResults.append(exp39)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2630,6 +2643,142 @@ struct AMFIExperimentView: View {
         
         let success = agxInfo.contains("✅")
         return ExperimentResult(name: "GPU shader research", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Output Capture Fix Attempts
+    
+    /// Try spawning /bin/df 5 times with file_actions — see if any produce output
+    /// Previous mount success might have been timing-dependent
+    private func expMultipleSpawns(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var results: [String] = []
+        
+        for attempt in 1...5 {
+            let outFile = "/tmp/.dsp_multi_\(attempt)"
+            let outAddr = remote_alloc_str(rc, outFile)
+            RootExecutor.rcall(rc, "unlink", outAddr)
+            
+            // file_actions at unique offset per attempt
+            let actOff = UInt64(0x1800 + attempt * 0x100)
+            let actionsAddr = mem + actOff
+            rc[actionsAddr].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_init", actionsAddr)
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", actionsAddr, 1, outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            
+            let binAddr = remote_alloc_str(rc, "/bin/df")
+            let argvOff = UInt64(0x1400 + attempt * 0x20)
+            rc[mem + argvOff].setValue64(binAddr)
+            rc[mem + argvOff + 8].setValue64(0)
+            
+            let pidAddr = mem + UInt64(0x1300 + attempt * 8)
+            rc[pidAddr].setValue64(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, actionsAddr, 0, mem + argvOff, 0)
+            
+            // Wait
+            RootExecutor.rcall(rc, "usleep", 800000) // 0.8s per attempt
+            RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            // Check output
+            let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+            var size: UInt64 = 0
+            if readFd != UInt64(bitPattern: -1) {
+                size = RootExecutor.rcall(rc, "lseek", readFd, 0, 2)
+                RootExecutor.rcall(rc, "close", readFd)
+            }
+            
+            results.append("attempt \(attempt): ret=\(ret), file_size=\(size)")
+            
+            // Cleanup
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", actionsAddr)
+            RootExecutor.rcall(rc, "unlink", outAddr)
+            RootExecutor.rcall(rc, "free", outAddr)
+            RootExecutor.rcall(rc, "free", binAddr)
+            
+            // If we got output, read it!
+            if size > 0 {
+                results.append("  ✅ GOT OUTPUT! size=\(size)")
+                break
+            }
+        }
+        
+        let anyOutput = results.contains(where: { $0.contains("✅") })
+        return ExperimentResult(
+            name: "multiple spawn attempts (5x)",
+            success: anyOutput,
+            detail: results.joined(separator: "\n"),
+            timestamp: Date()
+        )
+    }
+    
+    /// Patch launchd's fd[1] in kernel to point to our output file
+    /// Then spawn — child inherits patched fd table from kernel level
+    private func expKernelFdPatch(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let mgr = dspmgr.shared
+        
+        // Step 1: Open output file and get its fd number
+        let outFile = "/tmp/.dsp_kfd_out"
+        let outAddr = remote_alloc_str(rc, outFile)
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        let outFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        
+        guard outFd != UInt64(bitPattern: -1) else {
+            RootExecutor.rcall(rc, "free", outAddr)
+            return ExperimentResult(name: "kernel fd patch", success: false, detail: "Cannot open output file", timestamp: Date())
+        }
+        
+        // Step 2: Find launchd's proc in kernel
+        let launchdProc = mgr.findProc(pid: 1)
+        guard launchdProc != 0 else {
+            RootExecutor.rcall(rc, "close", outFd)
+            RootExecutor.rcall(rc, "free", outAddr)
+            return ExperimentResult(name: "kernel fd patch", success: false, detail: "Cannot find launchd proc", timestamp: Date())
+        }
+        
+        // Step 3: Read launchd's filedesc
+        let p_fd = ds_kread64(launchdProc + UInt64(off_proc_p_fd))
+        
+        // Step 4: Read fd_ofiles (array of fileproc pointers)
+        // Try to find fd[1] (stdout) and fd[outFd] entries
+        var fdInfo = "launchd proc: 0x\(String(format: "%llx", launchdProc))\n"
+        fdInfo += "p_fd: 0x\(String(format: "%llx", p_fd))\n"
+        
+        if p_fd != 0 {
+            // Read first few entries to understand structure
+            for i in 0..<5 {
+                let entry = ds_kread64(p_fd + UInt64(i * 8))
+                fdInfo += "  fd[\(i)]: 0x\(String(format: "%llx", entry))\n"
+            }
+            
+            // Read entry for our output fd
+            if outFd < 100 {
+                let outEntry = ds_kread64(p_fd + outFd * 8)
+                fdInfo += "  fd[\(outFd)] (our file): 0x\(String(format: "%llx", outEntry))\n"
+                
+                // Read fd[1] (stdout)
+                let stdoutEntry = ds_kread64(p_fd + 1 * 8)
+                fdInfo += "  fd[1] (stdout): 0x\(String(format: "%llx", stdoutEntry))\n"
+                
+                // THEORY: if we swap fd[1] with fd[outFd] in kernel...
+                // child would inherit our file as stdout!
+                // But this is DANGEROUS — would break launchd's own stdout
+                fdInfo += "\n  Could swap fd[1]↔fd[\(outFd)] in kernel\n"
+                fdInfo += "  But risky — would break launchd stdout\n"
+                fdInfo += "  Better: dup2 at kernel level (copy fd entry)\n"
+            }
+        }
+        
+        RootExecutor.rcall(rc, "close", outFd)
+        RootExecutor.rcall(rc, "unlink", outAddr)
+        RootExecutor.rcall(rc, "free", outAddr)
+        
+        return ExperimentResult(
+            name: "kernel fd table analysis",
+            success: p_fd != 0,
+            detail: fdInfo,
+            timestamp: Date()
+        )
     }
     #endif
 }
