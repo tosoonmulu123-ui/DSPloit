@@ -264,16 +264,16 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp27)
             
             // ============================================
-            // SHELLCODE EXECUTION (mmap RWX confirmed!)
+            // SHELLCODE EXECUTION — DISABLED (causes PAC panic on A12+)
+            // mmap RWX works but jumping to unsigned pointer = PAC violation
+            // Need PAC signing gadget to make this work
             // ============================================
-            
-            // Experiment 28: Write + execute shellcode (getuid via syscall)
-            let exp28 = self.expShellcodeExec(rc: rc)
-            experimentResults.append(exp28)
-            
-            // Experiment 29: Shellcode execve /bin/df
-            let exp29 = self.expShellcodeExecve(rc: rc)
-            experimentResults.append(exp29)
+            experimentResults.append(ExperimentResult(
+                name: "shellcode (DISABLED)",
+                success: false,
+                detail: "⚠️ Disabled — causes kernel panic on A12+\nmmap RWX works (0xbf2014000) but PAC blocks jump to unsigned pointer.\nNeed: PAC signing gadget or JOP chain to call RWX code.",
+                timestamp: Date()
+            ))
             
             DispatchQueue.main.async {
                 self.results = experimentResults

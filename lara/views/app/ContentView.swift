@@ -2,43 +2,51 @@
 //  ContentView.swift
 //  DSPloit
 //
-//  Setup tab — exploit chain controls
+//  Main tab — One-Tap Jailbreak + status
 //
 
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var mgr: dspmgr
     @ObservedObject private var jb = JailbreakEngine.shared
-    @AppStorage("selectedMethod") private var selectedmethod: method = .hybrid
-    @AppStorage("logsdisplaymode") private var selectedlogsdisplaymode: logsdisplaymode = .toolbar
+    @ObservedObject private var root = RootExecutor.shared
     
     @State private var showSettings = false
-    @State private var dlingkcache = false
     
     init() { globallogger.capture() }
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    // Exploit Chain Card
-                    ExploitChainCard()
-                    
-                    // Actions
-                    ActionsCard()
-                    
-                    // Kernel Info
-                    if mgr.dsready {
-                        KernelInfoCard()
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        Spacer().frame(height: 20)
+                        
+                        // Main status circle
+                        StatusCircle()
+                        
+                        // Progress steps
+                        StepsView()
+                        
+                        // Jailbreak button
+                        JailbreakButton()
+                        
+                        // Actions
+                        ActionsView()
+                        
+                        // Info
+                        if mgr.dsready {
+                            InfoView()
+                        }
+                        
+                        Spacer().frame(height: 20)
                     }
+                    .padding(.horizontal, 24)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
             }
-            .navigationTitle("Setup")
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemBackground))
+            .navigationTitle("DSPloit")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showSettings.toggle() }) {
@@ -52,105 +60,153 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Exploit Chain Card
+    // MARK: - Status Circle
     
     @ViewBuilder
-    private func ExploitChainCard() -> some View {
-        VStack(spacing: 12) {
-            // Steps
-            StepButton(
-                label: "Kernel Exploit",
-                icon: "bolt.shield.fill",
-                status: mgr.dsready ? .done : (mgr.dsrunning ? .running : .idle),
-                progress: mgr.dsprogress
-            ) {
-                offsets_init()
-                mgr.run()
-            }
-            .disabled(mgr.dsready || mgr.dsrunning || isdebugged())
+    private func StatusCircle() -> some View {
+        ZStack {
+            // Background ring
+            Circle()
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 6)
+                .frame(width: 140, height: 140)
             
-            StepButton(
-                label: "Initialize System",
-                icon: "server.rack",
-                status: (mgr.vfsready && mgr.sbxready) ? .done : (mgr.vfsrunning || mgr.sbxrunning ? .running : .idle),
-                progress: mgr.vfsprogress
-            ) {
-                mgr.vfsinit()
-                mgr.sbxescape()
+            // Progress ring
+            if jb.isRunning {
+                Circle()
+                    .trim(from: 0, to: jb.progress)
+                    .stroke(Color.blue, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .frame(width: 140, height: 140)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.3), value: jb.progress)
+            } else if isJailbroken {
+                Circle()
+                    .stroke(Color.green, lineWidth: 6)
+                    .frame(width: 140, height: 140)
             }
-            .disabled(!mgr.dsready || (mgr.vfsready && mgr.sbxready))
             
-            #if !DISABLE_REMOTECALL
-            StepButton(
-                label: "RemoteCall (SpringBoard)",
-                icon: "link.circle.fill",
-                status: mgr.rcready ? .done : (mgr.rcrunning ? .running : (mgr.rcfailed ? .failed : .idle)),
-                progress: 0
-            ) {
-                mgr.rcinit(process: "SpringBoard", migbypass: false) { success in
-                    if !success { mgr.rcfailed = true }
-                }
-            }
-            .disabled(!mgr.dsready || mgr.rcready || mgr.rcrunning || isdebugged())
-            #endif
-            
-            // Error display
-            if let error = mgr.rcLastError ?? mgr.sbProc?.lastError {
-                Text(error)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 8)
+            // Icon
+            VStack(spacing: 6) {
+                Image(systemName: statusIcon)
+                    .font(.system(size: 40))
+                    .foregroundStyle(statusColor)
+                
+                Text(statusText)
+                    .font(.caption.bold())
+                    .foregroundStyle(statusColor)
             }
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
     }
     
-    // MARK: - Actions Card
+    // MARK: - Steps
     
     @ViewBuilder
-    private func ActionsCard() -> some View {
-        VStack(spacing: 0) {
-            ActionRow(icon: "arrow.clockwise", label: "Safe Respring", color: .blue) {
-                safeRespring()
+    private func StepsView() -> some View {
+        VStack(spacing: 8) {
+            JBStep(num: 1, label: "Kernel Exploit", done: mgr.dsready, active: jb.state == .exploiting)
+            JBStep(num: 2, label: "System Init", done: mgr.vfsready && mgr.sbxready, active: jb.state == .initializing)
+            JBStep(num: 3, label: "RemoteCall", done: mgr.rcready, active: jb.state == .connectingRC)
+            JBStep(num: 4, label: "Root Access", done: root.rootConfirmed, active: jb.state == .verifyingRoot)
+            JBStep(num: 5, label: "Bootstrap", done: jb.isJailbroken, active: jb.state == .bootstrapping)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemGroupedBackground)))
+    }
+    
+    // MARK: - Jailbreak Button
+    
+    @ViewBuilder
+    private func JailbreakButton() -> some View {
+        #if !DISABLE_REMOTECALL
+        Button(action: {
+            if !jb.isRunning && !isJailbroken {
+                jb.runFullChain()
             }
+        }) {
+            HStack(spacing: 10) {
+                if jb.isRunning {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Image(systemName: isJailbroken ? "checkmark.circle.fill" : "bolt.fill")
+                }
+                Text(isJailbroken ? "Jailbroken" : (jb.isRunning ? jb.state.rawValue : "Jailbreak"))
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(isJailbroken ? Color.green : (jb.isRunning ? Color.blue : Color.red))
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .disabled(jb.isRunning || isJailbroken)
+        
+        if let error = jb.errorMessage {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+        }
+        #endif
+    }
+    
+    // MARK: - Actions
+    
+    @ViewBuilder
+    private func ActionsView() -> some View {
+        VStack(spacing: 0) {
+            Button(action: safeRespring) {
+                HStack {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(.blue)
+                        .frame(width: 24)
+                    Text("Safe Respring")
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
             
-            Divider().padding(.leading, 44)
+            Divider().padding(.leading, 52)
             
-            ActionRow(icon: "arrow.counterclockwise", label: "Re-init RemoteCall", color: .orange) {
-                #if !DISABLE_REMOTECALL
+            #if !DISABLE_REMOTECALL
+            Button(action: {
                 mgr.rcfailed = false
                 mgr.rcLastError = nil
                 mgr.rcinit(process: "SpringBoard", migbypass: false) { _ in }
-                #endif
+            }) {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise")
+                        .foregroundStyle(.orange)
+                        .frame(width: 24)
+                    Text("Re-init RemoteCall")
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
-            
-            Divider().padding(.leading, 44)
-            
-            ActionRow(icon: "exclamationmark.triangle.fill", label: "Panic!", color: .red) {
-                mgr.panic()
-            }
+            .buttonStyle(.plain)
+            #endif
         }
-        .padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemGroupedBackground)))
     }
     
-    // MARK: - Kernel Info
+    // MARK: - Info
     
     @ViewBuilder
-    private func KernelInfoCard() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("KERNEL")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-            
+    private func InfoView() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Base")
+                Text("Kernel")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(String(format: "0x%llx", mgr.kernbase))
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.orange)
             }
             HStack {
@@ -159,12 +215,24 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(String(format: "0x%llx", mgr.kernslide))
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.purple)
+            }
+            if let error = mgr.rcLastError {
+                HStack {
+                    Text("Error")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemGroupedBackground)))
     }
     
     // MARK: - Safe Respring
@@ -179,8 +247,6 @@ struct ContentView: View {
             return
         }
         #endif
-        
-        // Fallback: kill SpringBoard via kernel
         if mgr.dsready {
             let sbProc = mgr.findProc(name: "SpringBoard")
             if sbProc != 0 {
@@ -189,112 +255,78 @@ struct ContentView: View {
                 return
             }
         }
-        
-        // Last resort
         mgr.respring()
     }
-}
-
-// MARK: - Step Button Component
-
-enum StepStatus {
-    case idle, running, done, failed
-}
-
-struct StepButton: View {
-    let label: String
-    let icon: String
-    let status: StepStatus
-    let progress: Double
-    let action: () -> Void
     
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(statusColor.opacity(0.12))
-                        .frame(width: 36, height: 36)
-                    
-                    if status == .running {
-                        Circle()
-                            .trim(from: 0, to: max(progress, 0.1))
-                            .stroke(statusColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                            .frame(width: 36, height: 36)
-                            .rotationEffect(.degrees(-90))
-                    }
-                    
-                    Image(systemName: statusIcon)
-                        .font(.system(size: 14))
-                        .foregroundStyle(statusColor)
-                }
-                
-                Text(label)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                
-                Spacer()
-                
-                switch status {
-                case .done:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case .running:
-                    ProgressView().scaleEffect(0.7)
-                case .failed:
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.red)
-                case .idle:
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.vertical, 8)
-        }
-        .buttonStyle(.plain)
-    }
+    // MARK: - Helpers
     
-    private var statusColor: Color {
-        switch status {
-        case .done: return .green
-        case .running: return .blue
-        case .failed: return .red
-        case .idle: return .secondary
-        }
+    private var isJailbroken: Bool {
+        root.rootConfirmed || jb.isJailbroken
     }
     
     private var statusIcon: String {
-        switch status {
-        case .done: return "checkmark"
-        case .running: return icon
-        case .failed: return "xmark"
-        case .idle: return icon
-        }
+        if isJailbroken { return "lock.open.fill" }
+        if jb.isRunning { return "bolt.circle.fill" }
+        if jb.state == .failed { return "xmark.circle.fill" }
+        return "lock.fill"
+    }
+    
+    private var statusColor: Color {
+        if isJailbroken { return .green }
+        if jb.isRunning { return .blue }
+        if jb.state == .failed { return .red }
+        return .secondary
+    }
+    
+    private var statusText: String {
+        if isJailbroken { return "Jailbroken" }
+        if jb.isRunning { return "Working..." }
+        if jb.state == .failed { return "Failed" }
+        return "Locked"
     }
 }
 
-struct ActionRow: View {
-    let icon: String
+// MARK: - Step Row
+
+struct JBStep: View {
+    let num: Int
     let label: String
-    let color: Color
-    let action: () -> Void
+    let done: Bool
+    let active: Bool
     
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.body)
-                    .foregroundStyle(color)
-                    .frame(width: 24)
-                Text(label)
-                    .font(.subheadline)
-                    .foregroundStyle(color)
-                Spacer()
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(done ? Color.green : (active ? Color.blue : Color.secondary.opacity(0.2)))
+                    .frame(width: 28, height: 28)
+                
+                if done {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                } else if active {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                        .tint(.white)
+                } else {
+                    Text("\(num)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(done ? .primary : (active ? .blue : .secondary))
+            
+            Spacer()
+            
+            if done {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
         }
-        .buttonStyle(.plain)
     }
 }
