@@ -337,14 +337,14 @@ struct RootShellView: View {
             return "/"
         }
         
-        // ps / ps aux
+        // ps — let binary spawn handle this (has real /bin/ps)
         if trimmed.hasPrefix("ps") {
-            return doPS(rc: rc)
+            return ""
         }
         
-        // df / df -h
+        // df — let binary spawn handle this (has real /bin/df)
         if trimmed.hasPrefix("df") {
-            return doDF(rc: rc)
+            return ""
         }
         
         // hostname

