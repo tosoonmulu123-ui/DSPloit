@@ -270,40 +270,29 @@ struct ContentView: View {
     
     private func safeRespring() {
         #if !DISABLE_REMOTECALL
-        // Safe respring: use launchctl to restart SpringBoard
-        // This is much safer than the WebKit OOM crash method
-        RootExecutor.shared.executeAsRoot(operation: "respring") { rc in
-            // Method: kill SpringBoard process — launchd will auto-restart it
-            // This is how proper jailbreaks do respring
-            let pathAddr = remote_alloc_str(rc, "SpringBoard")
-            
-            // Find SpringBoard PID and send SIGTERM
-            // Or use launchctl kickstart -k system/com.apple.SpringBoard
-            let sbPid = RootExecutor.rcall(rc, "getpid") // we're in launchd
-            
-            // launchd can restart SpringBoard via internal mechanism
-            // Simplest: just kill the SpringBoard process
-            // We know SB PID from earlier — or find it
-            let killAddr = remote_alloc_str(rc, "killall")
-            
-            // Actually, simplest safe method: send SIGKILL to SpringBoard
-            // SpringBoard PID is typically in 400-500 range
-            // But we can use proc_find_by_name from kernel
-            RootExecutor.rcall(rc, "free", pathAddr)
-            RootExecutor.rcall(rc, "free", killAddr)
-            
-            return (true, "Respring initiated", 0)
-        }
-        
-        // After root operation, trigger respring via SpringBoard RC
-        if let sb = mgr.sbProc {
-            // Tell SpringBoard to restart itself
+        // Try RC-based respring first (cleanest)
+        if mgr.rcready, let sb = mgr.sbProc {
             let sel = remote_sel(sb, "terminateWithSuccess")
             let app = remote_getClass(sb, "UIApplication")
             let shared = remote_msg(sb, app, remote_sel(sb, "sharedApplication"), 0, 0, 0, 0)
             remote_msg(sb, shared, sel, 0, 0, 0, 0)
+            return
         }
         #endif
+        
+        // Fallback: kill SpringBoard via kernel (find proc, write p_flag to force exit)
+        if mgr.dsready {
+            let sbProc = mgr.findProc(name: "SpringBoard")
+            if sbProc != 0 {
+                // Send SIGKILL to SpringBoard PID
+                let pid = Int32(ds_kread32(sbProc + 0x68))
+                kill(pid, SIGKILL)
+                return
+            }
+        }
+        
+        // Last resort: old WebKit method
+        mgr.respring()
     }
     
     private var DebugSection: some View {
