@@ -102,9 +102,9 @@ struct DSPloit: App {
                     iconthememgr.startPendingFixupIfPossible()
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
                     
-                    // Auto-jailbreak on launch
+                    // Auto-jailbreak on launch (up to RemoteCall only)
                     #if !DISABLE_REMOTECALL
-                    if autojailbreak && !jbEngine.isJailbroken && !jbEngine.isRunning {
+                    if autojailbreak && !mgr.dsready && !jbEngine.isRunning {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                             selectedtab = .root
                             jbEngine.runFullChain()

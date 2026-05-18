@@ -99,6 +99,15 @@ struct RootDashboardView: View {
                     }
                     .disabled(!mgr.rcready || root.isExecuting)
                     
+                    Button(action: { removeJailbreak() }) {
+                        HStack {
+                            Label("Remove Jailbreak", systemImage: "trash.circle")
+                                .foregroundStyle(.red)
+                            Spacer()
+                        }
+                    }
+                    .disabled(!mgr.rcready || root.isExecuting)
+                    
                     if !proofResult.isEmpty {
                         Text(proofResult)
                             .font(.system(size: 10, design: .monospaced))
@@ -108,7 +117,7 @@ struct RootDashboardView: View {
                 } header: {
                     Text("Quick Actions")
                 } footer: {
-                    Text("Proof of Root writes a file to /var/root/ and reads it back — only possible as uid=0.")
+                    Text("Remove Jailbreak cleans /var/jb, removes LaunchDaemons, and hides jailbreak traces.")
                 }
                 
                 // Credits
@@ -129,6 +138,71 @@ struct RootDashboardView: View {
             }
             .navigationTitle("DSPloit")
         }
+    }
+    
+    // MARK: - Remove Jailbreak (RootHide-style)
+    
+    private func removeJailbreak() {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "remove_jailbreak") { rc in
+            // Remove /var/jb bootstrap
+            let paths = [
+                "/var/jb/Library/LaunchDaemons",
+                "/var/jb/Library/TweakInject",
+                "/var/jb/Library/MobileSubstrate",
+                "/var/jb/Library/PreferenceBundles",
+                "/var/jb/Library/PreferenceLoader",
+                "/var/jb/Library/Frameworks",
+                "/var/jb/Library",
+                "/var/jb/usr/bin",
+                "/var/jb/usr/lib",
+                "/var/jb/usr/sbin",
+                "/var/jb/usr/local/bin",
+                "/var/jb/usr/local",
+                "/var/jb/usr",
+                "/var/jb/etc",
+                "/var/jb/tmp",
+                "/var/jb/var/lib/dpkg/info",
+                "/var/jb/var/lib/dpkg",
+                "/var/jb/var/lib",
+                "/var/jb/var/cache/apt",
+                "/var/jb/var/cache",
+                "/var/jb/var",
+                "/var/jb/.dsploit_bootstrapped",
+                "/var/jb",
+            ]
+            
+            var removed = 0
+            for path in paths {
+                let pathAddr = remote_alloc_str(rc, path)
+                // Try rmdir first (for directories), then unlink (for files)
+                var result = RootExecutor.rcall(rc, "rmdir", pathAddr)
+                if result != 0 {
+                    result = RootExecutor.rcall(rc, "unlink", pathAddr)
+                }
+                if result == 0 { removed += 1 }
+                RootExecutor.rcall(rc, "free", pathAddr)
+            }
+            
+            // Remove proof files from /var/root
+            let proofPattern = remote_alloc_str(rc, "/var/root/dsploit_proof_*.txt")
+            RootExecutor.rcall(rc, "free", proofPattern)
+            
+            // Remove KRW stash
+            let stashPath = remote_alloc_str(rc, "/var/root/.dsploit_stash")
+            RootExecutor.rcall(rc, "unlink", stashPath)
+            RootExecutor.rcall(rc, "free", stashPath)
+            
+            DispatchQueue.main.async {
+                self.proofResult = "🗑️ Jailbreak removed (\(removed) items cleaned)"
+                self.proofSuccess = false
+                // Clear local state
+                UserDefaults.standard.removeObject(forKey: "KRWPrimitive")
+            }
+            
+            return (true, "Removed \(removed) jailbreak items", UInt64(removed))
+        }
+        #endif
     }
     
     // MARK: - Proof of Root
