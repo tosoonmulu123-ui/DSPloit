@@ -4778,9 +4778,10 @@ struct AMFIExperimentView: View {
         detail += "Scanning __DATA for DART TTBR patterns...\n"
         detail += "(Looking for 0x808xxxxx values = VALID + PPN in DRAM range)\n\n"
         
-        // Scan first 0x8000 bytes of __DATA (safe, non-PPL region)
-        for off in stride(from: UInt64(0), to: UInt64(0x8000), by: 8) {
+        // Scan first 0x7000 bytes of __DATA (safe, non-PPL region — stay well below 0x8000)
+        for off in stride(from: UInt64(0), to: UInt64(0x7000), by: 8) {
             let val = ds_kread64_safe(dataBase + off)
+            if val == 0 { continue }  // skip zeros fast
             
             // Check both 32-bit halves for TTBR pattern
             let lo32 = UInt32(val & 0xFFFFFFFF)
@@ -4806,52 +4807,52 @@ struct AMFIExperimentView: View {
         detail += "Found \(dartTTBRCandidates.count) TTBR candidates in __DATA\n\n"
         
         // ============================================================
-        // STEP 4: Alternative — scan zone memory for IODARTMapper objects
-        // IODARTMapper has a vtable pointer followed by instance vars
-        // One of the ivars is the page table base (kernel VA or PA)
+        // STEP 4: Scan GEN1/GEN2 zone for DART L1 page table pattern
+        // CRITICAL: Use RUNTIME zone boundaries derived from our proc address
+        // Zone addresses change every boot! Never hardcode them.
+        //
+        // Safe scan strategy:
+        // - Our proc is in GEN1/GEN2 zone (confirmed by previous experiments)
+        // - Scan from our proc address ± small range
+        // - Only read addresses confirmed to be in valid zone range
         // ============================================================
         detail += "=== Step 4: Scan for DART page table in zone memory ===\n"
         
-        // The DART page table L1 is a 4KB-aligned allocation containing
-        // 512 entries (for 9-bit L1 index). Each entry is 64-bit.
-        // Valid L1 entries point to L2 tables (PA in bits[35:12], bit[0]=1)
-        // Invalid entries are 0.
-        // A typical DART L1 has a few valid entries and many zeros.
+        // Derive safe scan range from our proc address
+        // proc is in GEN1 or GEN2 zone — use it as anchor
+        let ourProc = ds_get_our_proc()
+        detail += "Our proc: 0x\(String(format: "%llx", ourProc))\n"
         
-        // We know IOSurface allocations go through DART.
-        // The IOSurface kernel object has a reference to its DART mapping.
-        // Let's find our test IOSurface in kernel memory.
+        // Safe zone range: scan ±2MB around our proc (stays in same zone)
+        // Align to 4KB page boundary
+        let scanCenter = ourProc & ~UInt64(0xFFF)  // page-align
+        let scanRangeSize: UInt64 = 0x200000  // 2MB
+        let scanStart = scanCenter &- scanRangeSize
+        let scanEnd = scanCenter &+ scanRangeSize
         
-        // IOSurface objects are in the default zone.
-        // We can find them via the IOSurfaceRoot registry.
-        // But simpler: scan for our marker value in physical memory via physmap
+        // Additional safety: only read addresses in the general zone range
+        // Zone map is always 0xffffffdX... to 0xffffffe4...
+        let safeZoneMin: UInt64 = 0xffffffdc00000000
+        let safeZoneMax: UInt64 = 0xffffffe400000000
         
-        // Actually, let's try the most direct approach:
-        // Find the AGX DART's MMIO mapping by scanning kext __DATA
-        // The AGXG11P kext (loaded at a known address from panic log) stores DART refs
+        func isSafeToRead(_ addr: UInt64) -> Bool {
+            return addr >= safeZoneMin && addr < safeZoneMax && addr >= scanStart && addr < scanEnd
+        }
         
-        // From panic log: com.apple.AGXG11P 323.15 is loaded
-        // Its __DATA section contains pointers to DART MMIO and page tables
+        detail += "Scan range: 0x\(String(format: "%llx", scanStart)) - 0x\(String(format: "%llx", scanEnd))\n"
+        detail += "Safe zone bounds: 0x\(String(format: "%llx", safeZoneMin)) - 0x\(String(format: "%llx", safeZoneMax))\n\n"
         
-        // Scan the GEN0-GEN3 zone range for pages that look like DART L1 tables
-        // A DART L1 table (4KB, 512 entries) has:
-        // - Some entries with bit[0]=1 (valid) and PA in bits[35:12]
-        // - Most entries = 0 (unmapped)
-        // - Valid entries point to PAs in DRAM range (0x800000000+)
-        
-        // Let's scan a portion of zone memory for this pattern
-        let zoneDataStart: UInt64 = 0xffffffe0cd384000  // DATA zone from panic log
-        let zoneDataEnd: UInt64 = 0xffffffe2006bc000
-        
-        // Sample a few pages from the zone looking for DART L1 pattern
         var dartL1Candidates: [(addr: UInt64, validCount: Int, firstPA: UInt64)] = []
         
-        // Scan 256 pages (4MB) from zone DATA start
-        let scanPages = 256
-        let pageSize: UInt64 = 0x1000  // DART uses 4KB pages
+        // Scan pages in our zone neighborhood
+        let pageSize: UInt64 = 0x1000
+        let scanPages = 512  // 2MB / 4KB = 512 pages
         
         for pageIdx in 0..<scanPages {
-            let pageAddr = zoneDataStart + UInt64(pageIdx) * pageSize
+            let pageAddr = scanStart + UInt64(pageIdx) * pageSize
+            
+            // Double-check safety
+            guard pageAddr >= safeZoneMin && pageAddr < safeZoneMax else { continue }
             
             // Read first 8 entries of this page
             var validCount = 0
@@ -4859,14 +4860,14 @@ struct AMFIExperimentView: View {
             var firstValidPA: UInt64 = 0
             
             for entryIdx in 0..<8 {
-                let entry = ds_kread64_safe(pageAddr + UInt64(entryIdx * 8))
+                let readAddr = pageAddr + UInt64(entryIdx * 8)
+                guard readAddr >= safeZoneMin && readAddr < safeZoneMax else { continue }
+                
+                let entry = ds_kread64_safe(readAddr)
                 if entry == 0 {
                     zeroCount += 1
                 } else if entry & 1 == 1 {
-                    // Valid entry — check if PA is in DRAM range
-                    let pa = (entry >> 12) << 12  // bits[35:12] shifted
-                    // Actually DART PTE: bits[35:12] = output PA page number
-                    // So PA = (entry & 0x0000000FFFFFF000)
+                    // Valid DART PTE: bits[35:12] = output PA
                     let dartPA = entry & 0x0000000FFFFFF000
                     if dartPA >= gPhysBase && dartPA < (gPhysBase + 0x100000000) {
                         validCount += 1
@@ -4884,7 +4885,9 @@ struct AMFIExperimentView: View {
                     
                     // Dump first 8 entries for analysis
                     for i in 0..<8 {
-                        let e = ds_kread64_safe(pageAddr + UInt64(i * 8))
+                        let rAddr = pageAddr + UInt64(i * 8)
+                        guard rAddr >= safeZoneMin && rAddr < safeZoneMax else { continue }
+                        let e = ds_kread64_safe(rAddr)
                         if e != 0 {
                             detail += "    [\(i)] 0x\(String(format: "%016llx", e))\n"
                         }
@@ -4911,7 +4914,9 @@ struct AMFIExperimentView: View {
             var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
             
             for i in 0..<64 {
-                let entry = ds_kread64_safe(candidate.addr + UInt64(i * 8))
+                let rAddr = candidate.addr + UInt64(i * 8)
+                guard rAddr >= safeZoneMin && rAddr < safeZoneMax else { continue }
+                let entry = ds_kread64_safe(rAddr)
                 if entry & 1 == 1 {
                     l1ValidEntries.append((idx: i, entry: entry))
                 }
@@ -4928,12 +4933,20 @@ struct AMFIExperimentView: View {
                 detail += "  L1[\(idx)]: entry=0x\(String(format: "%016llx", entry))\n"
                 detail += "    L2 PA=0x\(String(format: "%llx", l2PA)), VA=0x\(String(format: "%llx", l2VA))\n"
                 
-                // Read L2 table entries
+                // Safety check: L2 VA must be in safe zone range
+                guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
+                    detail += "    ⚠️ L2 VA outside safe zone — skipping\n"
+                    continue
+                }
+                
+                // Read L2 table entries (limit to first 128 for safety)
                 var l2ValidCount = 0
                 var l2SampleEntries: [(idx: Int, pa: UInt64)] = []
                 
-                for j in 0..<512 {
-                    let l2e = ds_kread64_safe(l2VA + UInt64(j * 8))
+                for j in 0..<128 {
+                    let l2Addr = l2VA + UInt64(j * 8)
+                    guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
+                    let l2e = ds_kread64_safe(l2Addr)
                     if l2e & 1 == 1 {
                         l2ValidCount += 1
                         let leafPA = l2e & 0x0000000FFFFFF000
@@ -4941,11 +4954,6 @@ struct AMFIExperimentView: View {
                             l2SampleEntries.append((idx: j, pa: leafPA))
                         }
                         
-                        // Calculate IOVA for this entry
-                        // IOVA = (TTBR_idx << 30) | (L1_idx << 21) | (L2_idx << 12)
-                        // For 4KB pages, 9-bit L1, 9-bit L2:
-                        // IOVA = (L1_idx << (9+12)) | (L2_idx << 12)
-                        //       = (L1_idx << 21) | (L2_idx << 12)
                         let iova = UInt64(idx) << 21 | UInt64(j) << 12
                         confirmedL2Entries.append((iova: iova, pa: leafPA))
                     }
