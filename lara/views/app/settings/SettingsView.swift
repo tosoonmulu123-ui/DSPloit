@@ -258,7 +258,8 @@ struct SettingsView: View {
     
     private func clearKcacheData() {
         let fm = FileManager.default
-        
+        ds_kcache_symbol_cache_clear()
+
         UserDefaults.standard.removeObject(forKey: "dsploit.kernelcache_path")
         UserDefaults.standard.removeObject(forKey: "dsploit.kernelcache_size")
         

