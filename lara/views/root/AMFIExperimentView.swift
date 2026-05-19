@@ -49,7 +49,7 @@ private enum PhysmapConstants {
         0x3900, 0x2878, 0x38b0, 0x2898, 0xa0, 0x1310, 0x1320, 0x39b0,
     ]
 
-  static let trustCacheXpfSymbols: [String] = [
+    static let trustCacheXpfSymbols: [String] = [
         "_query_trust_cache",
         "_pmap_lookup_in_loaded_trust_caches",
         "_check_trust_cache_runtime_for_uuid",
