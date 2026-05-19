@@ -4229,8 +4229,10 @@ struct AMFIExperimentView: View {
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
 
-        let dataSegBase = PhysmapConstants.dataSegmentBase(kernTextBase: kernBase)
-        let pplDataBase = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernBase)
+        let fileDataOffForBase = ds_kcache_analyze_data_offset()
+        let dataOff = fileDataOffForBase != 0 ? fileDataOffForBase : PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+        let pplDataBase = dataSegBase &+ PhysmapConstants.pplDataOffsetFromData
         detail += "__DATA: 0x\(String(format: "%llx", dataSegBase))\n"
         detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase)) (TIDAK dibaca — PPL panic)\n"
 
