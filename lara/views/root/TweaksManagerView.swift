@@ -97,6 +97,22 @@ struct TweaksManagerView: View {
                 TweakButton(title: "Bold Text System-wide", subtitle: "Force bold in all apps", icon: "bold") {
                     applyTweak("bold_text")
                 }
+                
+                TweakButton(title: "Disable App Library", subtitle: "Remove App Library page", icon: "square.grid.3x3.slash") {
+                    applyTweak("disable_app_library")
+                }
+                
+                TweakButton(title: "Zero Wake Animation", subtitle: "Instant screen on (no fade)", icon: "bolt.fill") {
+                    applyTweak("zero_wake")
+                }
+                
+                TweakButton(title: "Zero Lock Fade", subtitle: "Instant lock/unlock backlight", icon: "lock.fill") {
+                    applyTweak("zero_lock_fade")
+                }
+                
+                TweakButton(title: "Disable Icon Fly-In", subtitle: "Skip spring-in animation", icon: "wind") {
+                    applyTweak("disable_icon_flyin")
+                }
             } header: {
                 Label("Display", systemImage: "display")
             }
@@ -117,6 +133,27 @@ struct TweaksManagerView: View {
                 }
             } header: {
                 Label("Dock", systemImage: "dock.rectangle")
+            }
+            
+            // Power & Lock
+            Section {
+                TweakButton(title: "Powercuff — Light", subtitle: "Mild CPU throttle (save battery)", icon: "bolt.slash") {
+                    applyTweak("powercuff_light")
+                }
+                
+                TweakButton(title: "Powercuff — Heavy", subtitle: "Aggressive CPU throttle", icon: "bolt.slash.fill") {
+                    applyTweak("powercuff_heavy")
+                }
+                
+                TweakButton(title: "Powercuff — OFF", subtitle: "Remove throttle (full speed)", icon: "bolt.circle.fill") {
+                    applyTweak("powercuff_off")
+                }
+                
+                TweakButton(title: "Double-Tap Lock", subtitle: "Lock device with wallpaper double-tap", icon: "hand.tap") {
+                    applyTweak("doubletap_lock")
+                }
+            } header: {
+                Label("Power & Lock", systemImage: "battery.75percent")
             }
             
             // Debug
@@ -230,6 +267,73 @@ struct TweaksManagerView: View {
                 remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), yes, key, 0, 0)
                 result = 0
             } else { result = -1 }
+        case "disable_app_library":
+            // SBIconController → setAppLibraryEnabled:NO
+            let sbApp = remote_msg(proc, remote_getClass(proc, "SpringBoard"), remote_sel(proc, "sharedApplication"), 0, 0, 0, 0)
+            let iconCtrl = remote_msg(proc, remote_getClass(proc, "SBIconController"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
+            if iconCtrl != 0 {
+                let sel = remote_sel(proc, "setAppLibraryEnabled:")
+                remote_msg(proc, iconCtrl, sel, 0, 0, 0, 0) // NO = 0
+                result = 0
+            } else { result = -1 }
+        case "zero_wake":
+            // SBBacklightController → setMinimumBacklightLevel:1.0 + disable fade
+            let blCtrl = remote_msg(proc, remote_getClass(proc, "SBBacklightController"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
+            if blCtrl != 0 {
+                let sel = remote_sel(proc, "setFadeEnabled:")
+                remote_msg(proc, blCtrl, sel, 0, 0, 0, 0) // NO
+                result = 0
+            } else { result = -1 }
+        case "zero_lock_fade":
+            // Same controller, disable lock animation
+            let blCtrl = remote_msg(proc, remote_getClass(proc, "SBBacklightController"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
+            if blCtrl != 0 {
+                let sel = remote_sel(proc, "setIdleFadeEnabled:")
+                remote_msg(proc, blCtrl, sel, 0, 0, 0, 0) // NO
+                result = 0
+            } else { result = -1 }
+        case "disable_icon_flyin":
+            // SBIconController → setIconFlyInAnimationEnabled:NO
+            let iconCtrl = remote_msg(proc, remote_getClass(proc, "SBIconController"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
+            if iconCtrl != 0 {
+                let sel = remote_sel(proc, "setIconFlyInAnimationEnabled:")
+                remote_msg(proc, iconCtrl, sel, 0, 0, 0, 0)
+                result = 0
+            } else { result = -1 }
+        case "powercuff_light":
+            // Simulate thermalmonitord pressure level 33 (light throttle)
+            let pms = remote_msg(proc, remote_getClass(proc, "ProcessManager"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
+            if pms != 0 {
+                let sel = remote_sel(proc, "setThermalLevel:")
+                remote_msg(proc, pms, sel, 33, 0, 0, 0)
+                result = 0
+            } else {
+                // Fallback: write to NSUserDefaults
+                let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+                let key = remote_NSString(proc, "SBThermalThrottleLevel")
+                let val = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithInteger:"), 33, 0, 0, 0)
+                remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), val, key, 0, 0)
+                result = 0
+            }
+        case "powercuff_heavy":
+            let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+            let key = remote_NSString(proc, "SBThermalThrottleLevel")
+            let val = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithInteger:"), 90, 0, 0, 0)
+            remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), val, key, 0, 0)
+            result = 0
+        case "powercuff_off":
+            let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+            let key = remote_NSString(proc, "SBThermalThrottleLevel")
+            let val = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithInteger:"), 0, 0, 0, 0)
+            remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), val, key, 0, 0)
+            result = 0
+        case "doubletap_lock":
+            // Enable double-tap to lock via SBHomeScreenWallpaperController
+            let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+            let key = remote_NSString(proc, "SBDoubleTapToLockEnabled")
+            let yes = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithBool:"), 1, 0, 0, 0)
+            remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), yes, key, 0, 0)
+            result = 0
         default:
             tweakResults.append("❌ Unknown tweak: \(tweak)")
             return
