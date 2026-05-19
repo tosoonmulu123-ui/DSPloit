@@ -1,6 +1,6 @@
 //
 //  GuideView.swift
-//  DSPloit — Quick start for new and advanced users
+//  DSPloit — Quick start (Indonesia)
 //
 
 import SwiftUI
@@ -13,38 +13,80 @@ struct GuideView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("DSPloit membuka akses root tanpa PC setelah terpasang. Ikuti urutan ini untuk hasil terbaik.")
+                    Text("Panduan untuk **iPhone XR (iPhone11,8) · iOS 18.2 · build 22C152**. Setelah reboot, ulangi dari Langkah 1.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Status perangkat") {
+                Section("Status sekarang") {
                     SystemStatusStrip(mgr: mgr)
                         .listRowBackground(Color.clear)
+                    checklistRow("Kernel (KRW)", mgr.dsready)
+                    checklistRow("Kernelcache (XPF)", mgr.hasOffsets)
+                    checklistRow("VFS", mgr.vfsready)
+                    checklistRow("Sandbox", mgr.sbxready)
+                    checklistRow("RemoteCall", mgr.rcready)
                 }
 
-                Section("Pemula — 3 langkah") {
-                    guideStep(1, "Main", "Tap **Jailbreak** dan tunggu semua langkah hijau (Kernel → Bootstrap).")
-                    guideStep(2, "Root", "Shell, Bootstrap, AMFI Lab (Jailbreak Path), dan tools root lainnya.")
-                    guideStep(3, "AMFI Lab", "Urutan: ① Physmap Verify → ② Trust Cache Probe → ③ Inject (risiko panic). Jangan tutup app.")
+                Section {
+                    stepHeader("Langkah 1", "Jalankan exploit")
+                    stepBody("""
+                    Tab **Main** → tap **Jailbreak** → tunggu sampai selesai atau gagal di sandbox.
+
+                    **Sukses di Logs:** baris hijau `(ds) exploit success!` dan `kernel r/w is ready!`
+
+                    **Tidak perlu reboot** setelah ini.
+                    """)
                 }
 
-                Section("Full jailbreak (AMFI Lab)") {
-                    Text("Root → **AMFI Lab** → **Jailbreak Path**. Butuh KRW aktif. Setelah ① sukses, lanjut ② lalu ③ dengan hati-hati.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Section {
+                    stepHeader("Langkah 2", "Kernelcache (wajib untuk AMFI)")
+                    stepBody("""
+                    **Settings** (ikon gear) → bagian **Kernelcache**:
+
+                    • Pertama kali: tap **Fetch Kernelcache** (harus **setelah** Langkah 1).
+                    • Kalau sudah pernah: jangan hapus kecuali bermasalah.
+                    • **Remove** hanya jika mau mulai bersih → Fetch lagi.
+
+                    **Sukses di Logs:** `(kcache) XPF resolve OK` atau `(offs) kernproc: 0x...`
+
+                    **Gagal:** `(offs) kernelcache download failed` → coba **Import** file dari IPSW 22C152 (lihat info ⓘ di Settings).
+                    """)
                 }
 
-                Section("Lanjutan") {
-                    Label("AMFI Lab — physmap, trust cache, code signing (Root → Advanced)", systemImage: "flask")
-                    Label("VarClean — bersihkan jejak jailbreak (Root → Banking, opsional)", systemImage: "trash")
-                    Label("Offsets — Settings jika device belum dikenali", systemImage: "slider.horizontal.3")
+                Section {
+                    stepHeader("Langkah 3", "AMFI Lab (tanpa jailbreak penuh)")
+                    stepBody("""
+                    Cukup **Langkah 1 + 2**. Tab **Root** → **AMFI Lab** → **Jailbreak Path**:
+
+                    ① **Physmap Access (74)** — tunggu hijau (boleh skip jika sudah verified).
+                    ② **Trust Cache Probe (77)** — baca hasil di kartu + Logs.
+                    ③ **Inject** — **jangan** sampai ② hijau.
+
+                    **Jangan tutup app** dari app switcher (bisa panic). Pakai **Respring** di Main jika perlu.
+                    """)
+                }
+
+                Section {
+                    stepHeader("Opsional", "Jailbreak penuh (bootstrap)")
+                    stepBody("""
+                    Jika Jailbreak di Main sampai **🎉 Jailbreak complete!** → bootstrap `/var/jb` siap.
+
+                    Kalau gagal di **Sandbox escape** tapi exploit hijau → AMFI Lab tetap bisa (hanya butuh KRW). Build terbaru memperlonggar verifikasi sandbox.
+                    """)
+                }
+
+                Section("Cara baca Logs") {
+                    Label("Tap ikon terminal di Main → filter chip: Exploit, Offsets, Kcache", systemImage: "terminal")
+                    Label("Hijau = sukses · Merah = gagal · Oranye = peringatan", systemImage: "paintpalette")
+                    Label("Tap satu baris = salin ke clipboard", systemImage: "doc.on.doc")
+                    Label("Settings → Logs Display: **Styled** (disarankan) atau Plain", systemImage: "text.alignleft")
                 }
 
                 Section("Peringatan") {
-                    Label("Reboot = hilang jailbreak (jailbreak ulang)", systemImage: "arrow.clockwise")
-                    Label("Tutup app dari switcher bisa panic — gunakan Respring", systemImage: "exclamationmark.triangle")
-                    Label("Backup data penting sebelum eksperimen AMFI", systemImage: "externaldrive")
+                    Label("Reboot = hilang jailbreak — ulangi Langkah 1–2", systemImage: "arrow.clockwise")
+                    Label("Exp 77 Inject bisa panic — hanya setelah Probe hijau", systemImage: "exclamationmark.triangle")
+                    Label("Jangan baca __ppl_data (otomatis dilewati di Probe)", systemImage: "hand.raised")
                 }
             }
             .navigationTitle("Panduan")
@@ -57,20 +99,29 @@ struct GuideView: View {
         }
     }
 
-    private func guideStep(_ num: Int, _ tab: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text("\(num)")
+    private func stepHeader(_ step: String, _ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(step)
                 .font(.caption.bold())
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.accentColor.opacity(0.2)))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(tab)
-                    .font(.subheadline.bold())
-                Text(LocalizedStringKey(text))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
         }
-        .padding(.vertical, 4)
+        .padding(.bottom, 4)
+    }
+
+    private func stepBody(_ text: String) -> some View {
+        Text(LocalizedStringKey(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+    }
+
+    private func checklistRow(_ label: String, _ ok: Bool) -> some View {
+        HStack {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(ok ? .green : .secondary)
+            Text(label)
+        }
+        .font(.subheadline)
     }
 }

@@ -38,7 +38,7 @@ struct SettingsView: View {
     @State private var showkcachetips: Bool = false
     
     @AppStorage("logsdisplaymode") private var selectedlogdisplaymode: logsdisplaymode = .toolbar
-    @AppStorage("loggerNoBS") private var loggerNoBS: Bool = true
+  @AppStorage("loggernobullshit") private var plainLogsMode: Bool = false
     
     @AppStorage("rcDockUnlimited") private var rcDockUnlimited: Bool = false
     
@@ -170,7 +170,7 @@ struct SettingsView: View {
                                 if kaenabled { toggleka() }
                             }
                         }
-                    Toggle("Disable Log Dividers", isOn: $loggerNoBS)
+                    Toggle("Log polos (tanpa warna/filter)", isOn: $plainLogsMode)
                     Picker("Logs Display", selection: $selectedlogdisplaymode) {
                         ForEach(logsdisplaymode.allCases, id: \.self) { mode in
                             Text(mode.rawValue).tag(mode)
