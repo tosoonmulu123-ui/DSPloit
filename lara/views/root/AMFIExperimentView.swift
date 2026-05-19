@@ -206,12 +206,16 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp61)
             
             // ============================================
-            // 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache Injection
-            // Found trust cache candidates in __DATA!
-            // Try to READ them via socket KRW → if accessible → INJECT CDHash!
+            // 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache — DISABLED (panic)
+            // Reading __DATA addresses beyond pmap_cs causes panic
+            // Socket KRW zone does NOT extend to trust cache region
             // ============================================
-            let exp62 = self.expTrustCacheInjection(rc: rc)
-            experimentResults.append(exp62)
+            experimentResults.append(ExperimentResult(
+                name: "🔥🔥🔥🔥🔥🔥🔥🔥 Trust Cache",
+                success: false,
+                detail: "⚠️ DISABLED — reading trust cache addresses causes panic.\nSocket KRW zone limited to proc/task/pmap_cs area only.\nTrust cache region (~57KB away) is in different zone.",
+                timestamp: Date()
+            ))
             
             DispatchQueue.main.async {
                 self.results = experimentResults

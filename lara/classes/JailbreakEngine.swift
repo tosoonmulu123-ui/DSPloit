@@ -9,6 +9,7 @@
 
 import Foundation
 import Combine
+import UIKit
 
 /// Jailbreak Engine — orchestrates the full exploit chain
 final class JailbreakEngine: ObservableObject {
@@ -209,6 +210,7 @@ final class JailbreakEngine: ObservableObject {
             self.isJailbroken = true
             self.isRunning = false
             self.appendLog("🎉 Jailbreak complete!")
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
     }
     
@@ -218,6 +220,7 @@ final class JailbreakEngine: ObservableObject {
             self.errorMessage = message
             self.isRunning = false
             self.appendLog("❌ \(message)")
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
     #endif

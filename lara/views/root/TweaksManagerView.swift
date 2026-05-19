@@ -30,23 +30,23 @@ struct TweaksManagerView: View {
             
             // SpringBoard Tweaks
             Section {
-                TweakButton(title: "Hide Icon Labels", subtitle: "⚠️ Will cause respring", icon: "textformat.size.smaller") {
+                TweakButton(title: "Hide Icon Labels", subtitle: "⚠️ Respring needed • tested ✓", icon: "textformat.size.smaller") {
                     applyTweak("hide_icon_labels")
                 }
                 
-                TweakButton(title: "5-Icon Dock", subtitle: "⚠️ Will cause respring", icon: "dock.rectangle") {
+                TweakButton(title: "5-Icon Dock", subtitle: "⚠️ Respring needed • tested ✓", icon: "dock.rectangle") {
                     applyTweak("five_icon_dock")
                 }
                 
-                TweakButton(title: "Floating Dock (iPad-style)", subtitle: "iPad dock on iPhone", icon: "dock.arrow.up.rectangle") {
+                TweakButton(title: "Floating Dock (iPad-style)", subtitle: "Experimental — may not persist", icon: "dock.arrow.up.rectangle") {
                     applyTweak("floating_dock")
                 }
                 
-                TweakButton(title: "Grid App Switcher", subtitle: "Grid layout in multitasking", icon: "square.grid.3x3") {
+                TweakButton(title: "Grid App Switcher", subtitle: "Experimental — may not persist", icon: "square.grid.3x3") {
                     applyTweak("grid_switcher")
                 }
                 
-                TweakButton(title: "Upside Down Mode", subtitle: "Rotate UI 180°", icon: "arrow.up.arrow.down") {
+                TweakButton(title: "Upside Down Mode", subtitle: "Instant • tested ✓", icon: "arrow.up.arrow.down") {
                     applyTweak("upside_down")
                 }
             } header: {
@@ -236,6 +236,7 @@ struct TweaksManagerView: View {
         }
         
         tweakResults.append(result == 0 ? "✅ \(tweak) applied" : "⚠️ \(tweak) (ret=\(result))")
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         
         // Respring prompt for visual tweaks
         if ["hide_icon_labels", "five_icon_dock", "floating_dock", "grid_switcher"].contains(tweak) {

@@ -155,6 +155,7 @@ struct RootShellView: View {
                         self.history[idx] = ShellEntry(command: cmd, output: directOutput, success: true, isLoading: false)
                     }
                     self.isExecuting = false
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
                 return (true, directOutput.prefix(50).description, 0)
             }
@@ -167,6 +168,7 @@ struct RootShellView: View {
                         self.history[idx] = ShellEntry(command: cmd, output: spawnOutput, success: true, isLoading: false)
                     }
                     self.isExecuting = false
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
                 return (true, spawnOutput.prefix(50).description, 0)
             }
@@ -177,6 +179,7 @@ struct RootShellView: View {
                     self.history[idx] = ShellEntry(command: cmd, output: "(command not available — no shell on iOS 18)", success: false, isLoading: false)
                 }
                 self.isExecuting = false
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
             return (false, "not available", 0)
         }
@@ -250,22 +253,40 @@ struct RootShellView: View {
         }
         
         // Wait for process to finish
-        RootExecutor.rcall(rc, "usleep", 1000000) // 1 second
+        RootExecutor.rcall(rc, "usleep", 1500000) // 1.5 second (increased from 1s)
         let statusAddr = mem + 0x380
         RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
         
-        // Read output
+        // Extra wait if no output yet (some binaries are slow)
         var output = ""
         let readFd = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
         if readFd != UInt64(bitPattern: -1) {
             let bufAddr = mem + 0x800
-            let n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 3500)
-            if n > 0 && n < 3501 {
+            var n = RootExecutor.rcall(rc, "read", readFd, bufAddr, 4000)
+            
+            // If empty, wait more and retry
+            if n == 0 {
+                RootExecutor.rcall(rc, "close", readFd)
+                RootExecutor.rcall(rc, "usleep", 1000000) // extra 1s
+                RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+                let readFd2 = RootExecutor.rcall(rc, "open", outAddr, UInt64(O_RDONLY), 0)
+                if readFd2 != UInt64(bitPattern: -1) {
+                    n = RootExecutor.rcall(rc, "read", readFd2, bufAddr, 4000)
+                    if n > 0 && n < 4001 {
+                        var buf = [UInt8](repeating: 0, count: Int(n))
+                        rc.remoteRead(bufAddr, to: &buf, size: n)
+                        output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+                    }
+                    RootExecutor.rcall(rc, "close", readFd2)
+                }
+            } else if n > 0 && n < 4001 {
                 var buf = [UInt8](repeating: 0, count: Int(n))
                 rc.remoteRead(bufAddr, to: &buf, size: n)
                 output = String(bytes: buf, encoding: .utf8) ?? "(binary \(n)B)"
+                RootExecutor.rcall(rc, "close", readFd)
+            } else {
+                RootExecutor.rcall(rc, "close", readFd)
             }
-            RootExecutor.rcall(rc, "close", readFd)
         }
         
         // Cleanup

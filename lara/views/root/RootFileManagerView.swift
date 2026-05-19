@@ -17,6 +17,7 @@ struct RootFileManagerView: View {
     @State private var fileContent = ""
     @State private var showingFile = false
     @State private var selectedFile = ""
+    @State private var searchText = ""
     
     // Write mode
     @State private var writePath = "/var/root/test.txt"
@@ -37,9 +38,16 @@ struct RootFileManagerView: View {
                 Image(systemName: "folder.fill")
                     .foregroundStyle(.blue)
                 Text(currentPath)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(size: 12, design: .monospaced))
                     .lineLimit(1)
                 Spacer()
+                Button(action: {
+                    UIPasteboard.general.string = currentPath
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
                 Button(action: goUp) {
                     Image(systemName: "arrow.up.circle")
                 }
@@ -68,7 +76,7 @@ struct RootFileManagerView: View {
                 }
                 Spacer()
             } else {
-                List(entries) { entry in
+                List(filteredEntries) { entry in
                     Button(action: { tapEntry(entry) }) {
                         HStack(spacing: 12) {
                             Image(systemName: entry.isDir ? "folder.fill" : fileIcon(entry.name))
@@ -82,11 +90,16 @@ struct RootFileManagerView: View {
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
+                            } else if entry.name.hasSuffix(".plist") {
+                                Text("plist")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.orange)
                             }
                         }
                     }
                 }
                 .listStyle(.plain)
+                .searchable(text: $searchText, prompt: "Filter files")
             }
         }
         .navigationTitle("Files")
@@ -115,6 +128,11 @@ struct RootFileManagerView: View {
     }
     
     // MARK: - Actions
+    
+    private var filteredEntries: [FileEntry] {
+        if searchText.isEmpty { return entries }
+        return entries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
     
     private func loadDirectory() {
         guard mgr.dsready else { return }
@@ -156,6 +174,7 @@ struct RootFileManagerView: View {
                     return a.name.lowercased() < b.name.lowercased()
                 }
                 self.isLoading = false
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
             
             return (true, "\(items.count) entries", UInt64(items.count))
@@ -190,11 +209,13 @@ struct RootFileManagerView: View {
                 return (false, "open failed", 0)
             }
             
+            // Read up to 8KB for plists, 4KB for other files
+            let maxRead: UInt64 = path.hasSuffix(".plist") ? 8000 : 4000
             let bufAddr = rc.trojanMem + 0x800
-            let n = RootExecutor.rcall(rc, "read", fd, bufAddr, 3000)
+            let n = RootExecutor.rcall(rc, "read", fd, bufAddr, maxRead)
             RootExecutor.rcall(rc, "close", fd)
             
-            if n > 0 && n < 3001 {
+            if n > 0 && n <= maxRead {
                 var buf = [UInt8](repeating: 0, count: Int(n))
                 rc.remoteRead(bufAddr, to: &buf, size: n)
                 let content = String(bytes: buf, encoding: .utf8) ?? "(binary: \(n) bytes)"
@@ -204,7 +225,7 @@ struct RootFileManagerView: View {
                 }
             } else {
                 DispatchQueue.main.async {
-                    self.fileContent = "(empty or binary)"
+                    self.fileContent = "(empty or too large)"
                     self.showingFile = true
                 }
             }
@@ -225,10 +246,16 @@ struct RootFileManagerView: View {
     }
     
     private func fileIcon(_ name: String) -> String {
-        if name.hasSuffix(".plist") { return "doc.text" }
-        if name.hasSuffix(".txt") { return "doc.plaintext" }
-        if name.hasSuffix(".dylib") || name.hasSuffix(".framework") { return "puzzlepiece" }
-        if name.hasSuffix(".png") || name.hasSuffix(".jpg") { return "photo" }
+        if name.hasSuffix(".plist") { return "slider.horizontal.3" }
+        if name.hasSuffix(".txt") || name.hasSuffix(".log") { return "doc.plaintext" }
+        if name.hasSuffix(".dylib") || name.hasSuffix(".so") { return "puzzlepiece" }
+        if name.hasSuffix(".framework") { return "shippingbox" }
+        if name.hasSuffix(".png") || name.hasSuffix(".jpg") || name.hasSuffix(".jpeg") { return "photo" }
+        if name.hasSuffix(".db") || name.hasSuffix(".sqlite") || name.hasSuffix(".sqlitedb") { return "cylinder" }
+        if name.hasSuffix(".app") { return "app" }
+        if name.hasSuffix(".ipa") { return "archivebox" }
+        if name.hasSuffix(".json") { return "curlybraces" }
+        if name.hasSuffix(".xml") { return "chevron.left.forwardslash.chevron.right" }
         return "doc"
     }
 }
@@ -238,15 +265,62 @@ struct RootFileManagerView: View {
 struct FileContentSheet: View {
     let path: String
     let content: String
+    let isPlist: Bool
     @Environment(\.dismiss) private var dismiss
+    @State private var plistEntries: [(String, String)] = []
+    
+    init(path: String, content: String) {
+        self.path = path
+        self.content = content
+        self.isPlist = path.hasSuffix(".plist")
+    }
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                Text(content)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
+            Group {
+                if isPlist && !plistEntries.isEmpty {
+                    // Plist viewer — parsed key-value
+                    List(plistEntries, id: \.0) { key, value in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(key)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.blue)
+                            Text(value)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.primary)
+                                .textSelection(.enabled)
+                                .lineLimit(5)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .listStyle(.plain)
+                } else if isPlist && content.contains("bplist") {
+                    // Binary plist — show raw hex info
+                    VStack(spacing: 12) {
+                        Image(systemName: "doc.badge.gearshape")
+                            .font(.largeTitle)
+                            .foregroundStyle(.orange)
+                        Text("Binary Plist")
+                            .font(.headline)
+                        Text("\(content.count) bytes")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Binary plists cannot be displayed as text.\nUse 'plutil' or view on Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
                     .padding()
+                } else {
+                    // Raw text viewer
+                    ScrollView {
+                        Text(content)
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
             .navigationTitle(URL(fileURLWithPath: path).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
@@ -255,14 +329,63 @@ struct FileContentSheet: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(action: {
-                        UIPasteboard.general.string = content
-                    }) {
-                        Image(systemName: "doc.on.doc")
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            UIPasteboard.general.string = content
+                        }) {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        ShareLink(item: content) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                     }
                 }
             }
+            .onAppear { parsePlist() }
         }
+    }
+    
+    private func parsePlist() {
+        guard isPlist else { return }
+        
+        // Try to parse XML plist from content
+        if let data = content.data(using: .utf8),
+           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) {
+            plistEntries = flattenPlist(plist, prefix: "")
+        } else {
+            // Try parsing as if content might have been read as raw bytes
+            // Just show as text if parsing fails
+            plistEntries = []
+        }
+    }
+    
+    private func flattenPlist(_ obj: Any, prefix: String) -> [(String, String)] {
+        var result: [(String, String)] = []
+        
+        if let dict = obj as? [String: Any] {
+            for (key, value) in dict.sorted(by: { $0.key < $1.key }) {
+                let fullKey = prefix.isEmpty ? key : "\(prefix).\(key)"
+                if let subDict = value as? [String: Any] {
+                    result.append((fullKey, "{\(subDict.count) keys}"))
+                    result.append(contentsOf: flattenPlist(subDict, prefix: fullKey))
+                } else if let arr = value as? [Any] {
+                    result.append((fullKey, "[\(arr.count) items]"))
+                    for (i, item) in arr.prefix(10).enumerated() {
+                        result.append(("  \(fullKey)[\(i)]", "\(item)"))
+                    }
+                } else {
+                    result.append((fullKey, "\(value)"))
+                }
+            }
+        } else if let arr = obj as? [Any] {
+            for (i, item) in arr.prefix(20).enumerated() {
+                result.append(("[\(i)]", "\(item)"))
+            }
+        } else {
+            result.append(("value", "\(obj)"))
+        }
+        
+        return result
     }
 }
 

@@ -69,7 +69,7 @@ struct RootDashboardView: View {
                         Text("DSPloit")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
-                        Text("iOS 18.2 • iPhone XR (A12) • Based on lara by royan")
+                        Text("Rootless Jailbreak • iOS 17-26 • A10-A18")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
