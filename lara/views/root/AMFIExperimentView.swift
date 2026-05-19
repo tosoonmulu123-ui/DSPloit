@@ -1702,44 +1702,9 @@ struct AMFIExperimentView: View {
         detail += "MISValidateSignatureAndCopyInfo: \(misValidate != 0 ? "FOUND" : "not available")\n"
         
         if misValidate != 0 {
-            // Validate /bin/df (signed system binary)
-            let binPath = remote_alloc_str(rc, "/bin/df")
-            let infoOut = mem + 0x3200
-            rc[infoOut].setValue64(0)
-            let misRet = RootExecutor.rcall(rc, "MISValidateSignatureAndCopyInfo", binPath, 0, infoOut)
-            detail += "MISValidate(/bin/df): ret=\(misRet)\n"
-            if misRet == 0 { detail += "  /bin/df signature VALID\n" }
-            
-            // Validate copied binary
-            let copyPath = remote_alloc_str(rc, "/tmp/.dsp_ct_test")
-            RootExecutor.rcall(rc, "unlink", copyPath)
-            let sf = RootExecutor.rcall(rc, "open", binPath, UInt64(O_RDONLY), 0)
-            let df = RootExecutor.rcall(rc, "open", copyPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
-            if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
-                let buf = mem + 0x800
-                for _ in 0..<50 {
-                    let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
-                    if n == 0 || n > 2048 { break }
-                    RootExecutor.rcall(rc, "write", df, buf, n)
-                }
-                RootExecutor.rcall(rc, "close", sf)
-                RootExecutor.rcall(rc, "close", df)
-                
-                rc[infoOut].setValue64(0)
-                let misRet2 = RootExecutor.rcall(rc, "MISValidateSignatureAndCopyInfo", copyPath, 0, infoOut)
-                detail += "MISValidate(/tmp/copy): ret=\(misRet2)\n"
-                if misRet2 == 0 {
-                    detail += "  COPY VALIDATES! Signature travels with file!\n"
-                    detail += "  AMFI blocks for OTHER reasons (not CT)\n"
-                } else {
-                    detail += "  Copy FAILS (signature path-dependent)\n"
-                }
-                RootExecutor.rcall(rc, "unlink", copyPath)
-            }
-            RootExecutor.rcall(rc, "free", binPath)
-            RootExecutor.rcall(rc, "free", copyPath)
-        } else {
-            detail += "MIS function not available even after loading frameworks\n"
+            detail += "\nMIS function available but CANNOT call from launchd (causes panic).\n"
+            detail += "MIS internally connects to amfid via XPC — crashes without proper context.\n"
+            detail += "Would need to call from amfid itself (which we can't RC into).\n"
         }
         
         // Test 4: Provisioning profile paths
