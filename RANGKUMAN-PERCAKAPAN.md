@@ -127,7 +127,7 @@ tte & ~0xFFFFFF: skip — physmapVA out of range
 ## 9. Batasan yang masih ada
 
 - Exp 77 probe: butuh **kernel pmap**; offset `__DATA.__ppl_data` bisa beda per build
-- Exp 77 inject bisa panic (APRR/PPL write)
+- Exp 77 inject: panic `copy_validate_kernel_addr(0xfffffffbffffffff)` jika physmap VA salah — sekarang ada guard + inject KRW-only
 - `gVirtBase` dari Exp 74 perlu divalidasi (bukan sekadar match ke kernBase)
 - Reboot = hilang jailbreak
 - File tweak lama masih di repo, tidak di UI
