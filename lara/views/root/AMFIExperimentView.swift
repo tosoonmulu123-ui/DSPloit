@@ -217,6 +217,12 @@ struct AMFIExperimentView: View {
                 timestamp: Date()
             ))
             
+            let exp63 = self.expSSVBypass(rc: rc)
+            experimentResults.append(exp63)
+            
+            let exp64 = self.expCoreTrustResearch(rc: rc)
+            experimentResults.append(exp64)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1566,6 +1572,187 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
     }
     
+
+    // MARK: - Experiment 63: SSV / Mount Bypass
+    
+    private func expSSVBypass(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "SSV / Mount Bypass Research\n\n"
+        
+        // Test 1: Try mount() syscall variants
+        detail += "=== Test 1: mount() syscall ===\n"
+        let targetDir = remote_alloc_str(rc, "/var/jb")
+        RootExecutor.rcall(rc, "mkdir", targetDir, 0o755)
+        
+        let nullfs = remote_alloc_str(rc, "nullfs")
+        let srcDir = remote_alloc_str(rc, "/usr/bin")
+        let mountRet1 = RootExecutor.rcall(rc, "mount", nullfs, targetDir, 0, srcDir)
+        let mountErr1 = remote_errno(rc)
+        detail += "mount(nullfs): ret=\(mountRet1), errno=\(mountErr1)\n"
+        
+        let bindfs = remote_alloc_str(rc, "bindfs")
+        let mountRet2 = RootExecutor.rcall(rc, "mount", bindfs, targetDir, 0, srcDir)
+        let mountErr2 = remote_errno(rc)
+        detail += "mount(bindfs): ret=\(mountRet2), errno=\(mountErr2)\n"
+        
+        RootExecutor.rcall(rc, "free", nullfs)
+        RootExecutor.rcall(rc, "free", bindfs)
+        RootExecutor.rcall(rc, "free", srcDir)
+        
+        // Test 2: APFS snapshot
+        detail += "\n=== Test 2: APFS Snapshots ===\n"
+        let rootPath = remote_alloc_str(rc, "/")
+        let rootFd = RootExecutor.rcall(rc, "open", rootPath, UInt64(O_RDONLY), 0)
+        detail += "open(/): fd=\(rootFd == UInt64(bitPattern: -1) ? -1 : Int64(rootFd))\n"
+        
+        if rootFd != UInt64(bitPattern: -1) {
+            let snapName = remote_alloc_str(rc, "dsploit_snap")
+            let createRet = RootExecutor.rcall(rc, "fs_snapshot_create", rootFd, snapName, 0)
+            let createErr = remote_errno(rc)
+            detail += "fs_snapshot_create(/): ret=\(createRet), errno=\(createErr)\n"
+            if createRet == 0 { detail += "SNAPSHOT CREATED!\n" }
+            RootExecutor.rcall(rc, "free", snapName)
+            RootExecutor.rcall(rc, "close", rootFd)
+        }
+        
+        // Test 3: Snapshot on /var
+        detail += "\n=== Test 3: Snapshot on /var ===\n"
+        let varPath = remote_alloc_str(rc, "/private/var")
+        let varFd = RootExecutor.rcall(rc, "open", varPath, UInt64(O_RDONLY), 0)
+        if varFd != UInt64(bitPattern: -1) {
+            let snapName2 = remote_alloc_str(rc, "dsploit_var")
+            let createRet2 = RootExecutor.rcall(rc, "fs_snapshot_create", varFd, snapName2, 0)
+            let createErr2 = remote_errno(rc)
+            detail += "fs_snapshot_create(/var): ret=\(createRet2), errno=\(createErr2)\n"
+            if createRet2 == 0 {
+                detail += "VAR SNAPSHOT CREATED!\n"
+                RootExecutor.rcall(rc, "fs_snapshot_delete", varFd, snapName2, 0)
+            }
+            RootExecutor.rcall(rc, "free", snapName2)
+            RootExecutor.rcall(rc, "close", varFd)
+        }
+        RootExecutor.rcall(rc, "free", varPath)
+        RootExecutor.rcall(rc, "free", rootPath)
+        RootExecutor.rcall(rc, "free", targetDir)
+        
+        // Test 4: Mount flags
+        detail += "\n=== Test 4: Mount info ===\n"
+        let stPath = remote_alloc_str(rc, "/")
+        let stBuf = mem + 0x1000
+        if RootExecutor.rcall(rc, "statfs", stPath, stBuf) == 0 {
+            let flags = rc[stBuf + 0x28].value32()
+            detail += "/ flags: 0x\(String(format: "%x", flags))"
+            if flags & 0x1 != 0 { detail += " RDONLY" }
+            if flags & 0x1000 != 0 { detail += " LOCAL" }
+            detail += "\n"
+        }
+        RootExecutor.rcall(rc, "free", stPath)
+        
+        let success = detail.contains("CREATED")
+        return ExperimentResult(name: "SSV/Mount bypass", success: success, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Experiment 64: CoreTrust Signature Research
+    
+    private func expCoreTrustResearch(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        var detail = "CoreTrust Signature Research\n\n"
+        let pid = RootExecutor.rcall(rc, "getpid")
+        
+        // Test 1: Read code signature blob
+        detail += "=== Test 1: Code signature blob ===\n"
+        let blobBuf = mem + 0x2000
+        let csRet = RootExecutor.rcall(rc, "csops", pid, 5, blobBuf, 4096)
+        detail += "csops(CS_OPS_BLOB): ret=\(csRet)\n"
+        if csRet == 0 {
+            let magic = rc[blobBuf].value32()
+            let length = rc[blobBuf + 4].value32()
+            detail += "magic=0x\(String(format: "%x", magic)), length=\(length)\n"
+            if magic == 0xfade0cc0 {
+                let count = rc[blobBuf + 8].value32()
+                detail += "Valid SuperBlob! count=\(count)\n"
+            }
+        }
+        
+        // Test 2: cs_flags analysis
+        detail += "\n=== Test 2: CS flags ===\n"
+        let statusAddr = mem + 0x1A00
+        rc[statusAddr].setValue32(0)
+        RootExecutor.rcall(rc, "csops", pid, 0, statusAddr, 4)
+        let csFlags = rc[statusAddr].value32()
+        detail += "cs_flags: 0x\(String(format: "%x", csFlags))\n"
+        if csFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY\n" }
+        if csFlags & 0x20000000 != 0 { detail += "  CS_RUNTIME\n" }
+        if csFlags & 0x1 != 0 { detail += "  CS_VALID\n" }
+        
+        // Test 3: MISValidateSignatureAndCopyInfo
+        detail += "\n=== Test 3: MIS validation ===\n"
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let misValidate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "MISValidateSignatureAndCopyInfo"))
+        detail += "MISValidateSignatureAndCopyInfo: \(misValidate != 0 ? "FOUND" : "not loaded")\n"
+        
+        if misValidate != 0 {
+            // Validate /bin/df (signed system binary)
+            let binPath = remote_alloc_str(rc, "/bin/df")
+            let infoOut = mem + 0x3200
+            rc[infoOut].setValue64(0)
+            let misRet = RootExecutor.rcall(rc, "MISValidateSignatureAndCopyInfo", binPath, 0, infoOut)
+            detail += "MISValidate(/bin/df): ret=\(misRet)\n"
+            if misRet == 0 { detail += "  /bin/df signature VALID\n" }
+            
+            // Validate copied binary
+            let copyPath = remote_alloc_str(rc, "/tmp/.dsp_ct_test")
+            RootExecutor.rcall(rc, "unlink", copyPath)
+            let sf = RootExecutor.rcall(rc, "open", binPath, UInt64(O_RDONLY), 0)
+            let df = RootExecutor.rcall(rc, "open", copyPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
+                let buf = mem + 0x800
+                for _ in 0..<50 {
+                    let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                    if n == 0 || n > 2048 { break }
+                    RootExecutor.rcall(rc, "write", df, buf, n)
+                }
+                RootExecutor.rcall(rc, "close", sf)
+                RootExecutor.rcall(rc, "close", df)
+                
+                rc[infoOut].setValue64(0)
+                let misRet2 = RootExecutor.rcall(rc, "MISValidateSignatureAndCopyInfo", copyPath, 0, infoOut)
+                detail += "MISValidate(/tmp/copy): ret=\(misRet2)\n"
+                if misRet2 == 0 {
+                    detail += "  COPY VALIDATES! Signature travels with file!\n"
+                    detail += "  AMFI blocks for OTHER reasons (not CT)\n"
+                } else {
+                    detail += "  Copy FAILS (signature path-dependent)\n"
+                }
+                RootExecutor.rcall(rc, "unlink", copyPath)
+            }
+            RootExecutor.rcall(rc, "free", binPath)
+            RootExecutor.rcall(rc, "free", copyPath)
+        } else {
+            // Try loading Security framework
+            let fwPath = remote_alloc_str(rc, "/System/Library/Frameworks/Security.framework/Security")
+            let handle = RootExecutor.rcall(rc, "dlopen", fwPath, 1)
+            detail += "dlopen(Security): \(handle != 0 ? "loaded" : "failed")\n"
+            RootExecutor.rcall(rc, "free", fwPath)
+            if handle != 0 {
+                let mis2 = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "MISValidateSignatureAndCopyInfo"))
+                detail += "After load, MIS: \(mis2 != 0 ? "FOUND" : "still not found")\n"
+            }
+        }
+        
+        // Test 4: Provisioning profile paths
+        detail += "\n=== Test 4: Provisioning profiles ===\n"
+        let paths = ["/var/MobileDevice/ProvisioningProfiles", "/var/db/MobileIdentity"]
+        for path in paths {
+            let p = remote_alloc_str(rc, path)
+            let ret = RootExecutor.rcall(rc, "stat", p, mem + 0x1000)
+            detail += "\(path): \(ret == 0 ? "EXISTS" : "missing")\n"
+            RootExecutor.rcall(rc, "free", p)
+        }
+        
+        let success = detail.contains("FOUND") || detail.contains("VALID")
+        return ExperimentResult(name: "CoreTrust research", success: success, detail: detail, timestamp: Date())
+    }
+    
     #endif
 }
-
