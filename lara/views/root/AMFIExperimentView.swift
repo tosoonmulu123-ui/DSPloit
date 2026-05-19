@@ -281,6 +281,31 @@ private func isLikelyKernelObjectPointer(_ v: UInt64) -> Bool {
     return isLikelyKernelPointer(v)
 }
 
+/// First trust-cache entry: 20-byte CDHash + hashType(1|2) + flags.
+private func trustCacheEntriesPlausible(
+    hdrVA: UInt64,
+    count: UInt32,
+    dataSegBase: UInt64,
+    pplDataBase: UInt64,
+    kernTextBase: UInt64
+) -> Bool {
+    guard count > 0, count <= 200_000 else { return false }
+    let e0 = hdrVA &+ 8
+    guard isSafeTrustCacheStructVA(e0, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernTextBase)
+    else { return false }
+    let heap = isSafeKernelHeapKreadAddress(hdrVA)
+    let r32: (UInt64) -> UInt32 = { heap ? safeKread32Heap($0) : safeKread32Kernel($0) }
+    let w0 = r32(e0)
+    let w1 = r32(e0 &+ 4)
+    let w2 = r32(e0 &+ 8)
+    let w3 = r32(e0 &+ 12)
+    let w4 = r32(e0 &+ 16)
+    if w0 == 0 && w1 == 0 && w2 == 0 && w3 == 0 && (w4 & 0xffff_ffff) == 0 { return false }
+    let hashType = r32(e0 &+ 20) & 0xff
+    guard hashType == 1 || hashType == 2 else { return false }
+    return true
+}
+
 private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
     guard isSafeKernelKreadAddress(va) else { return 0 }
     return ds_kread64_safe(va)
@@ -555,7 +580,6 @@ struct AMFIExperimentView: View {
     @State private var isRunning = false
     @State private var runningLabel = ""
     @State private var customBinary = "/usr/bin/id"
-    @State private var showInjectConfirm = false
 
     struct ExperimentResult: Identifiable {
         let id = UUID()
@@ -610,15 +634,14 @@ struct AMFIExperimentView: View {
                     needsVerified: true
                 )
 
-                pathButton(
-                    title: "③ Trust Cache Inject (Exp 77 FULL)",
-                    icon: "key.fill",
-                    color: .red,
-                    label: "TC Inject",
-                    action: { showInjectConfirm = true },
-                    needsVerified: true,
-                    needsProbe: true
-                )
+                HStack {
+                    Label("③ Trust Cache Inject", systemImage: "key.fill")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Nonaktif (PPL panic)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
 
                 pathButton(
                     title: "④ Test Binary Spawn",
@@ -713,14 +736,6 @@ struct AMFIExperimentView: View {
         }
         .navigationTitle("AMFI Lab")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Trust Cache Inject?", isPresented: $showInjectConfirm) {
-            Button("Batal", role: .cancel) {}
-            Button("Inject (risiko panic)", role: .destructive) {
-                runExp77Inject()
-            }
-        } message: {
-            Text("Menulis CDHash via physmap ke __DATA.__ppl_data. Bisa panic jika APRR memblokir write. Pastikan Exp 74 ✅ dan Exp 77 probe berhasil dulu.")
-        }
     }
 
     @ViewBuilder
@@ -4228,6 +4243,8 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
+        PhysmapConstants.clearProbeOK()
+
         let physmap = PhysmapConstants.loadOrDefault()
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
@@ -4300,13 +4317,19 @@ struct AMFIExperimentView: View {
         func tryTrustCacheAt(_ val: UInt64, label: String) -> Bool {
             for hdrOff: UInt64 in [0, 8, 0x10] {
                 if let (tcVer, tcCnt) = trustCacheHeaderAt(val, headerOff: hdrOff) {
+                    let hdrVA = val &+ hdrOff
+                    guard trustCacheEntriesPlausible(
+                        hdrVA: hdrVA, count: tcCnt,
+                        dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase
+                    ) else {
+                        detail += "  (abaikan \(label): ver=\(tcVer) cnt=\(tcCnt) — entry[0] bukan CDHash)\n"
+                        continue
+                    }
                     let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "__DATA"
                     detail += "🎯 Trust cache \(label) (\(kind))!\n"
-                    detail += "  addr: 0x\(String(format: "%llx", val))"
-                    if hdrOff != 0 { detail += " header+0x\(String(format: "%x", hdrOff))" }
-                    detail += "\n"
+                    detail += "  addr: 0x\(String(format: "%llx", hdrVA))\n"
                     detail += "  version: \(tcVer), count: \(tcCnt)\n"
-                    tcStructAddr = val &+ hdrOff
+                    tcStructAddr = hdrVA
                     tcEntryCount = UInt64(tcCnt)
                     return true
                 }
@@ -4473,9 +4496,15 @@ struct AMFIExperimentView: View {
             return expTrustCacheProbeSafe()
         }
 
-        let expName = "🏆 FULL JAILBREAK (Exp 77)"
-        var detail = "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
+        let expName = "Trust Cache Inject (Exp 77)"
+        var detail = "Experiment 77: Inject — DINONAKTIFKAN\n"
         detail += "====================================================\n\n"
+        detail += "❌ Physmap / KRW write ke trust cache memicu PPL panic di A12:\n"
+        detail += "   \"Unexpected fault in kernel static region\"\n"
+        detail += "(sama seperti di panic.txt — jangan ulangi Inject).\n\n"
+        detail += "Probe (②) tetap aman (read-only). CDHash butuh API kernel/trustd\n"
+        detail += "via RemoteCall — belum diimplementasi di build ini.\n"
+        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
 
         let physmap = PhysmapConstants.loadOrDefault()
         let gPhysBase = physmap.gPhysBase

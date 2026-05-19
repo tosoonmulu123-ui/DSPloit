@@ -154,7 +154,25 @@ struct MobileBankingView: View {
         .navigationTitle("Mobile Banking")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            refreshJbPathsLocal()
+            refreshJbVisibility()
+        }
+        .onChange(of: root.lastResult?.id) { _, _ in
+            guard let r = root.lastResult else { return }
+            switch r.operation {
+            case "hide_var_jb", "restore_var_jb", "banking_verify":
+                if r.success {
+                    if r.operation != "banking_verify" {
+                        statusMessage = r.operation == "hide_var_jb"
+                            ? "✅ \(Self.jbPath) disembunyikan. Force-quit app bank lalu buka lagi."
+                            : "✅ \(Self.jbPath) dikembalikan."
+                    }
+                } else {
+                    statusMessage = "❌ \(r.message)"
+                }
+                if !indicators.isEmpty { scanIndicators() }
+            default:
+                break
+            }
         }
         .alert("Sembunyikan /var/jb?", isPresented: $showHideConfirm) {
             Button("Batal", role: .cancel) {}
@@ -196,6 +214,45 @@ struct MobileBankingView: View {
         UserDefaults.standard.set(jbHidden, forKey: "dsploit.jb_hidden")
     }
 
+    /// Status UI mengikuti root (launchd) — FileManager app sering masih melihat /var/jb setelah rename.
+    private func refreshJbVisibility() {
+        refreshJbPathsLocal()
+        verifyJbStateViaRoot()
+    }
+
+    private func verifyJbStateViaRoot() {
+        #if !DISABLE_REMOTECALL
+        guard mgr.rcready, !root.isExecuting else { return }
+        root.executeAsRoot(operation: "banking_verify") { rc in
+            let jbAddr = remote_alloc_str(rc, Self.jbPath)
+            let stashAddr = remote_alloc_str(rc, Self.hiddenPath)
+            let jbExists = RootExecutor.rcall(rc, "access", jbAddr, 0) == 0
+            let stashExists = RootExecutor.rcall(rc, "access", stashAddr, 0) == 0
+            RootExecutor.rcall(rc, "free", jbAddr)
+            RootExecutor.rcall(rc, "free", stashAddr)
+
+            DispatchQueue.main.async {
+                self.jbPathVisible = jbExists
+                self.stashPathVisible = stashExists
+                self.jbHidden = stashExists && !jbExists
+                UserDefaults.standard.set(self.jbHidden, forKey: "dsploit.jb_hidden")
+                if !self.indicators.isEmpty {
+                    self.indicators = self.indicators.map { item in
+                        if item.path == Self.jbPath {
+                            return JailbreakIndicator(label: item.label, path: item.path, exists: jbExists, critical: item.critical)
+                        }
+                        if item.path == Self.hiddenPath {
+                            return JailbreakIndicator(label: item.label, path: item.path, exists: stashExists, critical: item.critical)
+                        }
+                        return item
+                    }
+                }
+            }
+            return (true, "jb=\(jbExists) stash=\(stashExists)", jbExists ? 1 : 0)
+        }
+        #endif
+    }
+
     /// Scan jejak — hanya FileManager lokal (tidak pegang launchd → tidak respring).
     private func scanIndicators() {
         let probes: [(String, String, Bool)] = [
@@ -214,7 +271,7 @@ struct MobileBankingView: View {
             ("checkra1n", "/var/binpack/Applications/loader.app", true),
         ]
 
-        refreshJbPathsLocal()
+        refreshJbVisibility()
         indicators = probes.map { label, path, critical in
             JailbreakIndicator(
                 label: label,
@@ -255,11 +312,7 @@ struct MobileBankingView: View {
 
             let ok = result == 0
             if ok {
-                DispatchQueue.main.async {
-                    self.refreshJbPathsLocal()
-                    self.statusMessage = "✅ \(Self.jbPath) disembunyikan. Force-quit app bank lalu buka lagi."
-                    if !self.indicators.isEmpty { self.scanIndicators() }
-                }
+                DispatchQueue.main.async { self.verifyJbStateViaRoot() }
             }
 
             return (ok, ok ? "Hidden \(Self.jbPath)" : "rename failed: errno=\(err)", UInt64(result))
@@ -295,11 +348,7 @@ struct MobileBankingView: View {
 
             let ok = result == 0
             if ok {
-                DispatchQueue.main.async {
-                    self.refreshJbPathsLocal()
-                    self.statusMessage = "✅ \(Self.jbPath) dikembalikan."
-                    if !self.indicators.isEmpty { self.scanIndicators() }
-                }
+                DispatchQueue.main.async { self.verifyJbStateViaRoot() }
             }
 
             return (ok, ok ? "Restored \(Self.jbPath)" : "rename failed: errno=\(err)", UInt64(result))
