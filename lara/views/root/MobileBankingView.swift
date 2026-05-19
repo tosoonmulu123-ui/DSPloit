@@ -156,7 +156,7 @@ struct MobileBankingView: View {
         .onAppear {
             refreshJbVisibility()
         }
-        .onChange(of: root.lastResult?.id) { _, _ in
+        .onChange(of: root.lastResult?.id) { _ in
             guard let r = root.lastResult else { return }
             switch r.operation {
             case "hide_var_jb", "restore_var_jb", "banking_verify":
