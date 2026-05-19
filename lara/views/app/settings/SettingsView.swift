@@ -108,6 +108,34 @@ struct SettingsView: View {
                             .disabled(dlingkcache || importingkcache)
                         }
                     } else {
+                        LabeledContent {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } label: {
+                            Text("Kernelcache + XPF siap")
+                        }
+                        Button {
+                            guard !dlingkcache else { return }
+                            dlingkcache = true
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let ok = ensureKernelcacheResolved()
+                                DispatchQueue.main.async {
+                                    mgr.hasOffsets = ok
+                                    dlingkcache = false
+                                }
+                            }
+                        } label: {
+                            if dlingkcache {
+                                HStack {
+                                    Text("Memverifikasi ulang…")
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            } else {
+                                Text("Verifikasi ulang XPF")
+                            }
+                        }
+                        .disabled(dlingkcache || !mgr.dsready)
                         Button("Remove Kernelcache", action: {
                             Alertinator.shared.alert(title: "Clear Kernelcache Data?", body: "This will delete all kernelcache data and remove saved offsets. You will have to refetch the data to use DSPloit again.", actionLabel: "Confirm", action: {
                                 clearKcacheData()
@@ -120,6 +148,8 @@ struct SettingsView: View {
                 } footer: {
                     if (!mgr.hasOffsets && (!mgr.dsready || (!mgr.vfsready && !mgr.sbxready))) {
                         Text("NOTE: You will have to click \"Run Exploit\" before you can fetch kernelcache.\n\nDeleting and refetching kernelcache may fix some issues. Try doing this before opening a GitHub issue or asking for support in our [Discord](https://discord.gg/gw8PcRF3Jr) server.")
+                    } else if mgr.hasOffsets {
+                        Text("Tombol **Fetch** hilang karena kernelcache sudah ter-resolve (XPF OK). Jalankan Jailbreak dulu jika **Verifikasi ulang** nonaktif. Pakai **Remove** hanya untuk ganti file / mulai bersih.")
                     } else {
                         Text("Deleting and refetching kernelcache may fix some issues. Try doing this before opening a GitHub issue or asking for support in our [Discord](https://discord.gg/gw8PcRF3Jr) server.")
                     }

@@ -116,11 +116,12 @@ enum LogLineParser {
         )
     }
 
+    private static let dividerChars: Set<Character> = ["-", "=", "_", "*", "#"]
+
     private static func isDividerLine(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
         guard t.count >= 3 else { return false }
-        let chars = Set(t)
-        return chars.isSubset(of: CharacterSet(charactersIn: "-=_*#"))
+        return Set(t).isSubset(of: dividerChars)
     }
 
     private static func level(for line: String) -> LogLineLevel {
@@ -191,5 +192,23 @@ struct LogLineRow: View {
             }
             .padding(.vertical, 4)
         }
+    }
+}
+
+struct LogsEmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Tidak ada baris")
+                .font(.headline)
+            Text("Ubah filter atau jalankan Jailbreak / AMFI lagi.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
     }
 }

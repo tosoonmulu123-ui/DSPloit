@@ -99,11 +99,8 @@ struct LogsView: View {
         ScrollViewReader { proxy in
             List {
                 if filtered.isEmpty {
-                    ContentUnavailableView(
-                        "Tidak ada baris",
-                        systemImage: "line.3.horizontal.decrease.circle",
-                        description: Text("Ubah filter atau jalankan Jailbreak / AMFI lagi.")
-                    )
+                    LogsEmptyStateView()
+                        .listRowBackground(Color.clear)
                 } else {
                     ForEach(filtered) { line in
                         LogLineRow(line: line)
