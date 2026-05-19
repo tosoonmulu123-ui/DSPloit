@@ -4237,6 +4237,21 @@ struct AMFIExperimentView: View {
         }
 
         if tcStructAddr == 0 {
+            detail += "\n=== Raw __DATA globals (top ADRP slots) ===\n"
+            let rawSlots: [UInt64] = [0x45b8, 0x3980, 0x2d0, 0x1a4, 0x2770, 0xe8, 0x248, 0xf8, 0x38e0, 0x3920, 0x3930]
+            for off in rawSlots {
+                let addr = dataSegBase &+ off
+                guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else {
+                    detail += "  kc+0x\(String(format: "%x", off)): (skip addr)\n"
+                    continue
+                }
+                let p = ds_kreadptr(addr)
+                let s = ds_kreadsmrptr(addr)
+                detail += "  kc+0x\(String(format: "%x", off)): ptr=0x\(String(format: "%llx", p)) smr=0x\(String(format: "%llx", s))\n"
+            }
+        }
+
+        if tcStructAddr == 0 {
             detail += "\n=== XPF symbol resolve (needs fetched kernelcache) ===\n"
             for sym in PhysmapConstants.trustCacheXpfSymbols {
                 let runtime = ds_xpf_resolve_runtime(sym)
@@ -4266,7 +4281,8 @@ struct AMFIExperimentView: View {
                         detail += "\(mib): invalid read 0x\(String(format: "%llx", n))\n"
                     }
                 } else {
-                    detail += "\(mib): ret=\(tcRet)\n"
+                    let err = Int64(bitPattern: tcRet)
+                    detail += "\(mib): gagal (ret=\(err))\n"
                 }
                 RootExecutor.rcall(rc, "free", tcName)
             }
