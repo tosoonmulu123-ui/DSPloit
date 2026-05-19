@@ -238,6 +238,13 @@ struct AMFIExperimentView: View {
             let exp66 = self.expIOKitFuzzer()
             experimentResults.append(exp66)
             
+            // ============================================
+            // Experiment 67: Deep fuzz CredentialManager sel 0
+            // ret=0xfffffffd means code reached — find different path
+            // ============================================
+            let exp67 = self.expCredMgrDeepFuzz()
+            experimentResults.append(exp67)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2046,6 +2053,205 @@ struct AMFIExperimentView: View {
         
         let success = !anomalies.isEmpty
         return ExperimentResult(name: "IOKit Fuzzer (LAST TRY)", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 67: Deep Fuzz AppleCredentialManager sel 0
+    
+    /// Selector 0 returns 0xfffffffd (-3) = custom error from driver logic
+    /// This means our input REACHES the driver code!
+    /// Now: find input that triggers different behavior (ret=0, crash, different ret)
+    /// Strategy: vary struct size, content patterns, scalar vs struct
+    private func expCredMgrDeepFuzz() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "CredMgr Deep Fuzz", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "AppleCredentialManager Selector 0 — Deep Fuzz\n\n"
+        var findings: [(String, UInt64)] = []
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        
+        // Open AppleCredentialManager
+        let nameAddr = remote_alloc_str(sb, "AppleCredentialManager")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+        let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        guard svc != 0 else {
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "CredMgr Deep Fuzz", success: false, detail: "Service not found", timestamp: Date())
+        }
+        let connectAddr = mem + 0x1A00
+        sb[connectAddr].setValue32(0)
+        let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+        let connect = sb[connectAddr].value32()
+        guard openRet == 0 && connect != 0 else {
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ExperimentResult(name: "CredMgr Deep Fuzz", success: false, detail: "Cannot open", timestamp: Date())
+        }
+        RootExecutor.rcall(sb, "free", nameAddr)
+        detail += "connect=\(connect)\n\n"
+        
+        let structIn = mem + 0x2200
+        let structOut = mem + 0x2400
+        let structOutSize = mem + 0x2600
+        let scalarIn = mem + 0x2800
+        let scalarOut = mem + 0x2A00
+        let scalarOutCnt = mem + 0x2C00
+        
+        let baseline: UInt64 = 0xfffffffd  // known return for sel 0
+        
+        // ═══ TEST 1: Vary struct input SIZE ═══
+        detail += "=== Test 1: Vary struct size (sel 0) ===\n"
+        let sizes: [UInt64] = [0, 4, 8, 12, 16, 20, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 1024, 2048]
+        
+        for size in sizes {
+            // Zero-fill input
+            for i in stride(from: 0, to: min(Int(size), 256), by: 8) {
+                sb[structIn + UInt64(i)].setValue64(0)
+            }
+            sb[structOutSize].setValue64(256)
+            
+            let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), 0,
+                                         size == 0 ? 0 : structIn, size,
+                                         structOut, structOutSize)
+            let outSize = sb[structOutSize].value64()
+            
+            if ret != baseline {
+                detail += "  !! size=\(size): ret=0x\(String(format: "%x", ret)), outSize=\(outSize)\n"
+                findings.append(("size=\(size)", ret))
+                if ret == 0 {
+                    detail += "     SUCCESS! Method accepted this size!\n"
+                    // Read output
+                    if outSize > 0 && outSize <= 64 {
+                        var buf = [UInt8](repeating: 0, count: Int(outSize))
+                        sb.remoteRead(structOut, to: &buf, size: outSize)
+                        detail += "     output: \(buf.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " "))\n"
+                    }
+                }
+            } else {
+                // Same as baseline — note but don't print all
+                if size <= 32 || size == 512 || size == 2048 {
+                    detail += "  size=\(size): ret=0xfffffffd (baseline)\n"
+                }
+            }
+        }
+        
+        // ═══ TEST 2: Vary CONTENT at fixed size 32 ═══
+        detail += "\n=== Test 2: Vary content (size=32) ===\n"
+        let contentPatterns: [(String, [UInt64])] = [
+            ("all_0x41", [0x4141414141414141, 0x4141414141414141, 0x4141414141414141, 0x4141414141414141]),
+            ("incrementing", [0x0102030405060708, 0x090A0B0C0D0E0F10, 0x1112131415161718, 0x191A1B1C1D1E1F20]),
+            ("ptr_pattern", [0x0000000100000001, 0x0000000200000002, 0, 0]),
+            ("mach_msg_hdr", [0x00000013_00000000, 0x00000000_00000001, 0, 0]),  // fake mach msg
+            ("xpc_dict", [0x0000F000_58504321, 0x0000000100000001, 0, 0]),  // fake XPC
+            ("plist_magic", [0x6C70_7362, 0x0000_0100, 0, 0]),  // "bplist00"
+            ("credential", [1, 0, 0x0000000100000000, 0]),  // type=1, version, data_ptr
+            ("token_req", [0x746F6B65, 0x6E000000, 0, 0]),  // "token\0"
+        ]
+        
+        for (name, pattern) in contentPatterns {
+            for (i, val) in pattern.enumerated() {
+                sb[structIn + UInt64(i * 8)].setValue64(val)
+            }
+            sb[structOutSize].setValue64(256)
+            
+            let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), 0,
+                                         structIn, 32,
+                                         structOut, structOutSize)
+            let outSize = sb[structOutSize].value64()
+            
+            if ret != baseline {
+                detail += "  !! \(name): ret=0x\(String(format: "%x", ret)), out=\(outSize)\n"
+                findings.append((name, ret))
+                if ret == 0 {
+                    detail += "     SUCCESS!\n"
+                }
+            }
+        }
+        
+        // ═══ TEST 3: Try SCALAR method instead of struct ═══
+        detail += "\n=== Test 3: Scalar method (sel 0) ===\n"
+        for inputCount in [0, 1, 2, 3, 4, 5, 6] as [UInt64] {
+            sb[scalarIn].setValue64(0)
+            sb[scalarIn + 8].setValue64(0)
+            sb[scalarIn + 16].setValue64(0)
+            sb[scalarIn + 24].setValue64(0)
+            sb[scalarIn + 32].setValue64(0)
+            sb[scalarIn + 40].setValue64(0)
+            sb[scalarOutCnt].setValue32(16)
+            
+            let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                         UInt64(connect), 0,
+                                         inputCount == 0 ? 0 : scalarIn, inputCount,
+                                         scalarOut, scalarOutCnt)
+            let outCnt = sb[scalarOutCnt].value32()
+            
+            if ret != baseline && ret != 0xe00002c2 {
+                detail += "  !! scalar[\(inputCount)]: ret=0x\(String(format: "%x", ret)), outCnt=\(outCnt)\n"
+                findings.append(("scalar_\(inputCount)", ret))
+                if ret == 0 && outCnt > 0 {
+                    let val = sb[scalarOut].value64()
+                    detail += "     output[0]=0x\(String(format: "%llx", val))\n"
+                }
+            } else {
+                detail += "  scalar[\(inputCount)]: ret=0x\(String(format: "%x", ret))\n"
+            }
+        }
+        
+        // ═══ TEST 4: Try other selectors (1-5) with struct ═══
+        detail += "\n=== Test 4: Other selectors (1-5) ===\n"
+        for sel in 1...5 {
+            sb[structIn].setValue64(0)
+            sb[structIn + 8].setValue64(0)
+            sb[structIn + 16].setValue64(0)
+            sb[structIn + 24].setValue64(0)
+            sb[structOutSize].setValue64(256)
+            
+            let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), UInt64(sel),
+                                         structIn, 32,
+                                         structOut, structOutSize)
+            let outSize = sb[structOutSize].value64()
+            
+            if ret == 0 {
+                detail += "  !! sel \(sel): SUCCESS! outSize=\(outSize)\n"
+                findings.append(("sel_\(sel)", ret))
+            } else if ret == baseline {
+                detail += "  sel \(sel): ret=0xfffffffd (same as sel 0)\n"
+            } else if ret != 0xe00002bc && ret != 0xe00002c2 {
+                detail += "  sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                findings.append(("sel_\(sel)", ret))
+            }
+        }
+        
+        // Close
+        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+        
+        // ═══ SUMMARY ═══
+        detail += "\n=== FINDINGS ===\n"
+        detail += "Baseline (sel 0, any input): 0xfffffffd (-3)\n"
+        detail += "Deviations found: \(findings.count)\n"
+        for (desc, ret) in findings {
+            detail += "  \(desc): 0x\(String(format: "%x", ret))\n"
+        }
+        
+        if findings.isEmpty {
+            detail += "\nAll inputs return same -3. Method has single validation check\n"
+            detail += "that fails regardless of input content/size.\n"
+            detail += "Likely checks for a valid credential token we don't have.\n"
+        } else {
+            detail += "\nDIFFERENT RETURNS FOUND! This indicates:\n"
+            detail += "- Different code paths reachable with different inputs\n"
+            detail += "- Potential for finding valid input that passes checks\n"
+            detail += "- Memory corruption possible if size-dependent\n"
+        }
+        
+        let success = !findings.isEmpty
+        return ExperimentResult(name: "CredMgr Deep Fuzz", success: success, detail: detail, timestamp: Date())
     }
     
     #endif

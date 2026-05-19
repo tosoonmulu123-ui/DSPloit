@@ -24,6 +24,10 @@ struct RootFileManagerView: View {
     @State private var writeContent = "written by DSPloit"
     @State private var writeResult = ""
     @State private var showWrite = false
+    @State private var showMkdir = false
+    @State private var mkdirName = ""
+    @State private var deleteTarget: FileEntry? = nil
+    @State private var showDeleteConfirm = false
     
     struct FileEntry: Identifiable {
         let id = UUID()
@@ -97,6 +101,14 @@ struct RootFileManagerView: View {
                             }
                         }
                     }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            deleteTarget = entry
+                            showDeleteConfirm = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
                 .listStyle(.plain)
                 .searchable(text: $searchText, prompt: "Filter files")
@@ -108,8 +120,12 @@ struct RootFileManagerView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button(action: { showWrite.toggle() }) {
-                        Label("Write File", systemImage: "square.and.pencil")
+                        Label("New File", systemImage: "doc.badge.plus")
                     }
+                    Button(action: { showMkdir = true }) {
+                        Label("New Folder", systemImage: "folder.badge.plus")
+                    }
+                    Divider()
                     Button(action: loadDirectory) {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -123,7 +139,18 @@ struct RootFileManagerView: View {
             FileContentSheet(path: selectedFile, content: fileContent)
         }
         .sheet(isPresented: $showWrite) {
-            WriteFileSheet(root: root, mgr: mgr)
+            WriteFileSheet(root: root, mgr: mgr, defaultPath: currentPath)
+        }
+        .alert("New Folder", isPresented: $showMkdir) {
+            TextField("Folder name", text: $mkdirName)
+            Button("Create") { createFolder() }
+            Button("Cancel", role: .cancel) { mkdirName = "" }
+        }
+        .alert("Delete?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) { performDelete() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete \(deleteTarget?.name ?? "")? This cannot be undone.")
         }
     }
     
@@ -245,6 +272,47 @@ struct RootFileManagerView: View {
         loadDirectory()
     }
     
+    private func createFolder() {
+        guard !mkdirName.isEmpty else { return }
+        let fullPath = currentPath == "/" ? "/\(mkdirName)" : "\(currentPath)/\(mkdirName)"
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "mkdir") { rc in
+            let pathAddr = remote_alloc_str(rc, fullPath)
+            RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            DispatchQueue.main.async {
+                self.mkdirName = ""
+                self.loadDirectory()
+            }
+            return (true, "mkdir \(fullPath)", 0)
+        }
+        #endif
+    }
+    
+    private func performDelete() {
+        guard let target = deleteTarget else { return }
+        let fullPath = currentPath == "/" ? "/\(target.name)" : "\(currentPath)/\(target.name)"
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "delete") { rc in
+            let pathAddr = remote_alloc_str(rc, fullPath)
+            if target.isDir {
+                // rmdir (only works on empty dirs — safe)
+                RootExecutor.rcall(rc, "rmdir", pathAddr)
+            } else {
+                RootExecutor.rcall(rc, "unlink", pathAddr)
+            }
+            RootExecutor.rcall(rc, "free", pathAddr)
+            DispatchQueue.main.async {
+                self.deleteTarget = nil
+                self.loadDirectory()
+            }
+            return (true, "deleted \(fullPath)", 0)
+        }
+        #endif
+    }
+    
     private func fileIcon(_ name: String) -> String {
         if name.hasSuffix(".plist") { return "slider.horizontal.3" }
         if name.hasSuffix(".txt") || name.hasSuffix(".log") { return "doc.plaintext" }
@@ -268,6 +336,9 @@ struct FileContentSheet: View {
     let isPlist: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var plistEntries: [(String, String)] = []
+    @State private var isEditing = false
+    @State private var editContent = ""
+    @ObservedObject private var root = RootExecutor.shared
     
     init(path: String, content: String) {
         self.path = path
@@ -278,7 +349,12 @@ struct FileContentSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if isPlist && !plistEntries.isEmpty {
+                if isEditing {
+                    // Edit mode
+                    TextEditor(text: $editContent)
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(8)
+                } else if isPlist && !plistEntries.isEmpty {
                     // Plist viewer — parsed key-value
                     List(plistEntries, id: \.0) { key, value in
                         VStack(alignment: .leading, spacing: 3) {
@@ -326,17 +402,35 @@ struct FileContentSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    if isEditing {
+                        Button("Save") { saveEdit() }
+                            .bold()
+                    } else {
+                        Button("Done") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 12) {
-                        Button(action: {
-                            UIPasteboard.general.string = content
-                        }) {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        ShareLink(item: content) {
-                            Image(systemName: "square.and.arrow.up")
+                        if isEditing {
+                            Button("Cancel") {
+                                isEditing = false
+                                editContent = ""
+                            }
+                        } else {
+                            Button(action: {
+                                UIPasteboard.general.string = content
+                            }) {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            Button(action: {
+                                editContent = content
+                                isEditing = true
+                            }) {
+                                Image(systemName: "pencil")
+                            }
+                            ShareLink(item: content) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
                         }
                     }
                 }
@@ -353,10 +447,15 @@ struct FileContentSheet: View {
            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) {
             plistEntries = flattenPlist(plist, prefix: "")
         } else {
-            // Try parsing as if content might have been read as raw bytes
-            // Just show as text if parsing fails
             plistEntries = []
         }
+    }
+    
+    private func saveEdit() {
+        guard !editContent.isEmpty else { return }
+        root.writeFileAsRoot(path: path, content: Data(editContent.utf8))
+        isEditing = false
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
     
     private func flattenPlist(_ obj: Any, prefix: String) -> [(String, String)] {
@@ -394,9 +493,10 @@ struct FileContentSheet: View {
 struct WriteFileSheet: View {
     let root: RootExecutor
     let mgr: dspmgr
+    var defaultPath: String = "/var/root"
     @Environment(\.dismiss) private var dismiss
-    @State private var path = "/var/root/test.txt"
-    @State private var content = "written by DSPloit"
+    @State private var path = ""
+    @State private var content = ""
     @State private var result = ""
     
     var body: some View {
@@ -405,11 +505,12 @@ struct WriteFileSheet: View {
                 Section("Path") {
                     TextField("/var/root/file.txt", text: $path)
                         .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
                 }
                 Section("Content") {
                     TextEditor(text: $content)
                         .font(.system(size: 13, design: .monospaced))
-                        .frame(minHeight: 100)
+                        .frame(minHeight: 150)
                 }
                 Section {
                     Button("Write as Root") {
@@ -433,6 +534,11 @@ struct WriteFileSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                if path.isEmpty {
+                    path = defaultPath == "/" ? "/var/root/new_file.txt" : "\(defaultPath)/new_file.txt"
                 }
             }
         }
