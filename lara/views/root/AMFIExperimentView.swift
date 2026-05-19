@@ -244,7 +244,13 @@ private func isLikelyTrustCacheHeapPointer(_ v: UInt64, kernTextBase: UInt64) ->
     return !isInPPLDataRegion(v, kernTextBase: kernTextBase)
 }
 
-/// Exp 77: hanya heap 0xdd–0xe7 atau __DATA utama sebelum __ppl_data — bukan __TEXT / kext lain.
+/// Antara __TEXT utama dan __DATA (komponen fileset lain: AMFI, trustcache, …).
+private func isFilesetAuxDataVA(_ va: UInt64, kernTextBase: UInt64, dataSegBase: UInt64) -> Bool {
+    guard va >= kernTextBase, va < dataSegBase else { return false }
+    return !isInPPLDataRegion(va, kernTextBase: kernTextBase)
+}
+
+/// Exp 77: heap, __DATA pre-PPL, atau fileset aux (pointer dari kc+0x3980 dll.).
 private func isSafeTrustCacheStructVA(
     _ va: UInt64,
     dataSegBase: UInt64,
@@ -253,10 +259,11 @@ private func isSafeTrustCacheStructVA(
 ) -> Bool {
     if isInPPLDataRegion(va, kernTextBase: kernTextBase) { return false }
     if isSafeKernelHeapKreadAddress(va) { return true }
-    return va >= dataSegBase && va < pplDataBase
+    if va >= dataSegBase && va < pplDataBase { return true }
+    return isFilesetAuxDataVA(va, kernTextBase: kernTextBase, dataSegBase: dataSegBase)
 }
 
-/// Pointer dari slot __DATA: boleh ke heap atau struct in-band; tolak __TEXT / 0xfffffff0… kext.
+/// Pointer dari slot __DATA — ikuti ke heap / __DATA / fileset aux (bukan alamat fungsi di __TEXT).
 private func isSafeTrustCacheFollowPointer(
     _ ptr: UInt64,
     dataSegBase: UInt64,
@@ -4325,10 +4332,27 @@ struct AMFIExperimentView: View {
             if tcStructAddr != 0 || krwBudget <= 0 { break }
         }
 
+        if tcStructAddr == 0 {
+            detail += "\n=== Pointer di global __DATA (read-only) ===\n"
+            for off in probeOffsets.prefix(8) {
+                let addr = dataSegBase &+ off
+                guard isSafeTrustCacheStructVA(addr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { continue }
+                let p = ds_kreadptr(addr)
+                let tag: String
+                if p == 0 { tag = "null" }
+                else if isSafeKernelHeapKreadAddress(p) { tag = "heap?" }
+                else if p >= dataSegBase && p < pplDataBase { tag = "__DATA" }
+                else if isFilesetAuxDataVA(p, kernTextBase: kernBase, dataSegBase: dataSegBase) { tag = "fileset aux ← biasanya ini" }
+                else if p >= kernBase && p < dataSegBase { tag = "__TEXT? (skip)" }
+                else { tag = "?" }
+                detail += "  kc+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", p)) (\(tag))\n"
+            }
+        }
+
         guard tcStructAddr != 0 else {
-            detail += "\n❌ Struct trust cache tidak ditemukan (heap atau kernel static dari __DATA).\n"
-            detail += "Jalankan: python scripts/analyze_kernelcache.py --trust-cache\n"
-            detail += "Pastikan kernelcache di Settings = IPSW device ini.\n"
+            detail += "\n❌ Struct trust cache tidak ditemukan.\n"
+            detail += "Kernelcache OK (48 slot). Pointer ada tapi header ver/count tidak cocok,\n"
+            detail += "atau struct di fileset aux belum terbaca — coba build terbaru.\n"
             detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
