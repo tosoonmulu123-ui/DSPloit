@@ -4193,7 +4193,7 @@ struct AMFIExperimentView: View {
 
         if tcStructAddr == 0, let rc {
             detail += "\n=== sysctl (AMFI trust cache count) ===\n"
-            let mem = rc.base
+            let mem = rc.trojanMem
             let tcName = remote_alloc_str(rc, "security.mac.amfi.trust_cache_count")
             let tcBuf = mem + 0x2800
             let tcSize = mem + 0x2A00
