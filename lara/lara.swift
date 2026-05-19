@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum taboptions {
-    case home, tweaks, root, files, logs
+    case main, root
 }
 
 let g_isunsupported: Bool = isunsupported()
@@ -22,9 +22,8 @@ struct DSPloit: App {
     @Environment(\.scenePhase) var scenephase
     @AppStorage("selectedMethod") private var selectedMethod: method = .hybrid
     @AppStorage("keepAlive") private var keepalive: Bool = false
-    @AppStorage("showFMInTabs") private var showfmintabs: Bool = true
     @AppStorage("logsdisplaymode") private var logsdisplaymode: logsdisplaymode = .toolbar
-    @State private var selectedtab: taboptions = .home
+    @State private var selectedtab: taboptions = .main
     @AppStorage("dsploit.hasSeenGuide") private var hasSeenGuide = false
     @State private var showGuide = false
 
@@ -50,37 +49,15 @@ struct DSPloit: App {
             TabView(selection: $selectedtab) {
                 ContentView()
                     .tabItem {
-                        Label("Home", systemImage: "bolt.fill")
+                        Label("Main", systemImage: "bolt.fill")
                     }
-                    .tag(taboptions.home)
-
-                TweaksView(mgr: mgr)
-                    .tabItem {
-                        Label("Tweaks", systemImage: "paintbrush.fill")
-                    }
-                    .tag(taboptions.tweaks)
+                    .tag(taboptions.main)
 
                 RootDashboardView()
                     .tabItem {
                         Label("Root", systemImage: "person.badge.key.fill")
                     }
                     .tag(taboptions.root)
-
-                if showfmintabs {
-                    SantanderView()
-                        .tabItem {
-                            Label("Files", systemImage: "folder.fill")
-                        }
-                        .tag(taboptions.files)
-                }
-
-                if logsdisplaymode == .tabs {
-                    LogsView(logger: globallogger)
-                        .tabItem {
-                            Label("Logs", systemImage: "terminal")
-                        }
-                        .tag(taboptions.logs)
-                }
             }
             .environmentObject(mgr)
             .overlay {

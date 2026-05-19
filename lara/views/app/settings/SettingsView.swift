@@ -22,9 +22,7 @@ enum fmAppsDisplayMode: String, CaseIterable {
 }
 
 enum logsdisplaymode: String, CaseIterable {
-    case tabs = "In Tabs"
-    case toolbar = "In Toolbar"
-    case content = "Directly in ContentView"
+    case toolbar = "Toolbar Button"
 }
 
 struct SettingsView: View {
@@ -41,10 +39,6 @@ struct SettingsView: View {
     
     @AppStorage("logsdisplaymode") private var selectedlogdisplaymode: logsdisplaymode = .toolbar
     @AppStorage("loggerNoBS") private var loggerNoBS: Bool = true
-    
-    @AppStorage("showFMInTabs") private var showFMInTabs: Bool = true
-    @AppStorage("selectedFMAppsDisplayMode") private var selectedFMAppsDisplayMode: fmAppsDisplayMode = .appName
-    @AppStorage("fmRecursiveSearch") private var fmRecursiveSearch: Bool = false
     
     @AppStorage("rcDockUnlimited") private var rcDockUnlimited: Bool = false
     
@@ -194,17 +188,6 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                }
-                
-                Section(header: HeaderLabel(text: "File Manager", icon: "folder"), footer: Text("Display Mode lets you change the way app folders get displayed in the file manager.")) {
-                    Picker("Display Mode", selection: $selectedFMAppsDisplayMode) {
-                        ForEach(fmAppsDisplayMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    Toggle("Recursive Search in File Manager", isOn: $fmRecursiveSearch)
-                    Toggle("Show File Manager in Tabs", isOn: $showFMInTabs)
                 }
                 
                 #if !DISABLE_REMOTECALL

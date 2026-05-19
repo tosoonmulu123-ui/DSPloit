@@ -64,8 +64,13 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { showSettings.toggle() }) {
-                        Image(systemName: "gear")
+                    HStack(spacing: 16) {
+                        Button { mgr.showLogs.toggle() } label: {
+                            Image(systemName: "terminal")
+                        }
+                        Button(action: { showSettings.toggle() }) {
+                            Image(systemName: "gear")
+                        }
                     }
                 }
             }
@@ -220,7 +225,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Mulai di sini", systemImage: "hand.point.up.left.fill")
                 .font(.subheadline.bold())
-            Text("Tap **Jailbreak** di bawah. Setelah selesai, buka tab Root atau Tweaks.")
+            Text("Tap **Jailbreak** di bawah. Setelah selesai, buka tab Root untuk tools root.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Buka panduan") { showGuide = true }

@@ -23,16 +23,15 @@ struct GuideView: View {
                         .listRowBackground(Color.clear)
                 }
 
-                Section("Pemula — 4 langkah") {
-                    guideStep(1, "Home", "Tap **Jailbreak** dan tunggu semua langkah hijau (Kernel → Bootstrap).")
-                    guideStep(2, "Root", "Gunakan Shell, Files, atau Banking jika app bank terblokir.")
-                    guideStep(3, "Tweaks", "Personalisasi UI (dirtyZero, Gestalt) setelah VFS/SBX aktif.")
-                    guideStep(4, "Aman", "Jangan tutup app saat AMFI Lab berjalan. Respring dari Home jika perlu.")
+                Section("Pemula — 3 langkah") {
+                    guideStep(1, "Main", "Tap **Jailbreak** dan tunggu semua langkah hijau (Kernel → Bootstrap).")
+                    guideStep(2, "Root", "Shell, Files, Banking, Bootstrap, dan tools root lainnya.")
+                    guideStep(3, "Aman", "Jangan tutup app saat AMFI Lab berjalan. Respring dari Main jika perlu.")
                 }
 
                 Section("Lanjutan") {
-                    Label("AMFI Lab — riset bypass code signing (Root tab)", systemImage: "flask")
-                    Label("VarClean — bersihkan jejak jailbreak (Tweaks → System)", systemImage: "trash")
+                    Label("AMFI Lab — riset bypass code signing (Root → Advanced)", systemImage: "flask")
+                    Label("VarClean — bersihkan jejak jailbreak (Root → Banking)", systemImage: "trash")
                     Label("Offsets — Settings jika device belum dikenali", systemImage: "slider.horizontal.3")
                 }
 

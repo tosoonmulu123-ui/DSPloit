@@ -31,7 +31,7 @@ struct RootDashboardView: View {
                         EmptyStateView(
                             icon: "lock.fill",
                             title: "Root belum aktif",
-                            message: "Jalankan Jailbreak di tab Home sampai langkah RemoteCall dan Root hijau.",
+                            message: "Jalankan Jailbreak di tab Main sampai langkah RemoteCall dan Root hijau.",
                             buttonTitle: "Buka Panduan",
                             action: { showGuide = true }
                         )
@@ -54,10 +54,13 @@ struct RootDashboardView: View {
             .background(Color(.systemGroupedBackground))
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showGuide = true
-                    } label: {
-                        Image(systemName: "questionmark.circle")
+                    HStack(spacing: 16) {
+                        Button { mgr.showLogs.toggle() } label: {
+                            Image(systemName: "terminal")
+                        }
+                        Button { showGuide = true } label: {
+                            Image(systemName: "questionmark.circle")
+                        }
                     }
                 }
             }
@@ -87,7 +90,7 @@ struct RootDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader("Advanced", icon: "gearshape.2.fill")
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                navTool("paintbrush.fill", "Tweaks", "SpringBoard RC", .pink, TweaksManagerView())
+                navTool("paintbrush.fill", "SB Tweaks", "SpringBoard RC", .pink, TweaksManagerView())
                 navTool("slider.horizontal.3", "Prefs", "Edit plist", .mint, PrefsEditorView())
                 navTool("arrow.clockwise", "Persist", "LaunchDaemon", .purple, RootPersistenceView())
                 navTool("network", "Network", "hosts, DNS", .indigo, NetworkToolsView())

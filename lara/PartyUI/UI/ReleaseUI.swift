@@ -84,13 +84,13 @@ struct ReadinessBanner: View {
     private var defaultHint: String {
         switch requirement {
         case .kernel:
-            return "Buka tab Home → tap Jailbreak untuk menjalankan exploit kernel."
+            return "Buka tab Main → tap Jailbreak untuk menjalankan exploit kernel."
         case .vfs:
-            return "Selesaikan jailbreak di Home. VFS aktif setelah System Init."
+            return "Selesaikan jailbreak di Main. VFS aktif setelah System Init."
         case .sandbox:
-            return "Selesaikan jailbreak di Home. Sandbox escape aktif setelah System Init."
+            return "Selesaikan jailbreak di Main. Sandbox escape aktif setelah System Init."
         case .remoteCall:
-            return "Selesaikan jailbreak di Home sampai langkah RemoteCall hijau."
+            return "Selesaikan jailbreak di Main sampai langkah RemoteCall hijau."
         }
     }
 }
