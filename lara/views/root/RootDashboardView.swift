@@ -49,6 +49,9 @@ struct RootDashboardView: View {
                             NavigationLink(destination: AMFIExperimentView()) {
                                 ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
                             }
+                            NavigationLink(destination: MobileBankingView()) {
+                                ToolCard(icon: "building.columns.fill", title: "Banking", color: .green)
+                            }
                             NavigationLink(destination: SystemInfoView()) {
                                 ToolCard(icon: "info.circle.fill", title: "System", color: .teal)
                             }

