@@ -41,11 +41,35 @@ private enum PhysmapConstants {
         return (estimateZoneMapBase(ourProc: proc), defaultGPhysBase)
     }
 
-    /// gVirtBase ≈ zone_map_min on A12 iOS 18.x (derived from proc, not fixed per boot).
+    /// Rough zone_map hint from proc (often too high — use scan candidates in Exp 74).
     static func estimateZoneMapBase(ourProc: UInt64) -> UInt64 {
         guard ourProc > 0xffffffd000000000 else { return 0xffffffdcda524000 }
         let block = ourProc & 0xFFFFFFFFF0000000
         return block &- 0x31ADD000
+    }
+
+    /// gVirtBase candidates: physmap lives in 0xffffffdc..0xffffffe2, NOT near proc (0xe2+).
+    static func gVirtBaseCandidates(ourProc: UInt64, tte: UInt64) -> [(String, UInt64)] {
+        var out: [(String, UInt64)] = []
+        var seen = Set<UInt64>()
+
+        func add(_ name: String, _ value: UInt64) {
+            guard value > 0xffffffdc00000000, seen.insert(value).inserted else { return }
+            out.append((name, value))
+        }
+
+        if let saved = load()?.gVirtBase { add("saved", saved) }
+        add("proc_est", estimateZoneMapBase(ourProc: ourProc))
+        add("tte_align_1g", tte & 0xfffffffc00000000)
+        add("tte_align_256m", tte & 0xfffffffe00000000)
+
+        var g = UInt64(0xffffffdc00000000)
+        while g < 0xffffffe200000000 {
+            add("physmap_scan", g)
+            g &+= 0x04000000
+        }
+
+        return out
     }
 
     static var isVerified: Bool { UserDefaults.standard.bool(forKey: verifiedKey) }
@@ -3685,10 +3709,6 @@ struct AMFIExperimentView: View {
             return v >= 0xffffffdc00000000 && v < 0xffffffe400000000
         }
 
-        func isPhysmapVA(_ va: UInt64, zoneBase: UInt64) -> Bool {
-            return va >= zoneBase && va < zoneBase &+ 0x800000000
-        }
-
         // Use existing taskbyproc() which handles proc_ro + PAC correctly
         let taskAddr = taskbyproc(ourProc)
         detail += "task (via taskbyproc): 0x\(String(format: "%llx", taskAddr))\n"
@@ -3804,35 +3824,30 @@ struct AMFIExperimentView: View {
                 
                 // Let's try: gVirtBase = 0xffffffde9a094000 (from our panic log)
                 // This is device-specific but doesn't change between reboots on same iOS
-                var gVirtBaseCandidates: [(String, UInt64)] = [
-                    ("zone_from_proc", zoneMapEst),
-                    ("saved", PhysmapConstants.load()?.gVirtBase ?? 0),
-                    ("tte & ~0xFFFFFF", tte & 0xffffff0000000000),
-                ]
-                gVirtBaseCandidates = gVirtBaseCandidates.filter { $0.1 != 0 }
+                let gVirtBaseCandidates = PhysmapConstants.gVirtBaseCandidates(ourProc: ourProc, tte: tte)
 
                 detail += "=== Testing gVirtBase candidates ===\n"
-                detail += "(gPhysBase = 0x800000000, tte = 0x\(String(format: "%llx", tte)))\n\n"
+                detail += "(gPhysBase = 0x800000000, tte = 0x\(String(format: "%llx", tte)))\n"
+                detail += "Candidates: \(gVirtBaseCandidates.count) (physmap scan 0xdc..0xe2)\n\n"
 
+                var tested = 0
                 for (name, gVirtBaseCandidate) in gVirtBaseCandidates {
                     let ttepCalc = tte &- gVirtBaseCandidate &+ gPhysBase
                     let reasonable = ttepCalc >= 0x800000000 && ttepCalc < 0x900000000
+                    guard reasonable else { continue }
 
                     let kernPhys = kernBase &- gVirtBaseCandidate &+ gPhysBase
                     let physmapVA = gVirtBaseCandidate &+ (kernPhys &- gPhysBase)
 
-                    guard isPhysmapVA(physmapVA, zoneBase: gVirtBaseCandidate) else {
-                        detail += "\(name): skip — physmapVA out of range\n"
-                        continue
-                    }
-
                     let verifyVal = ds_kread64_safe(physmapVA)
                     let matches = verifyVal == kernMagic && kernMagic != 0
-                    
-                    detail += "\(name): gVirtBase=0x\(String(format: "%llx", gVirtBaseCandidate))\n"
-                    detail += "  ttep would be: 0x\(String(format: "%llx", ttepCalc)) (reasonable: \(reasonable))\n"
-                    detail += "  kern verify: physmapVA=0x\(String(format: "%llx", physmapVA))\n"
-                    detail += "  read=0x\(String(format: "%llx", verifyVal)) match=\(matches)\n"
+                    tested += 1
+
+                    if tested <= 6 || matches {
+                        detail += "\(name): gVirt=0x\(String(format: "%llx", gVirtBaseCandidate))\n"
+                        detail += "  ttep=0x\(String(format: "%llx", ttepCalc)) physmapVA=0x\(String(format: "%llx", physmapVA))\n"
+                        detail += "  read=0x\(String(format: "%llx", verifyVal)) match=\(matches)\n"
+                    }
                     
                     if matches {
                         detail += "\n🎉🎉🎉 PHYSMAP VERIFIED! 🎉🎉🎉\n"
@@ -3847,7 +3862,11 @@ struct AMFIExperimentView: View {
                         foundVirtBase = gVirtBaseCandidate
                         break
                     }
-                    detail += "\n"
+                }
+
+                if foundVirtBase == 0 {
+                    detail += "\n(\(tested) candidates with reasonable ttep tested)\n"
+                    detail += "Tip: zone_map biasanya 0xffffffdc..0xe0, bukan dekat proc.\n"
                 }
             } else {
                 detail += "❌ tte is not a valid kernel VA\n"
