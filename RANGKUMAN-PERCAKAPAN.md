@@ -4,7 +4,17 @@ _Exported: 20 Mei 2026_
 
 ---
 
-## 1. Fitur Mobile Banking (Root tab)
+## Fokus saat ini (Mei 2026)
+
+**Banking selesai** — hide `/var/jb` works; tidak lagi prioritas riset.
+
+**Target utama:** **Full jailbreak** via AMFI Lab (physmap → trust cache → spawn unsigned binary).
+
+**Langkah berikutnya di device:** Main jailbreak → AMFI ① Exp 74 → ② Exp 77 probe (pakai **kernproc pmap**, bukan our_proc) → ③ inject jika probe OK.
+
+---
+
+## 1. Fitur Mobile Banking (Root tab) — selesai
 
 **Permintaan:** Akses kembali app Mobile Banking yang terblokir (kemungkinan karena `/var/jb`).
 
@@ -107,16 +117,17 @@ tte & ~0xFFFFFF: skip — physmapVA out of range
 ## 8. Langkah disarankan user
 
 1. **Main** → Jailbreak (semua langkah hijau)
-2. **Root** → Banking (jika app bank blokir)
-3. **Root** → AMFI Lab → ① Physmap Verify (ulang setelah fix terbaru)
-4. Jika ① ✅ → ② Trust Cache Probe → ③ Inject (hati-hati panic)
-5. Jangan tutup app saat eksperimen berjalan
+2. **Root** → AMFI Lab → ① Physmap Verify
+3. Jika ① ✅ → ② Trust Cache Probe (kernel pmap) → ③ Inject (hati-hati panic)
+4. Jangan tutup app saat eksperimen berjalan
+5. Banking (Root) hanya jika perlu hide `/var/jb` lagi — bukan jalur jailbreak
 
 ---
 
 ## 9. Batasan yang masih ada
 
+- Exp 77 probe: butuh **kernel pmap**; offset `__DATA.__ppl_data` bisa beda per build
 - Exp 77 inject bisa panic (APRR/PPL write)
-- Banking hide ≠ jaminan 100% (bank bisa deteksi lain)
+- `gVirtBase` dari Exp 74 perlu divalidasi (bukan sekadar match ke kernBase)
 - Reboot = hilang jailbreak
 - File tweak lama masih di repo, tidak di UI

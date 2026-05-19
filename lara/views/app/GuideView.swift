@@ -25,20 +25,20 @@ struct GuideView: View {
 
                 Section("Pemula — 3 langkah") {
                     guideStep(1, "Main", "Tap **Jailbreak** dan tunggu semua langkah hijau (Kernel → Bootstrap).")
-                    guideStep(2, "Root", "Shell, Files, Banking, Bootstrap, dan tools root lainnya.")
-                    guideStep(3, "Aman", "Jangan tutup app saat AMFI Lab berjalan. Respring dari Main jika perlu.")
+                    guideStep(2, "Root", "Shell, Bootstrap, AMFI Lab (Jailbreak Path), dan tools root lainnya.")
+                    guideStep(3, "AMFI Lab", "Urutan: ① Physmap Verify → ② Trust Cache Probe → ③ Inject (risiko panic). Jangan tutup app.")
+                }
+
+                Section("Full jailbreak (AMFI Lab)") {
+                    Text("Root → **AMFI Lab** → **Jailbreak Path**. Butuh KRW aktif. Setelah ① sukses, lanjut ② lalu ③ dengan hati-hati.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Lanjutan") {
-                    Label("AMFI Lab — riset bypass code signing (Root → Advanced)", systemImage: "flask")
-                    Label("VarClean — bersihkan jejak jailbreak (Root → Banking)", systemImage: "trash")
+                    Label("AMFI Lab — physmap, trust cache, code signing (Root → Advanced)", systemImage: "flask")
+                    Label("VarClean — bersihkan jejak jailbreak (Root → Banking, opsional)", systemImage: "trash")
                     Label("Offsets — Settings jika device belum dikenali", systemImage: "slider.horizontal.3")
-                }
-
-                Section("Banking app diblokir?") {
-                    Text("Root → **Banking** → Sembunyikan /var/jb → force-quit app bank → buka lagi → Restore setelah selesai.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section("Peringatan") {

