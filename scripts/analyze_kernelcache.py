@@ -163,9 +163,11 @@ def main() -> None:
         print(f"\nUnslid kernel __TEXT base (KASLR slide 0): 0x{text_base:x}")
         print("On device: kernel_base = __TEXT_base + slide (see panic log KernelCache slide)")
 
-    if data_base:
+    if text_base and data_base:
+        off = data_base - text_base
         print(f"__DATA base (unslid): 0x{data_base:x}")
-        print(f"__DATA.__ppl_data est (unslid +0x8000): 0x{data_base + 0x8000:x}")
+        print(f"__DATA.__ppl_data (unslid +0x8000): 0x{data_base + 0x8000:x}")
+        print(f"Offset __DATA - __TEXT = 0x{off:x}  (PhysmapConstants.dataOffsetFromText)")
 
     print("\n--- String hits (file offset -> unslid VA if mappable) ---")
     for h in search_strings(data, segments):

@@ -20,6 +20,20 @@ private enum PhysmapConstants {
 
     static let defaultGPhysBase: UInt64 = 0x800000000
 
+    /// From kernelcache.release.iphone11b.decompressed (iOS 18 / A12 fileset, unslid).
+    static let unslidTextBase: UInt64 = 0xfffffff007004000
+    static let unslidDataBase: UInt64 = 0xfffffff00a0e0000
+    static let dataOffsetFromText: UInt64 = 0x30dc000
+    static let pplDataOffsetFromData: UInt64 = 0x8000
+
+    static func dataSegmentBase(kernTextBase: UInt64) -> UInt64 {
+        kernTextBase &+ dataOffsetFromText
+    }
+
+    static func pplDataSegmentBase(kernTextBase: UInt64) -> UInt64 {
+        dataSegmentBase(kernTextBase: kernTextBase) &+ pplDataOffsetFromData
+    }
+
     static func save(gVirtBase: UInt64, gPhysBase: UInt64) {
         UserDefaults.standard.set(String(format: "%llx", gVirtBase), forKey: gVirtKey)
         UserDefaults.standard.set(String(format: "%llx", gPhysBase), forKey: gPhysKey)
@@ -4048,7 +4062,7 @@ struct AMFIExperimentView: View {
         detail += "\n=== pmap hint (our_proc, for gVirt estimate) ===\n"
         let taskAddr = taskbyproc(ourProc)
         if taskAddr != 0 {
-            let vmMap = task_get_vm_map(task)
+            let vmMap = task_get_vm_map(taskAddr)
             guard vmMap != 0 else {
                 detail += "(vm_map not found)\n\n"
             }
@@ -4163,11 +4177,12 @@ struct AMFIExperimentView: View {
         // Unslid: 0xfffffff023d24000 - slide = 0xfffffff023d24000 - 0x19c3c000
         //       = 0xfffffff00a0e8000 → this is __DATA + 0x8000 (PPL region)
         
-        let dataSegBase = kernBase &+ 0x30dc000  // __DATA segment start (from panic analysis)
-        let pplDataBase = dataSegBase &+ 0x8000  // __DATA.__ppl_data
-        
-        detail += "__DATA base (est): 0x\(String(format: "%llx", dataSegBase))\n"
-        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase))\n"
+        let dataSegBase = PhysmapConstants.dataSegmentBase(kernTextBase: kernBase)
+        let pplDataBase = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernBase)
+
+        detail += "__DATA base (kernelcache off +0x30dc000): 0x\(String(format: "%llx", dataSegBase))\n"
+        detail += "__DATA.__ppl_data (+0x8000): 0x\(String(format: "%llx", pplDataBase))\n"
+        detail += "(unslid ref: __DATA 0x\(String(format: "%llx", PhysmapConstants.unslidDataBase)))\n"
         
         // Convert PPL VA to physmap VA for READING
         // physmap formula: physmapVA = VA - gVirtBase + gPhysBase ... wait no
