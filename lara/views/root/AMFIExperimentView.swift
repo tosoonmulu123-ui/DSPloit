@@ -34,6 +34,15 @@ private enum PhysmapConstants {
         dataSegmentBase(kernTextBase: kernTextBase) &+ pplDataOffsetFromData
     }
 
+    /// `kernel_pmap` global in __DATA (iphone11b kernelcache analyze — adjust per IPSW).
+    static let kernelPmapOffsetInData: UInt64 = 0x3525e7
+
+    static func kernelPmapFromGlobal(kernTextBase: UInt64) -> UInt64 {
+        let ptr = ds_kreadptr(dataSegmentBase(kernTextBase: kernTextBase) &+ kernelPmapOffsetInData)
+        guard ptr != 0, ptr > 0xffffffdc00000000 else { return 0 }
+        return ptr
+    }
+
     /// gVirt estimate without reading physmap/DRAM (avoids respring on Exp 74).
     static func gVirtBaseEstimate(ourProc: UInt64) -> (gVirt: UInt64, source: String) {
         if let saved = load() {
@@ -370,14 +379,24 @@ private func resolveKernelPmapChain(detail: inout String) -> KernelPmapChain? {
         detail += "kernel vm_map (off_task_map): 0x\(String(format: "%llx", vmMap))\n"
     }
 
-    guard vmMap != 0 else {
-        detail += "❌ kernel vm_map not found\n"
-        return nil
+    var pmap: UInt64 = 0
+    let kernBase = ds_get_kernel_base()
+    let globalPmap = PhysmapConstants.kernelPmapFromGlobal(kernTextBase: kernBase)
+    if globalPmap != 0 {
+        pmap = globalPmap
+        detail += "kernel_pmap (kernelcache __DATA+0x\(String(format: "%x", PhysmapConstants.kernelPmapOffsetInData))): 0x\(String(format: "%llx", pmap))\n"
     }
 
-    guard let pmap = findPmapPointer(vmMap: vmMap, task: task, detail: &detail) else {
-        detail += "❌ kernel pmap not found (wide scan vm_map+task)\n"
-        return nil
+    if pmap == 0 {
+        guard vmMap != 0 else {
+            detail += "❌ kernel vm_map not found\n"
+            return nil
+        }
+        guard let found = findPmapPointer(vmMap: vmMap, task: task, detail: &detail) else {
+            detail += "❌ kernel pmap not found (wide scan vm_map+task)\n"
+            return nil
+        }
+        pmap = found
     }
 
     guard let l1 = resolvePmapL1Root(pmap: pmap, detail: &detail) else {
@@ -488,7 +507,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("Exp 74 = 1 baca __TEXT + estimasi gVirt (tanpa probe physmap). Respring bisa terjadi — jailbreak ulang. Urutan: 74 → 77 probe → inject.")
+                Text("Jika 74 sudah hijau: langsung ② Trust Cache Probe. Ulang 74 hanya jika reboot/ganti build. ③ Inject setelah ② OK.")
                     .font(.system(size: 9))
             }
 
@@ -3999,6 +4018,20 @@ struct AMFIExperimentView: View {
     private func expPhysmapAccess() -> ExperimentResult {
         var detail = "Experiment 74: Physmap Direct Access (KRW-only, safe)\n"
         detail += "====================================================\n\n"
+
+        // Sudah verified (screenshot lama / run sukses) — jangan ulang probe yang bikin panic/respring
+        if PhysmapConstants.isVerified, let saved = PhysmapConstants.load() {
+            let kernBase = ds_get_kernel_base()
+            let magic = ds_kread64_safe(kernBase)
+            let machOk = (magic & 0xFFFFFFFF) == 0xFEEDFACF
+            detail += "✅ Sudah verified sebelumnya — skip probe ulang\n"
+            detail += "gVirtBase: 0x\(String(format: "%llx", saved.gVirtBase))\n"
+            detail += "gPhysBase: 0x\(String(format: "%llx", saved.gPhysBase))\n"
+            detail += "KRW __TEXT sekarang: \(machOk ? "OK (0xFEEDFACF)" : "⚠️ cek jailbreak")\n\n"
+            detail += "→ Fokus berikutnya: ② Trust Cache Probe (Exp 77)\n"
+            detail += "Jangan tap ③ Inject sampai ② hijau.\n"
+            return ExperimentResult(name: "Physmap Access (Exp 74)", success: machOk, detail: detail, timestamp: Date())
+        }
 
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
