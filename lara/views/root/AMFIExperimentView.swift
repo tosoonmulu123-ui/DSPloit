@@ -230,6 +230,14 @@ struct AMFIExperimentView: View {
             let exp65 = self.expAmfidKillRace(rc: rc)
             experimentResults.append(exp65)
             
+            // ============================================
+            // Experiment 66: IOKit Driver Fuzzer (LAST TRY)
+            // Targeted fuzzing of AMFI/IOSurface/KeyStore methods
+            // Looking for memory corruption or unexpected behavior
+            // ============================================
+            let exp66 = self.expIOKitFuzzer()
+            experimentResults.append(exp66)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1849,6 +1857,195 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "free", dstPath)
         
         return ExperimentResult(name: "amfid kill race", success: anySuccess, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 66: IOKit Driver Fuzzer (LAST TRY)
+    
+    /// Targeted fuzzing of IOKit external methods
+    /// Looking for: OOB read/write, type confusion, integer overflow
+    /// Targets: AMFI (11 methods), IOSurfaceRoot, AppleCredentialManager
+    /// Strategy: send crafted struct inputs that commonly trigger bugs
+    private func expIOKitFuzzer() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "IOKit Fuzzer", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        var detail = "IOKit Driver Targeted Fuzzer\n\n"
+        var anomalies: [(String, String)] = []
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        
+        // Helper: open a service
+        func openService(_ name: String) -> UInt32 {
+            let nameAddr = remote_alloc_str(sb, name)
+            let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+            guard matchDict != 0 else { RootExecutor.rcall(sb, "free", nameAddr); return 0 }
+            let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+            guard svc != 0 else { RootExecutor.rcall(sb, "free", nameAddr); return 0 }
+            let connectAddr = mem + 0x1A00
+            sb[connectAddr].setValue32(0)
+            let ret = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+            RootExecutor.rcall(sb, "free", nameAddr)
+            return ret == 0 ? sb[connectAddr].value32() : 0
+        }
+        
+        // Fuzz patterns that commonly trigger bugs
+        let fuzzPatterns: [(String, [UInt64])] = [
+            ("zeros", [0, 0, 0, 0, 0, 0, 0, 0]),
+            ("max_u32", [0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0]),
+            ("max_u64", [0xFFFFFFFFFFFFFFFF, 0, 0, 0, 0, 0, 0, 0]),
+            ("negative", [UInt64(bitPattern: -1), UInt64(bitPattern: -2), 0, 0, 0, 0, 0, 0]),
+            ("large_size", [0x41414141, 0x7FFFFFFF, 0, 0, 0, 0, 0, 0]),
+            ("kernel_ptr", [0xFFFFFFF000000000, 0, 0, 0, 0, 0, 0, 0]),
+            ("heap_ptr", [0xFFFFFFFE00000000, 0, 0, 0, 0, 0, 0, 0]),
+            ("small_ints", [1, 2, 3, 4, 5, 6, 7, 8]),
+        ]
+        
+        let structIn = mem + 0x2200
+        let structOut = mem + 0x2400
+        let structOutSize = mem + 0x2600
+        let scalarIn = mem + 0x2800
+        let scalarOut = mem + 0x2A00
+        let scalarOutCnt = mem + 0x2C00
+        
+        // ═══ FUZZ AMFI (11 active selectors: 2,4,5,6,7,9,11,12,13,14,15) ═══
+        detail += "=== AMFI External Methods ===\n"
+        let amfiConnect = openService("AppleMobileFileIntegrity")
+        
+        if amfiConnect != 0 {
+            detail += "AMFI connect=\(amfiConnect)\n"
+            let amfiSelectors = [2, 4, 5, 6, 7, 9, 11, 12, 13, 14, 15]
+            
+            for sel in amfiSelectors.prefix(6) {
+                for (patName, pattern) in fuzzPatterns.prefix(5) {
+                    // Write pattern to struct input
+                    for (i, val) in pattern.prefix(4).enumerated() {
+                        sb[structIn + UInt64(i * 8)].setValue64(val)
+                    }
+                    sb[structOutSize].setValue64(256)
+                    
+                    // Try struct method
+                    let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                                UInt64(amfiConnect), UInt64(sel),
+                                                structIn, 32,
+                                                structOut, structOutSize)
+                    
+                    let outSize = sb[structOutSize].value64()
+                    
+                    // Check for anomalies
+                    if ret == 0 {
+                        anomalies.append(("AMFI sel\(sel) \(patName)", "SUCCESS! outSize=\(outSize)"))
+                        detail += "  !! sel \(sel) + \(patName): ret=0, out=\(outSize)\n"
+                    } else if ret != 0xe00002c2 && ret != 0xe00002bc && ret != 0xe00002c7 {
+                        // Unexpected error code = interesting
+                        let retHex = String(format: "0x%x", ret)
+                        if ret != 0xe0000001 {
+                            anomalies.append(("AMFI sel\(sel) \(patName)", "unusual ret=\(retHex)"))
+                            detail += "  ? sel \(sel) + \(patName): ret=\(retHex)\n"
+                        }
+                    }
+                }
+            }
+            RootExecutor.rcall(sb, "IOServiceClose", UInt64(amfiConnect))
+        } else {
+            detail += "Cannot open AMFI\n"
+        }
+        
+        // ═══ FUZZ AppleCredentialManager ═══
+        detail += "\n=== AppleCredentialManager ===\n"
+        let credConnect = openService("AppleCredentialManager")
+        
+        if credConnect != 0 {
+            detail += "CredMgr connect=\(credConnect)\n"
+            
+            for sel in 0..<10 {
+                for (patName, pattern) in fuzzPatterns.prefix(4) {
+                    for (i, val) in pattern.prefix(4).enumerated() {
+                        sb[structIn + UInt64(i * 8)].setValue64(val)
+                    }
+                    sb[structOutSize].setValue64(256)
+                    
+                    let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                                UInt64(credConnect), UInt64(sel),
+                                                structIn, 32,
+                                                structOut, structOutSize)
+                    
+                    if ret == 0 {
+                        let outSize = sb[structOutSize].value64()
+                        anomalies.append(("CredMgr sel\(sel) \(patName)", "SUCCESS! out=\(outSize)"))
+                        detail += "  !! sel \(sel) + \(patName): SUCCESS out=\(outSize)\n"
+                        
+                        // Read output data
+                        if outSize > 0 && outSize <= 64 {
+                            var outBuf = [UInt8](repeating: 0, count: Int(outSize))
+                            sb.remoteRead(structOut, to: &outBuf, size: outSize)
+                            let hex = outBuf.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+                            detail += "    data: \(hex)\n"
+                        }
+                    } else if ret != 0xe00002c2 && ret != 0xe00002bc && ret != 0xe00002c7 && ret != 0xe0000001 {
+                        anomalies.append(("CredMgr sel\(sel) \(patName)", "ret=0x\(String(format: "%x", ret))"))
+                        detail += "  ? sel \(sel) + \(patName): ret=0x\(String(format: "%x", ret))\n"
+                    }
+                }
+            }
+            RootExecutor.rcall(sb, "IOServiceClose", UInt64(credConnect))
+        } else {
+            detail += "Cannot open CredentialManager\n"
+        }
+        
+        // ═══ FUZZ IOSurfaceRoot with scalar inputs ═══
+        detail += "\n=== IOSurfaceRoot (scalar) ===\n"
+        let ioSurfConnect = openService("IOSurfaceRoot")
+        
+        if ioSurfConnect != 0 {
+            detail += "IOSurf connect=\(ioSurfConnect)\n"
+            
+            // IOSurface has methods that take scalar inputs
+            // Selectors 0-30, try with various scalar counts
+            for sel in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] {
+                sb[scalarIn].setValue64(0)
+                sb[scalarIn + 8].setValue64(0)
+                sb[scalarOutCnt].setValue32(16)
+                
+                let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                            UInt64(ioSurfConnect), UInt64(sel),
+                                            scalarIn, 2,
+                                            scalarOut, scalarOutCnt)
+                
+                if ret == 0 {
+                    let outCnt = sb[scalarOutCnt].value32()
+                    let val0 = sb[scalarOut].value64()
+                    anomalies.append(("IOSurf sel\(sel)", "SUCCESS cnt=\(outCnt) val=0x\(String(format: "%llx", val0))"))
+                    detail += "  !! sel \(sel): SUCCESS! cnt=\(outCnt), val=0x\(String(format: "%llx", val0))\n"
+                } else if ret != 0xe00002c2 && ret != 0xe00002bc && ret != 0xe00002c7 && ret != 0xe0000001 {
+                    detail += "  ? sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                    anomalies.append(("IOSurf sel\(sel)", "ret=0x\(String(format: "%x", ret))"))
+                }
+            }
+            RootExecutor.rcall(sb, "IOServiceClose", UInt64(ioSurfConnect))
+        }
+        
+        // ═══ SUMMARY ═══
+        detail += "\n=== SUMMARY ===\n"
+        detail += "Anomalies found: \(anomalies.count)\n"
+        for (target, result) in anomalies.prefix(15) {
+            detail += "  \(target): \(result)\n"
+        }
+        
+        if anomalies.isEmpty {
+            detail += "No anomalies — all methods properly reject invalid input.\n"
+            detail += "Drivers appear hardened against basic fuzzing.\n"
+        } else {
+            detail += "\nAnomalies need further investigation!\n"
+            detail += "SUCCESS returns = method accepted our input\n"
+            detail += "Unusual ret codes = potential edge case\n"
+        }
+        
+        let success = !anomalies.isEmpty
+        return ExperimentResult(name: "IOKit Fuzzer (LAST TRY)", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
