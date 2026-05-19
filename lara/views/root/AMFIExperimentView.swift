@@ -4063,10 +4063,9 @@ struct AMFIExperimentView: View {
         let taskAddr = taskbyproc(ourProc)
         if taskAddr != 0 {
             let vmMap = task_get_vm_map(taskAddr)
-            guard vmMap != 0 else {
+            if vmMap == 0 {
                 detail += "(vm_map not found)\n\n"
-            }
-            if vmMap != 0 {
+            } else {
                 let pmapPtr = ds_kreadptr(vmMap + 0x50)
                 detail += "task 0x\(String(format: "%llx", taskAddr)) vm_map 0x\(String(format: "%llx", vmMap)) pmap 0x\(String(format: "%llx", pmapPtr))\n"
                 if pmapPtr != 0 {
