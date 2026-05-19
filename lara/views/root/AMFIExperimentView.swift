@@ -1688,8 +1688,18 @@ struct AMFIExperimentView: View {
         // Test 3: MISValidateSignatureAndCopyInfo
         detail += "\n=== Test 3: MIS validation ===\n"
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Load Security/MIS framework FIRST (might not be loaded in launchd)
+        let fwPath = remote_alloc_str(rc, "/System/Library/Frameworks/Security.framework/Security")
+        let fwHandle = RootExecutor.rcall(rc, "dlopen", fwPath, 1)
+        RootExecutor.rcall(rc, "free", fwPath)
+        let misPath = remote_alloc_str(rc, "/usr/lib/libmis.dylib")
+        RootExecutor.rcall(rc, "dlopen", misPath, 1)
+        RootExecutor.rcall(rc, "free", misPath)
+        
         let misValidate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "MISValidateSignatureAndCopyInfo"))
-        detail += "MISValidateSignatureAndCopyInfo: \(misValidate != 0 ? "FOUND" : "not loaded")\n"
+        detail += "Security.framework: \(fwHandle != 0 ? "loaded" : "failed")\n"
+        detail += "MISValidateSignatureAndCopyInfo: \(misValidate != 0 ? "FOUND" : "not available")\n"
         
         if misValidate != 0 {
             // Validate /bin/df (signed system binary)
@@ -1729,15 +1739,7 @@ struct AMFIExperimentView: View {
             RootExecutor.rcall(rc, "free", binPath)
             RootExecutor.rcall(rc, "free", copyPath)
         } else {
-            // Try loading Security framework
-            let fwPath = remote_alloc_str(rc, "/System/Library/Frameworks/Security.framework/Security")
-            let handle = RootExecutor.rcall(rc, "dlopen", fwPath, 1)
-            detail += "dlopen(Security): \(handle != 0 ? "loaded" : "failed")\n"
-            RootExecutor.rcall(rc, "free", fwPath)
-            if handle != 0 {
-                let mis2 = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "MISValidateSignatureAndCopyInfo"))
-                detail += "After load, MIS: \(mis2 != 0 ? "FOUND" : "still not found")\n"
-            }
+            detail += "MIS function not available even after loading frameworks\n"
         }
         
         // Test 4: Provisioning profile paths
