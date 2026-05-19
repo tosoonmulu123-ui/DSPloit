@@ -40,6 +40,9 @@ struct RootDashboardView: View {
                             NavigationLink(destination: AMFIExperimentView()) {
                                 ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
                             }
+                            NavigationLink(destination: SystemInfoView()) {
+                                ToolCard(icon: "info.circle.fill", title: "System", color: .teal)
+                            }
                         }
                     } else {
                         // Not jailbroken yet
