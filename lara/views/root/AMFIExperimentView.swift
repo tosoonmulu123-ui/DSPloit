@@ -34,6 +34,18 @@ private enum PhysmapConstants {
         dataSegmentBase(kernTextBase: kernTextBase) &+ pplDataOffsetFromData
     }
 
+    /// gVirt estimate without reading physmap/DRAM (avoids respring on Exp 74).
+    static func gVirtBaseEstimate(ourProc: UInt64) -> (gVirt: UInt64, source: String) {
+        if let saved = load() {
+            return (saved.gVirtBase, "saved")
+        }
+        let est = estimateZoneMapBase(ourProc: ourProc)
+        if est >= 0xffffffdc00000000 && est < 0xffffffe500000000 {
+            return (est & 0xfffffffc00000000, "proc_est (kernelcache)")
+        }
+        return (0xffffffdcda524000, "kernelcache default (A12)")
+    }
+
     static func save(gVirtBase: UInt64, gPhysBase: UInt64) {
         UserDefaults.standard.set(String(format: "%llx", gVirtBase), forKey: gVirtKey)
         UserDefaults.standard.set(String(format: "%llx", gPhysBase), forKey: gPhysKey)
@@ -292,7 +304,8 @@ private func verifyPhysmapSafe(
 ) -> (gVirtBase: UInt64, gPhysBase: UInt64)? {
     let gPhysBase = PhysmapConstants.defaultGPhysBase
 
-    detail += "=== Physmap verify (safe — no 385-candidate scan) ===\n"
+    detail += "=== Physmap verify (minimal KRW — no zone/DRAM read) ===\n"
+    detail += "Menghindari respring: tidak baca physmap/DRAM/pmap (hanya __TEXT + estimasi).\n\n"
 
     guard (kernMagic & 0xFFFFFFFF) == 0xFEEDFACF else {
         detail += "❌ KRW tidak bisa baca kernel __TEXT (Mach-O)\n"
@@ -300,55 +313,24 @@ private func verifyPhysmapSafe(
     }
     detail += "✅ KRW reads kernel __TEXT at 0x\(String(format: "%llx", kernBase))\n"
 
-    if let saved = PhysmapConstants.load() {
-        detail += "✅ Using saved gVirt=0x\(String(format: "%llx", saved.gVirtBase))\n\n"
-        return saved
-    }
+    var (gVirt, source) = PhysmapConstants.gVirtBaseEstimate(ourProc: ourProc)
 
-    var gVirt: UInt64 = 0
-    var source = ""
-
-    if tte != 0, isKernelOrPhysmapVA(tte) {
+    if tte != 0, isKernelOrPhysmapVA(tte), source != "saved" {
         let aligned = tte & 0xfffffffc00000000
-        if isSafePhysmapKRWAddress(aligned) {
+        if aligned >= 0xffffffdc00000000 && aligned < 0xffffffe500000000 {
             let ttep = tte &- aligned &+ gPhysBase
-            if isReasonablePhysTT(ttep) {
+            if ttep >= 0x800000000 && ttep < 0x900000000 {
                 gVirt = aligned
-                source = "tte_align_1g (tte=0x\(String(format: "%llx", tte)))"
+                source = "tte_align (offline hint)"
             }
         }
     }
 
-    if gVirt == 0 {
-        let est = PhysmapConstants.estimateZoneMapBase(ourProc: ourProc)
-        if isSafePhysmapKRWAddress(est) {
-            gVirt = est
-            source = "proc_est"
-        }
-    }
-
-    if gVirt == 0 {
-        gVirt = 0xffffffdcda524000
-        source = "default_zone (A12 layout)"
-    }
-
-    guard isSafePhysmapKRWAddress(gVirt) else {
-        detail += "❌ gVirt 0x\(String(format: "%llx", gVirt)) outside safe physmap band\n"
-        return nil
-    }
-
     detail += "gVirtBase: 0x\(String(format: "%llx", gVirt)) (\(source))\n"
     detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
+    detail += "(DRAM/physmap KRW probe disabled — caused respring on some boots)\n"
 
-    // Single DRAM probe via physmap (low physical page — stays in 0xdc..0xe4 VA band)
-    if let dramVA = physmapVA(fromPhysical: 0x80000000, gVirt: gVirt, gPhys: gPhysBase) {
-        let dramProbe = safeKread64Physmap(dramVA)
-        detail += "DRAM probe physmap VA 0x\(String(format: "%llx", dramVA)): 0x\(String(format: "%llx", dramProbe))\n"
-    } else {
-        detail += "⚠️ DRAM physmap probe skipped (VA guard)\n"
-    }
-
-    detail += "\n🎉 PHYSMAP CONSTANTS SET (safe verify)\n"
+    detail += "\n🎉 PHYSMAP CONSTANTS SET\n"
     detail += "physmap_slide = 0x\(String(format: "%llx", gVirt &- gPhysBase))\n"
     detail += "→ Lanjut ② Trust Cache Probe\n\n"
     PhysmapConstants.save(gVirtBase: gVirt, gPhysBase: gPhysBase)
@@ -506,7 +488,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("Fokus: Full jailbreak via physmap. Urutan 74 → 77 probe → 77 inject. Exp 74/77 probe = KRW-only. Jangan tutup app saat berjalan.")
+                Text("Exp 74 = 1 baca __TEXT + estimasi gVirt (tanpa probe physmap). Respring bisa terjadi — jailbreak ulang. Urutan: 74 → 77 probe → inject.")
                     .font(.system(size: 9))
             }
 
@@ -4056,42 +4038,12 @@ struct AMFIExperimentView: View {
         // ============================================================
         var foundPhysBase: UInt64 = 0
         var foundVirtBase: UInt64 = 0
-        var l1ForVerify: UInt64 = 0
-
-        // Light pmap hint only (no wide scan — fewer KRW touches)
-        detail += "\n=== pmap hint (our_proc, for gVirt estimate) ===\n"
-        let taskAddr = taskbyproc(ourProc)
-        if taskAddr != 0 {
-            let vmMap = task_get_vm_map(taskAddr)
-            if vmMap == 0 {
-                detail += "(vm_map not found)\n\n"
-            } else {
-                let pmapPtr = ds_kreadptr(vmMap + 0x50)
-                detail += "task 0x\(String(format: "%llx", taskAddr)) vm_map 0x\(String(format: "%llx", vmMap)) pmap 0x\(String(format: "%llx", pmapPtr))\n"
-                if pmapPtr != 0 {
-                    let tte0 = ds_kreadptr(pmapPtr)
-                    let tte8 = ds_kreadptr(pmapPtr + 8)
-                    detail += "  pmap+0x00=0x\(String(format: "%llx", tte0)) +0x08=0x\(String(format: "%llx", tte8))\n"
-                    if isKernelOrPhysmapVA(tte8) {
-                        l1ForVerify = tte8
-                        detail += "  L1 hint: +0x08\n\n"
-                    } else if isKernelOrPhysmapVA(tte0), tte0 != pmapPtr {
-                        l1ForVerify = tte0
-                        detail += "  L1 hint: +0x00\n\n"
-                    } else {
-                        detail += "\n"
-                    }
-                }
-            }
-        } else {
-            detail += "(pmap chain skipped)\n\n"
-        }
 
         if let verified = verifyPhysmapSafe(
             kernBase: kernBase,
             kernMagic: kernMagic,
             ourProc: ourProc,
-            tte: l1ForVerify,
+            tte: 0,
             detail: &detail
         ) {
             foundVirtBase = verified.gVirtBase
