@@ -2,96 +2,150 @@
 //  TweaksView.swift
 //  DSPloit
 //
-//  Created by lunginspector on 5/3/26.
-//
 
 import SwiftUI
 
 struct TweaksView: View {
     @AppStorage("logsdisplaymode") private var selectedlogsdisplaymode: logsdisplaymode = .toolbar
     @ObservedObject var mgr: dspmgr
-    
+    @State private var showGuide = false
+
     var body: some View {
         NavigationStack {
             List {
-                // Root Operations
-                Section(header: HeaderLabel(text: "Root", icon: "person.badge.key.fill")) {
-                    NavigationLink(destination: RootDashboardView()) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "person.badge.key.fill")
-                                .font(.title3)
-                                .foregroundStyle(.red)
-                                .frame(width: 32)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Root Operations")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("Shell, file manager, spawn, persistence")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 3)
+                if !mgr.dsready {
+                    Section {
+                        ReadinessBanner(mgr: mgr, requirement: .kernel)
                     }
-                    .disabled(!mgr.rcready)
+                } else {
+                    Section {
+                        SystemStatusStrip(mgr: mgr)
+                            .listRowBackground(Color.clear)
+                    }
                 }
-                
-                Section(header: HeaderLabel(text: "SpringBoard", icon: "house")) {
-                    NavigationLink("RemoteCall Customizer", destination: RemoteView(mgr: mgr))
-                        .disabled(!mgr.rcready)
-                    NavigationLink("DarkBoard", destination: DarkBoardView())
-                        .disabled(true)
-                    NavigationLink("Liquid Glass", destination: LiquidGlassView())
-                        .disabled(!mgr.vfsready)
+
+                Section {
+                    featureLink("person.badge.key.fill", "Root Operations", "Shell, files, banking — sama seperti tab Root", .red, RootDashboardView(), req: .remoteCall)
+                } header: {
+                    HeaderLabel(text: "Root", icon: "person.badge.key.fill")
                 }
-                
-                Section(header: HeaderLabel(text: "Lock Screen", icon: "lock")) {
-                    NavigationLink("Passcode Theme", destination: PasscodeView(mgr: mgr))
-                        .disabled(!mgr.sbxready)
+
+                Section {
+                    featureLink("house", "RemoteCall Customizer", "Ubah SpringBoard via RC", .blue, RemoteView(mgr: mgr), req: .remoteCall)
+                    featureLink("drop.fill", "Liquid Glass", "Efek kaca iOS 26", .cyan, LiquidGlassView(), req: .vfs)
+                    experimentalRow("moon.fill", "DarkBoard", "Icon themer — masih eksperimental", .indigo)
+                } header: {
+                    HeaderLabel(text: "SpringBoard", icon: "house")
                 }
-                
-                Section(header: HeaderLabel(text: "Apps", icon: "app")) {
-                    NavigationLink("Card Overwrite", destination: CardView())
-                        .disabled(!mgr.vfsready)
-                    NavigationLink("3 App Bypass", destination: AppsView())
-                        .disabled(!mgr.sbxready)
-                    NavigationLink("Unblacklist", destination: WhitelistView())
-                        .disabled(!mgr.sbxready)
-                    NavigationLink("JIT Enabler", destination: JitView())
-                        .disabled(!mgr.sbxready)
+
+                Section {
+                    featureLink("lock", "Passcode Theme", "Tema layar kunci", .purple, PasscodeView(mgr: mgr), req: .sandbox)
+                } header: {
+                    HeaderLabel(text: "Lock Screen", icon: "lock")
                 }
-                
-                Section(header: HeaderLabel(text: "User Interface", icon: "eye")) {
-                    NavigationLink("dirtyZero", destination: dirtyZeroView())
-                        .disabled(!mgr.vfsready)
-                    NavigationLink("MobileGestalt", destination: GestaltView())
-                        .disabled(!mgr.sbxready)
-                    NavigationLink("Font Overwrite", destination: FontPicker(mgr: mgr))
-                        .disabled(!mgr.vfsready)
-                    NavigationLink("SystemColor Patcher", destination: SystemColor(mgr: mgr))
-                        .disabled(!mgr.sbxready || !mgr.vfsready)
+
+                Section {
+                    featureLink("creditcard", "Card Overwrite", "Ganti kartu App Store", .orange, CardView(), req: .vfs)
+                    featureLink("app.badge", "3 App Bypass", "Bypass limit 3 app", .green, AppsView(), req: .sandbox)
+                    featureLink("checkmark.shield", "Unblacklist", "Whitelist bundle ID", .mint, WhitelistView(), req: .sandbox)
+                    featureLink("bolt", "JIT Enabler", "JIT untuk emulator", .yellow, JitView(), req: .sandbox)
+                } header: {
+                    HeaderLabel(text: "Apps", icon: "app")
                 }
-                
-                Section(header: HeaderLabel(text: "System", icon: "gear")) {
-                    NavigationLink("VarClean", destination: VarCleanView())
-                        .disabled(!mgr.sbxready)
-                    NavigationLink("Custom Overwrite", destination: CustomView(mgr: mgr))
-                        .disabled(!mgr.vfsready)
+
+                Section {
+                    featureLink("paintbrush", "dirtyZero", "Tweak UI tanpa file permanen", .pink, dirtyZeroView(), req: .vfs)
+                    featureLink("iphone", "MobileGestalt", "Ubah identitas device", .teal, GestaltView(), req: .sandbox)
+                    featureLink("textformat", "Font Overwrite", "Ganti font sistem", .brown, FontPicker(mgr: mgr), req: .vfs)
+                    featureLink("paintpalette", "SystemColor", "Patch warna sistem", .indigo, SystemColor(mgr: mgr), req: .vfs, extra: mgr.sbxready)
+                } header: {
+                    HeaderLabel(text: "User Interface", icon: "eye")
+                } footer: {
+                    Text("Kebanyakan tweak butuh respring. Jika gagal, jailbreak ulang dari Home.")
+                        .font(.caption2)
                 }
-                
-                NavigationLink("Extra Tools", destination: ToolsView())
+
+                Section {
+                    featureLink("trash", "VarClean", "Hapus jejak jailbreak", .red, VarCleanView(), req: .sandbox)
+                    featureLink("doc.badge.gearshape", "Custom Overwrite", "Tulis file custom", .gray, CustomView(mgr: mgr), req: .vfs)
+                    NavigationLink {
+                        ToolsView()
+                    } label: {
+                        FeatureLinkRow(
+                            icon: "wrench.and.screwdriver",
+                            title: "Extra Tools",
+                            subtitle: "ASLR, sandbox token, respring",
+                            color: .secondary,
+                            badge: mgr.dsready ? .ready : .locked,
+                            disabled: !mgr.dsready
+                        )
+                    }
+                    .disabled(!mgr.dsready)
+                } header: {
+                    HeaderLabel(text: "System", icon: "gear")
+                }
             }
             .disabled(!mgr.dsready)
             .navigationTitle("Tweaks")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showGuide = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                }
                 if selectedlogsdisplaymode == .toolbar {
-                    Button(action: {
-                        mgr.showLogs.toggle()
-                    }) {
-                        Image(systemName: "terminal")
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            mgr.showLogs.toggle()
+                        } label: {
+                            Image(systemName: "terminal")
+                        }
                     }
                 }
             }
+            .sheet(isPresented: $showGuide) {
+                GuideView()
+            }
         }
         .premiumStyling()
+    }
+
+    @ViewBuilder
+    private func featureLink<D: View>(
+        _ icon: String,
+        _ title: String,
+        _ subtitle: String,
+        _ color: Color,
+        _ dest: D,
+        req: DSPRequirement,
+        extra: Bool = true
+    ) -> some View {
+        let enabled = req.isMet(by: mgr) && extra
+        NavigationLink(destination: dest) {
+            FeatureLinkRow(
+                icon: icon,
+                title: title,
+                subtitle: subtitle,
+                color: color,
+                badge: enabled ? .ready : .locked,
+                disabled: !enabled
+            )
+        }
+        .disabled(!enabled)
+    }
+
+    private func experimentalRow(_ icon: String, _ title: String, _ subtitle: String, _ color: Color) -> some View {
+        HStack {
+            FeatureLinkRow(
+                icon: icon,
+                title: title,
+                subtitle: subtitle,
+                color: color,
+                badge: .beta,
+                disabled: true
+            )
+        }
     }
 }

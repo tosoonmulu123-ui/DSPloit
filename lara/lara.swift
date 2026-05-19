@@ -9,7 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum taboptions {
-    case applying, root, logs
+    case home, tweaks, root, files, logs
 }
 
 let g_isunsupported: Bool = isunsupported()
@@ -24,8 +24,10 @@ struct DSPloit: App {
     @AppStorage("keepAlive") private var keepalive: Bool = false
     @AppStorage("showFMInTabs") private var showfmintabs: Bool = true
     @AppStorage("logsdisplaymode") private var logsdisplaymode: logsdisplaymode = .toolbar
-    @State private var selectedtab: taboptions = .applying
-    
+    @State private var selectedtab: taboptions = .home
+    @AppStorage("dsploit.hasSeenGuide") private var hasSeenGuide = false
+    @State private var showGuide = false
+
     init() {
         #if DEBUG
         weonadebugbuild_pjbweouttahereexclamationmark = true
@@ -48,21 +50,34 @@ struct DSPloit: App {
             TabView(selection: $selectedtab) {
                 ContentView()
                     .tabItem {
-                        Image(systemName: "wrench.and.screwdriver.fill")
+                        Label("Home", systemImage: "bolt.fill")
                     }
-                    .tag(taboptions.applying)
-                
+                    .tag(taboptions.home)
+
+                TweaksView(mgr: mgr)
+                    .tabItem {
+                        Label("Tweaks", systemImage: "paintbrush.fill")
+                    }
+                    .tag(taboptions.tweaks)
+
                 RootDashboardView()
                     .tabItem {
-                        Image(systemName: "person.badge.key.fill")
+                        Label("Root", systemImage: "person.badge.key.fill")
                     }
                     .tag(taboptions.root)
-                
-                // Logs tab
+
+                if showfmintabs {
+                    SantanderView()
+                        .tabItem {
+                            Label("Files", systemImage: "folder.fill")
+                        }
+                        .tag(taboptions.files)
+                }
+
                 if logsdisplaymode == .tabs {
                     LogsView(logger: globallogger)
                         .tabItem {
-                            Image(systemName: "terminal")
+                            Label("Logs", systemImage: "terminal")
                         }
                         .tag(taboptions.logs)
                 }
@@ -90,9 +105,18 @@ struct DSPloit: App {
                     offsets_init()
                     iconthememgr.startPendingFixupIfPossible()
                     mgr.hasOffsets = emergencyfixfunctiontobereplacedlateronquestionmark()
+                    if !hasSeenGuide {
+                        showGuide = true
+                    }
                 } else {
                     Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by DSPloit. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
                 }
+            }
+            .sheet(isPresented: $showGuide) {
+                GuideView()
+                    .onDisappear {
+                        hasSeenGuide = true
+                    }
             }
             .onChange(of: scenephase, perform: handleScenePhase)
             .onChange(of: mgr.sbxready) { ready in

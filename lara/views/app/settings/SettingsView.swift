@@ -53,6 +53,11 @@ struct SettingsView: View {
             List {
                 Section(header: HeaderLabel(text: "About", icon: "info.circle")) {
                     AppInfoCell()
+                    NavigationLink {
+                        GuideView()
+                    } label: {
+                        Label("Panduan / Quick Start", systemImage: "book.fill")
+                    }
                     NavigationLink("Credits", destination: CreditsView())
                 }
                 

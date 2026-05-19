@@ -2,7 +2,7 @@
 //  AMFIExperimentView.swift
 //  DSPloit
 //
-//  AMFI Bypass Experiments â€” test binary execution from root context
+//  AMFI Bypass Experiments — test binary execution from root context
 //  Goal: find a way to execute unsigned binaries
 //
 //  NOTE: Experiments 1-53 removed (legacy probes). Only keeping 54-59 (active research).
@@ -79,7 +79,7 @@ struct AMFIExperimentView: View {
                             Text("Running: \(runningLabel)")
                                 .font(.caption.bold())
                                 .foregroundStyle(.red)
-                            Text("Do NOT close app â€” will cause panic!")
+                            Text("Do NOT close app — will cause panic!")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.orange)
                         }

@@ -2,7 +2,7 @@
 //  RootDashboardView.swift
 //  DSPloit
 //
-//  Root tools dashboard — just tools, no status (main tab has that)
+//  Root tools dashboard
 //
 
 import SwiftUI
@@ -11,132 +11,110 @@ struct RootDashboardView: View {
     @ObservedObject private var root = RootExecutor.shared
     @ObservedObject private var mgr = dspmgr.shared
     @ObservedObject private var jb = JailbreakEngine.shared
-    
+    @State private var showGuide = false
+
+    private var rootReady: Bool {
+        mgr.rcready || root.rootConfirmed || jb.isJailbroken
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    if mgr.rcready || root.rootConfirmed || jb.isJailbroken {
-                        // Tools Grid
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            NavigationLink(destination: RootShellView()) {
-                                ToolCard(icon: "terminal.fill", title: "Shell", color: .red)
-                            }
-                            NavigationLink(destination: RootFileManagerView()) {
-                                ToolCard(icon: "folder.fill", title: "Files", color: .blue)
-                            }
-                            NavigationLink(destination: RootProcessView()) {
-                                ToolCard(icon: "play.circle.fill", title: "Processes", color: .orange)
-                            }
-                            NavigationLink(destination: TweaksManagerView()) {
-                                ToolCard(icon: "paintbrush.fill", title: "Tweaks", color: .pink)
-                            }
-                            NavigationLink(destination: BootstrapView()) {
-                                ToolCard(icon: "shippingbox.fill", title: "Bootstrap", color: .cyan)
-                            }
-                            NavigationLink(destination: PrefsEditorView()) {
-                                ToolCard(icon: "slider.horizontal.3", title: "Prefs", color: .mint)
-                            }
-                            NavigationLink(destination: RootPersistenceView()) {
-                                ToolCard(icon: "arrow.clockwise", title: "Persist", color: .purple)
-                            }
-                            NavigationLink(destination: NetworkToolsView()) {
-                                ToolCard(icon: "network", title: "Network", color: .indigo)
-                            }
-                            NavigationLink(destination: DaemonManagerView()) {
-                                ToolCard(icon: "gear.badge", title: "Daemons", color: .brown)
-                            }
-                            NavigationLink(destination: AMFIExperimentView()) {
-                                ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
-                            }
-                            NavigationLink(destination: MobileBankingView()) {
-                                ToolCard(icon: "building.columns.fill", title: "Banking", color: .green)
-                            }
-                            NavigationLink(destination: SystemInfoView()) {
-                                ToolCard(icon: "info.circle.fill", title: "System", color: .teal)
-                            }
-                        }
+                    SystemStatusStrip(mgr: mgr)
+                        .padding(.horizontal, 4)
+
+                    if rootReady {
+                        essentialsSection
+                        advancedSection
                     } else {
-                        // Not jailbroken yet
-                        VStack(spacing: 12) {
-                            Spacer().frame(height: 40)
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 40))
-                                .foregroundStyle(.secondary)
-                            Text("Jailbreak from main tab first")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
+                        EmptyStateView(
+                            icon: "lock.fill",
+                            title: "Root belum aktif",
+                            message: "Jalankan Jailbreak di tab Home sampai langkah RemoteCall dan Root hijau.",
+                            buttonTitle: "Buka Panduan",
+                            action: { showGuide = true }
+                        )
                     }
-                    
-                    // About
+
                     VStack(spacing: 4) {
                         Text("DSPloit")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
-                        Text("Rootless Jailbreak • iOS 17-26 • A10-A18")
+                        Text("Rootless • iOS 16–26 • A10–A18")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
-                    .padding(.top, 20)
+                    .padding(.top, 8)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
             }
-            .navigationTitle("Root Tools")
+            .navigationTitle("Root")
             .background(Color(.systemGroupedBackground))
-        }
-    }
-}
-
-// MARK: - Tool Card
-
-struct ToolCard: View {
-    let icon: String
-    let title: String
-    let color: Color
-    
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 22))
-                .foregroundStyle(color)
-            Text(title)
-                .font(.caption.bold())
-                .foregroundStyle(.primary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.secondarySystemGroupedBackground))
-        )
-    }
-}
-
-// MARK: - Keep ToolRow for other views
-struct ToolRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let color: Color
-    
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(color.opacity(0.12))
-                    .frame(width: 40, height: 40)
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                    .foregroundStyle(color)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showGuide = true
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.bold())
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            .sheet(isPresented: $showGuide) {
+                GuideView()
             }
         }
-        .padding(.vertical, 4)
+    }
+
+    // MARK: - Sections
+
+    private var essentialsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Essentials", icon: "star.fill")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                navTool("terminal.fill", "Shell", "Perintah root", .red, RootShellView())
+                navTool("folder.fill", "Files", "Baca/tulis file", .blue, RootFileManagerView())
+                navTool("building.columns.fill", "Banking", "Sembunyikan /var/jb", .green, MobileBankingView())
+                navTool("shippingbox.fill", "Bootstrap", "/var/jb setup", .cyan, BootstrapView())
+                navTool("play.circle.fill", "Processes", "Daftar proses", .orange, RootProcessView())
+                navTool("info.circle.fill", "System", "Info perangkat", .teal, SystemInfoView())
+            }
+        }
+    }
+
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Advanced", icon: "gearshape.2.fill")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                navTool("paintbrush.fill", "Tweaks", "SpringBoard RC", .pink, TweaksManagerView())
+                navTool("slider.horizontal.3", "Prefs", "Edit plist", .mint, PrefsEditorView())
+                navTool("arrow.clockwise", "Persist", "LaunchDaemon", .purple, RootPersistenceView())
+                navTool("network", "Network", "hosts, DNS", .indigo, NetworkToolsView())
+                navTool("gear.badge", "Daemons", "Kelola daemon", .brown, DaemonManagerView())
+                navTool("flask.fill", "AMFI Lab", "Riset AMFI", .yellow, AMFIExperimentView(), badge: .advanced)
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.subheadline.bold())
+            .foregroundStyle(.secondary)
+            .padding(.leading, 4)
+    }
+
+    private func navTool<D: View>(
+        _ icon: String,
+        _ title: String,
+        _ subtitle: String,
+        _ color: Color,
+        _ dest: D,
+        badge: FeatureBadge? = nil
+    ) -> some View {
+        NavigationLink(destination: dest) {
+            ToolCard(icon: icon, title: title, subtitle: subtitle, color: color, badge: badge)
+        }
+        .buttonStyle(.plain)
     }
 }

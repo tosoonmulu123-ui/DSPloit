@@ -13,7 +13,8 @@ struct ContentView: View {
     @ObservedObject private var root = RootExecutor.shared
     
     @State private var showSettings = false
-    
+    @State private var showGuide = false
+
     init() { globallogger.capture() }
     
     var body: some View {
@@ -26,6 +27,10 @@ struct ContentView: View {
                         // Main status circle
                         StatusCircle()
                         
+                        if mgr.dsready {
+                            SystemStatusStrip(mgr: mgr)
+                        }
+
                         // Progress steps
                         StepsView()
                         
@@ -35,11 +40,16 @@ struct ContentView: View {
                         // Actions
                         ActionsView()
                         
+                        // Quick help
+                        if !mgr.dsready {
+                            helpCard
+                        }
+
                         // Info
                         if mgr.dsready {
                             InfoView()
                         }
-                        
+
                         Spacer().frame(height: 20)
                     }
                     .padding(.horizontal, 24)
@@ -48,6 +58,11 @@ struct ContentView: View {
             .background(Color(.systemBackground))
             .navigationTitle("DSPloit")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showGuide = true } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showSettings.toggle() }) {
                         Image(systemName: "gear")
@@ -56,6 +71,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showGuide) {
+                GuideView()
             }
         }
     }
@@ -195,8 +213,26 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemGroupedBackground)))
     }
     
+    // MARK: - Help card
+
+    @ViewBuilder
+    private var helpCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Mulai di sini", systemImage: "hand.point.up.left.fill")
+                .font(.subheadline.bold())
+            Text("Tap **Jailbreak** di bawah. Setelah selesai, buka tab Root atau Tweaks.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Buka panduan") { showGuide = true }
+                .font(.caption.bold())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.1)))
+    }
+
     // MARK: - Info
-    
+
     @ViewBuilder
     private func InfoView() -> some View {
         VStack(alignment: .leading, spacing: 6) {

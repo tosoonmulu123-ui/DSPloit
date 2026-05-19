@@ -133,7 +133,7 @@ struct MobileBankingView: View {
             } footer: {
                 Text(mgr.sbxready
                      ? "VarClean menghapus sisa Sileo, Dopamine, Filza, dll. dari /var/mobile."
-                     : "VarClean butuh sandbox escape (tab Tweaks → exploit dulu).")
+                     : "VarClean butuh sandbox escape (jalankan Jailbreak di Home dulu).")
             }
 
             Section {
