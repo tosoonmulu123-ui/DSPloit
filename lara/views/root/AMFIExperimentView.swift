@@ -4825,13 +4825,13 @@ struct AMFIExperimentView: View {
                     let keyObj = remote_msg(sb, keysArray, objectAtIndex, UInt64(i), 0, 0, 0)
                     guard keyObj != 0 else { continue }
                     
-                    // Get key name
+                    // Get key name — keyCStr is in SpringBoard userspace, use sb[] accessor
                     let keyCStr = remote_msg(sb, keyObj, cstrSel, 0, 0, 0, 0)
                     var keyName = "?"
                     if keyCStr != 0 {
                         var buf = [UInt8](repeating: 0, count: 48)
                         for b in 0..<48 {
-                            let ch = ds_kread8(keyCStr + UInt64(b))
+                            let ch = sb[keyCStr + UInt64(b)].value8()
                             buf[b] = ch
                             if ch == 0 { break }
                         }
@@ -4845,7 +4845,7 @@ struct AMFIExperimentView: View {
                         continue
                     }
                     
-                    // Get value class name
+                    // Get value class name — classCStr is in SpringBoard userspace
                     let classObj = remote_msg(sb, valObj, classSel, 0, 0, 0, 0)
                     var className = ""
                     if classObj != 0 {
@@ -4853,7 +4853,7 @@ struct AMFIExperimentView: View {
                         if classCStr != 0 {
                             var cbuf = [UInt8](repeating: 0, count: 32)
                             for b in 0..<32 {
-                                let ch = ds_kread8(classCStr + UInt64(b))
+                                let ch = sb[classCStr + UInt64(b)].value8()
                                 cbuf[b] = ch
                                 if ch == 0 { break }
                             }
@@ -4861,7 +4861,7 @@ struct AMFIExperimentView: View {
                         }
                     }
                     
-                    // Get value description (truncated)
+                    // Get value description — descCStr is in SpringBoard userspace
                     let descObj = remote_msg(sb, valObj, descSel, 0, 0, 0, 0)
                     var valStr = ""
                     if descObj != 0 {
@@ -4869,7 +4869,7 @@ struct AMFIExperimentView: View {
                         if descCStr != 0 {
                             var vbuf = [UInt8](repeating: 0, count: 80)
                             for b in 0..<80 {
-                                let ch = ds_kread8(descCStr + UInt64(b))
+                                let ch = sb[descCStr + UInt64(b)].value8()
                                 vbuf[b] = ch
                                 if ch == 0 { break }
                             }
