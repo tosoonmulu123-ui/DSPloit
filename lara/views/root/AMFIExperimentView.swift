@@ -4235,7 +4235,7 @@ struct AMFIExperimentView: View {
         detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase)) (TIDAK dibaca — PPL panic)\n"
 
         let offlineSlotCount = ds_kcache_trust_slot_count()
-        let fileDataOff = ds_kcache_analyze_data_offset()
+        let fileDataOff = fileDataOffForBase
         detail += "\n=== Offline kernelcache scan ===\n"
         detail += "  ADRP slots: \(offlineSlotCount) (dari file Documents/kernelcache)\n"
         if fileDataOff != 0 {
@@ -4314,13 +4314,15 @@ struct AMFIExperimentView: View {
             guard isSafeTrustCacheStructVA(addr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
             else { return }
             guard spendKRW() else { return }
+            let raw = safeKread64Kernel(addr)
             let val = ds_kreadptr(addr)
-            guard val != 0 else { return }
-            if tryTrustCacheAt(val, label: label) { return }
-            if isSafeTrustCacheFollowPointer(val, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
+            let use = val != 0 ? val : raw
+            guard use != 0 else { return }
+            if tryTrustCacheAt(use, label: label) { return }
+            if isSafeTrustCacheFollowPointer(use, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
                spendKRW() {
                 let smr = ds_kreadsmrptr(addr)
-                if smr != 0, smr != val {
+                if smr != 0, smr != use {
                     _ = tryTrustCacheAt(smr, label: "\(label)→smr")
                 }
             }
@@ -4338,14 +4340,17 @@ struct AMFIExperimentView: View {
                 let addr = dataSegBase &+ off
                 guard isSafeTrustCacheStructVA(addr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { continue }
                 let p = ds_kreadptr(addr)
+                let raw = safeKread64Kernel(addr)
+                let show = p != 0 ? p : raw
                 let tag: String
-                if p == 0 { tag = "null" }
-                else if isSafeKernelHeapKreadAddress(p) { tag = "heap?" }
-                else if p >= dataSegBase && p < pplDataBase { tag = "__DATA" }
-                else if isFilesetAuxDataVA(p, kernTextBase: kernBase, dataSegBase: dataSegBase) { tag = "fileset aux ← biasanya ini" }
-                else if p >= kernBase && p < dataSegBase { tag = "__TEXT? (skip)" }
+                if show == 0 { tag = "null" }
+                else if isSafeKernelHeapKreadAddress(show) { tag = "heap?" }
+                else if show >= dataSegBase && show < pplDataBase { tag = "__DATA" }
+                else if isFilesetAuxDataVA(show, kernTextBase: kernBase, dataSegBase: dataSegBase) { tag = "fileset aux" }
+                else if show >= kernBase && show < dataSegBase { tag = "__TEXT? (skip)" }
                 else { tag = "?" }
-                detail += "  kc+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", p)) (\(tag))\n"
+                if p == 0 && raw != 0 { tag += " raw" }
+                detail += "  kc+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", show)) (\(tag))\n"
             }
         }
 
