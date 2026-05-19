@@ -215,11 +215,12 @@ private func safeKread64Physmap(_ va: UInt64) -> UInt64 {
     return ds_kread64_safe(va)
 }
 
-/// Kernel __TEXT / __DATA static (0xfffffff0… band only).
+/// Kernel __TEXT / __DATA / fileset aux (0xffffff80… and legacy 0xfffffff0…).
 private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
-    guard va >= 0xfffffff007000000, va < 0xfffffffc00000000 else { return false }
     if va >= 0xfffffffa00000000 { return false }
-    return true
+    if va >= 0xffffff8000000000 && va < 0xffffffe000000000 { return true }
+    if va >= 0xfffffff007000000 && va < 0xfffffffc00000000 { return true }
+    return false
 }
 
 /// kalloc heap (amfid/proc/trust cache — 0xdd/0xde/0xe0…). Jangan pakai aturan physmap 0xdc–0xe6 di sini.
@@ -270,8 +271,14 @@ private func isSafeTrustCacheFollowPointer(
     pplDataBase: UInt64,
     kernTextBase: UInt64
 ) -> Bool {
-    guard ptr >= 0xfffffff007000000 else { return false }
+    guard isLikelyKernelObjectPointer(ptr) else { return false }
     return isSafeTrustCacheStructVA(ptr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernTextBase)
+}
+
+/// Skip integers / flags (e.g. pmap_cs_allow_invalid = 1 at kc+0x45b8).
+private func isLikelyKernelObjectPointer(_ v: UInt64) -> Bool {
+    if v < 0x100000 { return false }
+    return isLikelyKernelPointer(v)
 }
 
 private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
@@ -4265,7 +4272,7 @@ struct AMFIExperimentView: View {
 
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
-        var krwBudget = 48
+        var krwBudget = 256
 
         func spendKRW() -> Bool {
             if krwBudget <= 0 { return false }
@@ -4273,39 +4280,44 @@ struct AMFIExperimentView: View {
             return true
         }
 
-        func trustCacheHeaderAt(_ va: UInt64) -> (UInt32, UInt32)? {
+        func readU32(_ va: UInt64) -> UInt32 {
+            if isSafeKernelHeapKreadAddress(va) { return safeKread32Heap(va) }
+            return safeKread32Kernel(va)
+        }
+
+        func trustCacheHeaderAt(_ va: UInt64, headerOff: UInt64 = 0) -> (UInt32, UInt32)? {
             guard spendKRW(),
                   isSafeTrustCacheStructVA(va, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
             else { return nil }
-            let ver: UInt32
-            let cnt: UInt32
-            if isSafeKernelHeapKreadAddress(va) {
-                ver = safeKread32Heap(va)
-                cnt = safeKread32Heap(va + 4)
-            } else {
-                ver = safeKread32Kernel(va)
-                cnt = safeKread32Kernel(va + 4)
-            }
-            guard ver >= 1 && ver <= 4 && cnt > 0 && cnt < 100_000 else { return nil }
-            return (ver, cnt)
+            let base = va &+ headerOff
+            let ver = readU32(base)
+            let cnt = readU32(base + 4)
+            guard cnt > 0 && cnt < 500_000 else { return nil }
+            if ver >= 1 && ver <= 16 { return (ver, cnt) }
+            return nil
         }
 
         func tryTrustCacheAt(_ val: UInt64, label: String) -> Bool {
-            if let (tcVer, tcCnt) = trustCacheHeaderAt(val) {
-                let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "__DATA"
-                detail += "🎯 Trust cache \(label) (\(kind))!\n"
-                detail += "  addr: 0x\(String(format: "%llx", val))\n"
-                detail += "  version: \(tcVer), count: \(tcCnt)\n"
-                tcStructAddr = val
-                tcEntryCount = UInt64(tcCnt)
-                return true
+            for hdrOff: UInt64 in [0, 8, 0x10] {
+                if let (tcVer, tcCnt) = trustCacheHeaderAt(val, headerOff: hdrOff) {
+                    let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "__DATA"
+                    detail += "🎯 Trust cache \(label) (\(kind))!\n"
+                    detail += "  addr: 0x\(String(format: "%llx", val))"
+                    if hdrOff != 0 { detail += " header+0x\(String(format: "%x", hdrOff))" }
+                    detail += "\n"
+                    detail += "  version: \(tcVer), count: \(tcCnt)\n"
+                    tcStructAddr = val &+ hdrOff
+                    tcEntryCount = UInt64(tcCnt)
+                    return true
+                }
             }
-            guard isSafeTrustCacheFollowPointer(val, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
+            guard isLikelyKernelObjectPointer(val),
+                  isSafeTrustCacheFollowPointer(val, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
                 || isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase)
             else { return false }
             guard spendKRW() else { return false }
             let inner = ds_kreadptr(val)
-            guard inner != 0, inner != val,
+            guard inner != 0, inner != val, isLikelyKernelObjectPointer(inner),
                   isSafeTrustCacheFollowPointer(inner, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
             else { return false }
             return tryTrustCacheAt(inner, label: "\(label)→deref")
@@ -4315,25 +4327,66 @@ struct AMFIExperimentView: View {
             let addr = dataSegBase &+ off
             guard isSafeTrustCacheStructVA(addr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
             else { return }
+            if off != PhysmapConstants.pmapCsAllowInvalidOffsetInData {
+                if tryTrustCacheAt(addr, label: "\(label)@inline") { return }
+            }
             guard spendKRW() else { return }
             let raw = safeKread64Kernel(addr)
             let val = ds_kreadptr(addr)
             let use = val != 0 ? val : raw
-            guard use != 0 else { return }
+            guard isLikelyKernelObjectPointer(use) else { return }
             if tryTrustCacheAt(use, label: label) { return }
             if isSafeTrustCacheFollowPointer(use, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
                spendKRW() {
                 let smr = ds_kreadsmrptr(addr)
-                if smr != 0, smr != use {
+                if smr != 0, smr != use, isLikelyKernelObjectPointer(smr) {
                     _ = tryTrustCacheAt(smr, label: "\(label)→smr")
                 }
             }
         }
 
-        detail += "=== Probe __DATA (\(probeOffsets.count) slot, pre-PPL) ===\n"
-        for off in probeOffsets {
+        detail += "=== Symtab / XPF globals ===\n"
+        let symProbeNames = [
+            "_trustcache",
+            "_static_trust_cache",
+            "_loaded_trust_caches",
+            "kernelSymbol.trust_cache",
+        ]
+        for sym in symProbeNames {
+            var rt = ds_kcache_symbol_runtime(sym)
+            if rt == 0 { rt = ds_xpf_resolve_runtime(sym) }
+            if rt == 0 {
+                detail += "  \(sym): (not found)\n"
+                continue
+            }
+            detail += "  \(sym): 0x\(String(format: "%llx", rt))\n"
+            if tryTrustCacheAt(rt, label: sym) { break }
+            if spendKRW() {
+                let p = ds_kreadptr(rt)
+                if isLikelyKernelObjectPointer(p) {
+                    if tryTrustCacheAt(p, label: "\(sym)→ptr") { break }
+                }
+            }
+        }
+        detail += "\n"
+
+        var orderedOffsets = probeOffsets
+        let priority: [UInt64] = [
+            0x3980, 0x3920, 0x3930, 0x38e0, 0x38c0, 0x38a0, 0x3900, 0x39b0,
+            0x2d0, 0x1a4, 0x2770, 0x1f8,
+        ]
+        orderedOffsets.sort { a, b in
+            let pa = priority.firstIndex(of: a) ?? 999
+            let pb = priority.firstIndex(of: b) ?? 999
+            if pa != pb { return pa < pb }
+            return a < b
+        }
+        orderedOffsets.removeAll { $0 == PhysmapConstants.pmapCsAllowInvalidOffsetInData }
+
+        detail += "=== Probe __DATA (\(orderedOffsets.count) slot, pre-PPL) ===\n"
+        for off in orderedOffsets {
             probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
-            if tcStructAddr != 0 || krwBudget <= 0 { break }
+            if tcStructAddr != 0 { break }
         }
 
         if tcStructAddr == 0 {
@@ -4356,10 +4409,26 @@ struct AMFIExperimentView: View {
             }
         }
 
+        if tcStructAddr == 0 {
+            detail += "\n=== Scan fileset aux (pointer dari slot) ===\n"
+            var auxSeen = Set<UInt64>()
+            for off in orderedOffsets.prefix(16) {
+                let addr = dataSegBase &+ off
+                guard spendKRW() else { break }
+                let p = ds_kreadptr(addr)
+                guard isLikelyKernelObjectPointer(p),
+                      isFilesetAuxDataVA(p, kernTextBase: kernBase, dataSegBase: dataSegBase),
+                      auxSeen.insert(p).inserted
+                else { continue }
+                detail += "  follow aux 0x\(String(format: "%llx", p))\n"
+                if tryTrustCacheAt(p, label: "aux") { break }
+            }
+        }
+
         guard tcStructAddr != 0 else {
             detail += "\n❌ Struct trust cache tidak ditemukan.\n"
-            detail += "Kernelcache OK (48 slot). Pointer ada tapi header ver/count tidak cocok,\n"
-            detail += "atau struct di fileset aux belum terbaca — coba build terbaru.\n"
+            detail += "Kernelcache OK (\(offlineSlotCount) slot). Perbaikan band KRW 0xffffff80… aktif.\n"
+            detail += "Jika masih gagal: Import ulang kernelcache + Jailbreak, kirim log slot di atas.\n"
             detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }

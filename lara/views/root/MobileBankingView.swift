@@ -19,6 +19,8 @@ struct MobileBankingView: View {
     @State private var statusMessage: String?
     @State private var showHideConfirm = false
     @State private var showRestoreConfirm = false
+    @State private var jbPathVisible = false
+    @State private var stashPathVisible = false
 
     struct JailbreakIndicator: Identifiable {
         let id = UUID()
@@ -66,7 +68,7 @@ struct MobileBankingView: View {
                 } label: {
                     Label("Scan Jejak Jailbreak", systemImage: "magnifyingglass")
                 }
-                .disabled(!mgr.rcready || root.isExecuting)
+                .disabled(root.isExecuting)
 
                 if jbHidden {
                     Button {
@@ -83,12 +85,12 @@ struct MobileBankingView: View {
                         Label("Sembunyikan /var/jb", systemImage: "eye.slash")
                             .foregroundStyle(.orange)
                     }
-                    .disabled(!mgr.rcready || root.isExecuting || !indicatorExists(Self.jbPath))
+                    .disabled(!mgr.rcready || root.isExecuting || !jbPathVisible || jbHidden)
                 }
             } header: {
                 Label("Aksi", systemImage: "bolt.fill")
             } footer: {
-                Text("Sembunyikan hanya rename folder (aman, bisa dikembalikan). Setelah hide: force-quit app bank, buka lagi. Beberapa bank juga cek file lain — gunakan scan + VarClean.")
+                Text("Sembunyikan = rename cepat via launchd (<3 detik). Scan hanya cek lokal (tanpa launchd) — menghindari respring. Setelah hide: force-quit app bank, buka lagi.")
             }
 
             if !indicators.isEmpty {
@@ -127,7 +129,7 @@ struct MobileBankingView: View {
                 } label: {
                     Label("Respring", systemImage: "arrow.clockwise")
                 }
-                .disabled(!mgr.rcready)
+                .disabled(!mgr.dsready)
             } header: {
                 Label("Lainnya", systemImage: "ellipsis.circle")
             } footer: {
@@ -152,7 +154,7 @@ struct MobileBankingView: View {
         .navigationTitle("Mobile Banking")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            refreshHiddenState()
+            refreshJbPathsLocal()
         }
         .alert("Sembunyikan /var/jb?", isPresented: $showHideConfirm) {
             Button("Batal", role: .cancel) {}
@@ -182,19 +184,20 @@ struct MobileBankingView: View {
         }
     }
 
-    private func indicatorExists(_ path: String) -> Bool {
-        indicators.first(where: { $0.path == path })?.exists ?? false
+    /// Cek path dari proses app (cepat). Setelah sandbox escape biasanya bisa baca /var/jb tanpa launchd.
+    private func localPathExists(_ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: path)
     }
 
-    private func refreshHiddenState() {
-        jbHidden = UserDefaults.standard.bool(forKey: "dsploit.jb_hidden")
-        if indicators.isEmpty {
-            scanIndicators()
-        }
+    private func refreshJbPathsLocal() {
+        jbPathVisible = localPathExists(Self.jbPath)
+        stashPathVisible = localPathExists(Self.hiddenPath)
+        jbHidden = stashPathVisible && !jbPathVisible
+        UserDefaults.standard.set(jbHidden, forKey: "dsploit.jb_hidden")
     }
 
+    /// Scan jejak — hanya FileManager lokal (tidak pegang launchd → tidak respring).
     private func scanIndicators() {
-        #if !DISABLE_REMOTECALL
         let probes: [(String, String, Bool)] = [
             ("Rootless bootstrap", Self.jbPath, true),
             ("Stash (hidden jb)", Self.hiddenPath, false),
@@ -211,33 +214,17 @@ struct MobileBankingView: View {
             ("checkra1n", "/var/binpack/Applications/loader.app", true),
         ]
 
-        root.executeAsRoot(operation: "banking_scan") { rc in
-            var found: [JailbreakIndicator] = []
-            var hidden = false
-            var visible = false
-
-            for (label, path, critical) in probes {
-                let pathAddr = remote_alloc_str(rc, path)
-                let exists = RootExecutor.rcall(rc, "access", pathAddr, 0) == 0
-                RootExecutor.rcall(rc, "free", pathAddr)
-                found.append(JailbreakIndicator(label: label, path: path, exists: exists, critical: critical))
-                if path == Self.hiddenPath, exists { hidden = true }
-                if path == Self.jbPath, exists { visible = true }
-            }
-
-            let resolvedHidden = hidden && !visible
-
-            DispatchQueue.main.async {
-                self.indicators = found
-                self.jbHidden = resolvedHidden
-                UserDefaults.standard.set(resolvedHidden, forKey: "dsploit.jb_hidden")
-                let visCount = found.filter(\.exists).count
-                self.statusMessage = "Scan selesai — \(visCount) path ada di disk."
-            }
-
-            return (true, "Scanned \(probes.count) paths", UInt64(found.filter(\.exists).count))
+        refreshJbPathsLocal()
+        indicators = probes.map { label, path, critical in
+            JailbreakIndicator(
+                label: label,
+                path: path,
+                exists: localPathExists(path),
+                critical: critical
+            )
         }
-        #endif
+        let visCount = indicators.filter(\.exists).count
+        statusMessage = "Scan lokal — \(visCount) path terlihat. Path di luar akses app mungkin \"tidak ada\" padahal ada (butuh root)."
     }
 
     private func hideJbPath() {
@@ -269,10 +256,9 @@ struct MobileBankingView: View {
             let ok = result == 0
             if ok {
                 DispatchQueue.main.async {
-                    self.jbHidden = true
-                    UserDefaults.standard.set(true, forKey: "dsploit.jb_hidden")
+                    self.refreshJbPathsLocal()
                     self.statusMessage = "✅ \(Self.jbPath) disembunyikan. Force-quit app bank lalu buka lagi."
-                    self.scanIndicators()
+                    if !self.indicators.isEmpty { self.scanIndicators() }
                 }
             }
 
@@ -310,10 +296,9 @@ struct MobileBankingView: View {
             let ok = result == 0
             if ok {
                 DispatchQueue.main.async {
-                    self.jbHidden = false
-                    UserDefaults.standard.set(false, forKey: "dsploit.jb_hidden")
+                    self.refreshJbPathsLocal()
                     self.statusMessage = "✅ \(Self.jbPath) dikembalikan."
-                    self.scanIndicators()
+                    if !self.indicators.isEmpty { self.scanIndicators() }
                 }
             }
 
