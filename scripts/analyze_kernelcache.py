@@ -5,23 +5,24 @@ Analyze decompressed iOS kernelcache for DSPloit (physmap / pmap / trust cache).
 Usage:
   python scripts/analyze_kernelcache.py
   python scripts/analyze_kernelcache.py path/to/kernelcache.decompressed
+  python scripts/analyze_kernelcache.py --trust-cache
+  python scripts/analyze_kernelcache.py --emit-swift
 
 Expects Mach-O arm64 kernel (magic 0xFEEDFACF). IM4P must be decompressed first
 (DSPloit Settings → Fetch kernelcache, or img4tool).
-
-Output: unslid segment map, string hits, optional pointer scan for kernel_pmap.
 """
 
 from __future__ import annotations
 
+import re
 import struct
 import sys
+from collections import Counter
 from pathlib import Path
 
 LC_SEGMENT_64 = 0x19
 MH_MAGIC_64 = 0xFEEDFACF
 
-# Strings useful for AMFI Lab / Exp 74–77
 SEARCH_STRINGS = [
     "kernel_pmap",
     "kernel_map",
@@ -29,12 +30,27 @@ SEARCH_STRINGS = [
     "physmap",
     "trustcache",
     "TrustCache",
+    "trust_cache",
     "pmap_cs",
     "AMFI",
     "amfi",
     "ppl",
     "__DATA.__ppl",
     "kernproc",
+]
+
+TRUST_CACHE_SYMBOLS = [
+    "_query_trust_cache",
+    "_query_trust_cache_for_rem",
+    "_check_trust_cache_runtime_for_uuid",
+    "_check_cdhash_in_trustcache",
+    "_load_trust_cache",
+    "_load_trust_cache_with_type",
+    "_load_legacy_trust_cache",
+    "_pmap_lookup_in_loaded_trust_caches",
+    "_pmap_lookup_in_static_trust_cache",
+    "_static_trust_cache_capabilities",
+    "trust_cache_init",
 ]
 
 DEFAULT_PATHS = [
@@ -47,7 +63,7 @@ DEFAULT_PATHS = [
 
 def find_kernelcache(arg: str | None) -> Path:
     root = Path(__file__).resolve().parents[1]
-    if arg:
+    if arg and not arg.startswith("-"):
         p = Path(arg)
         if not p.is_file():
             raise SystemExit(f"File not found: {p}")
@@ -116,32 +132,175 @@ def search_strings(data: bytes, segments: list[dict]) -> list[dict]:
     return hits
 
 
-def scan_kernel_pmap_ptr(data: bytes, segments: list[dict], unslid_text: int) -> list[dict]:
-    """Find 8-byte pointers in __DATA that look like kernel_pmap (heuristic)."""
-    results: list[dict] = []
-    data_segs = [s for s in segments if s["name"] in ("__DATA", "__DATA_CONST", "__DATA.__ppl")]
-    if not data_segs:
-        data_segs = [s for s in segments if "DATA" in s["name"]]
+def decode_adrp(insn: int, pc: int) -> int | None:
+    if (insn & 0x9F000000) != 0x90000000:
+        return None
+    immlo = (insn >> 29) & 3
+    immhi = (insn >> 5) & 0x7FFFF
+    imm = (immhi << 2) | immlo
+    if imm & (1 << 20):
+        imm -= 1 << 21
+    return (pc & ~0xFFF) + (imm << 12)
 
-    for seg in data_segs:
-        start = seg["fileoff"]
-        end = min(len(data), start + min(seg["filesize"], 0x400000))
-        for off in range(start, end - 8, 8):
-            ptr, = struct.unpack_from("<Q", data, off)
-            # Kernel heap / zone-ish pointers (not __TEXT)
-            if 0xFFFFFFDC00000000 <= ptr < 0xFFFFFFE600000000:
-                va = seg["vmaddr"] + (off - seg["fileoff"])
-                results.append({"field_va": va, "ptr": ptr})
-                if len(results) >= 40:
-                    return results
-    return results
+
+def decode_add_imm(insn: int) -> tuple[int, int, int] | None:
+    if (insn & 0xFF800000) != 0x91000000:
+        return None
+    imm = (insn >> 10) & 0xFFF
+    if (insn >> 22) & 1:
+        imm <<= 12
+    rn = (insn >> 5) & 0x1F
+    rd = insn & 0x1F
+    return rn, rd, imm
+
+
+def scan_adrp_data_refs(
+    data: bytes, segments: list[dict], *, pre_ppl_only: bool = False, max_rel: int | None = None
+) -> Counter[int]:
+    te = next((s for s in segments if s["name"] == "__TEXT_EXEC"), None)
+    ds = next((s for s in segments if s["name"] == "__DATA"), None)
+    if not te or not ds:
+        return Counter()
+
+    tb, db = te["vmaddr"], ds["vmaddr"]
+    tstart = te["fileoff"]
+    limit = max_rel if max_rel is not None else ds["vmsize"]
+    hits: Counter[int] = Counter()
+
+    for i in range(0, te["filesize"] - 8, 4):
+        pc = tb + i
+        i0, i1 = struct.unpack_from("<II", data, tstart + i)
+        page = decode_adrp(i0, pc)
+        if page is None:
+            continue
+        add = decode_add_imm(i1)
+        if add is None:
+            continue
+        rn, rd, imm = add
+        if rn != rd:
+            continue
+        va = page + imm
+        if not (db <= va < db + limit):
+            continue
+        rel = va - db
+        if pre_ppl_only and rel >= 0x8000:
+            continue
+        hits[rel] += 1
+    return hits
+
+
+def trust_cache_symbol_names(data: bytes) -> list[str]:
+    found: set[str] = set()
+    for pat in TRUST_CACHE_SYMBOLS:
+        if data.find(pat.encode()) >= 0:
+            found.add(pat)
+    for m in re.finditer(rb"_[a-zA-Z0-9_]*trust[a-zA-Z0-9_]*", data):
+        s = m.group().decode()
+        if 4 < len(s) < 72:
+            found.add(s)
+    return sorted(found)
+
+
+def pick_trust_cache_global_offsets(hits: Counter[int]) -> list[int]:
+    """Heuristic: few-ref __DATA slots in pre-PPL + pmap_cs band (iphone11b)."""
+    out: list[int] = []
+    seen: set[int] = set()
+
+    def add(rel: int) -> None:
+        if rel not in seen and rel < 0x8000:
+            seen.add(rel)
+            out.append(rel)
+
+    add(0x45B8)  # pmap_cs_allow_invalid (confirmed ADRP)
+    for rel, count in hits.most_common(80):
+        if rel >= 0x8000:
+            continue
+        if count > 80:
+            continue
+        if rel in (0xE8, 0xF8, 0x248):
+            continue
+        add(rel)
+    for rel in range(0x4000, 0x5000, 8):
+        if hits.get(rel, 0) > 0:
+            add(rel)
+    return out[:48]
+
+
+def emit_swift_constants(
+    text_base: int,
+    data_base: int,
+    data_off: int,
+    pmap_off: int,
+    tc_offsets: list[int],
+    symbols: list[str],
+) -> str:
+    off_lines = ", ".join(f"0x{o:x}" for o in tc_offsets)
+    sym_lines = "\n".join(f'        "{s}",' for s in symbols[:16])
+    return f"""// AUTO-GENERATED by scripts/analyze_kernelcache.py --emit-swift
+// Paste into PhysmapConstants or merge trust-cache block.
+    static let unslidTextBase: UInt64 = 0x{text_base:x}
+    static let unslidDataBase: UInt64 = 0x{data_base:x}
+    static let dataOffsetFromText: UInt64 = 0x{data_off:x}
+    static let pmapCsAllowInvalidOffsetInData: UInt64 = 0x{pmap_off:x}
+    static let trustCacheGlobalOffsetsInData: [UInt64] = [{off_lines}]
+    // XPF names to try at runtime (ds_xpf_resolve_runtime):
+{sym_lines}
+"""
+
+
+def run_trust_cache_report(data: bytes, segments: list[dict]) -> None:
+    ds = next(s for s in segments if s["name"] == "__DATA")
+    te = next(s for s in segments if s["name"] == "__TEXT_EXEC")
+    text_base = next((s["vmaddr"] for s in segments if s["name"] == "__TEXT"), 0)
+    data_base = ds["vmaddr"]
+    data_off = data_base - text_base
+
+    print("=== Trust cache / AMFI (kernelcache) ===\n")
+    symbols = trust_cache_symbol_names(data)
+    print(f"Symbol names found ({len(symbols)}):")
+    for s in symbols[:20]:
+        print(f"  {s}")
+    if len(symbols) > 20:
+        print(f"  ... +{len(symbols) - 20} more")
+
+    hits = scan_adrp_data_refs(data, segments, pre_ppl_only=True)
+    print("\n--- __DATA pre-PPL: ADRP+ADD targets (top 20) ---")
+    for rel, c in hits.most_common(20):
+        print(f"  __DATA+0x{rel:x}  ({c} code refs)")
+
+    tc_offs = pick_trust_cache_global_offsets(hits)
+    print("\n--- Suggested trustCacheGlobalOffsetsInData ---")
+    for o in tc_offs:
+        print(f"  0x{o:x}")
+
+    print("\n--- Swift snippet ---")
+    print(
+        emit_swift_constants(
+            text_base, data_base, data_off, 0x45B8, tc_offs, symbols
+        )
+    )
+
+    print("\n--- Runtime (on device) ---")
+    print("1. Fetch kernelcache in DSPloit Settings (same IPSW as boot).")
+    print("2. Exp 77 uses offsets above + ds_xpf_resolve_runtime(symbol).")
+    print("3. Do NOT KRW-read __DATA.__ppl_data (+0x8000) — PPL panic.")
 
 
 def main() -> None:
-    arg = sys.argv[1] if len(sys.argv) > 1 else None
-    path = find_kernelcache(arg)
+    argv = sys.argv[1:]
+    emit_swift = "--emit-swift" in argv
+    trust_only = "--trust-cache" in argv
+    path_arg = next((a for a in argv if not a.startswith("-")), None)
+
+    path = find_kernelcache(path_arg)
     data = path.read_bytes()
-    print(f"=== DSPloit kernelcache analysis ===")
+
+    if trust_only or emit_swift:
+        _, segments = parse_macho_segments(data)
+        run_trust_cache_report(data, segments)
+        return
+
+    print("=== DSPloit kernelcache analysis ===")
     print(f"File: {path} ({len(data) / 1024 / 1024:.1f} MiB)\n")
 
     filetype, segments = parse_macho_segments(data)
@@ -175,17 +334,13 @@ def main() -> None:
         vas = f"0x{va:x}" if va is not None else "(not in segment)"
         print(f"  {h['string']!r:20} fileoff=0x{h['fileoff']:x}  unslid={vas}")
 
-    print("\n--- Heuristic: zone-range pointers in __DATA (first 15) ---")
-    ptrs = scan_kernel_pmap_ptr(data, segments, text_base or 0)
-    for p in ptrs[:15]:
-        print(f"  *0x{p['field_va']:x} -> 0x{p['ptr']:x}")
+    print("\n--- Trust cache globals (ADRP scan, pre-PPL) ---")
+    hits = scan_adrp_data_refs(data, segments, pre_ppl_only=True)
+    for rel, c in hits.most_common(12):
+        print(f"  __DATA+0x{rel:x}  ({c} refs)")
 
-    print("\n--- How this helps DSPloit ---")
-    print("1. App already uses XPF/ChOma at runtime (init_offsets) - same kernelcache in Documents.")
-    print("2. Use unslid VA + slide from panic to locate __DATA.__ppl_data on your boot.")
-    print("3. kernel_pmap / zone_map strings - cross-check with KRW pointer chains in AMFI Lab.")
-    print("4. Do NOT brute-force 385 gVirt values on device — zone_map band ~0xffffffdc..0xe2.")
-    print("\nRun on Mac/Linux/Windows with Python 3.9+.")
+    print("\nRun: python scripts/analyze_kernelcache.py --trust-cache")
+    print("     python scripts/analyze_kernelcache.py --emit-swift")
 
 
 if __name__ == "__main__":

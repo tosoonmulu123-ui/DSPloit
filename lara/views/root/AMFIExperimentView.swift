@@ -37,6 +37,27 @@ private enum PhysmapConstants {
     /// `kernel_pmap` global in __DATA (iphone11b kernelcache analyze — adjust per IPSW).
     static let kernelPmapOffsetInData: UInt64 = 0x3525e7
 
+    /// pmap_cs_allow_invalid — ADRP target in kernelcache (iphone11b iOS 18).
+    static let pmapCsAllowInvalidOffsetInData: UInt64 = 0x45b8
+
+    /// __DATA slots referenced from AMFI code (analyze_kernelcache.py --trust-cache).
+    static let trustCacheGlobalOffsetsInData: [UInt64] = [
+        0x45b8, 0x3980, 0x2d0, 0x1a4, 0x2770, 0x1f8, 0x48, 0xb4, 0x38e0, 0x68,
+        0x24c, 0x2a0, 0x2f8, 0xc8, 0x3920, 0x3930, 0x208, 0x2780, 0x27ad, 0x38,
+        0x2828, 0x280e, 0x28, 0x1c8, 0x2838, 0x38c0, 0x38a0, 0x8, 0x1dc, 0x1e8,
+        0x1d8, 0x1e4, 0x2860, 0x2788, 0x2798, 0x308, 0x18, 0x2f0, 0x1b8, 0x1e0,
+        0x3900, 0x2878, 0x38b0, 0x2898, 0xa0, 0x1310, 0x1320, 0x39b0,
+    ]
+
+  static let trustCacheXpfSymbols: [String] = [
+        "_query_trust_cache",
+        "_pmap_lookup_in_loaded_trust_caches",
+        "_check_trust_cache_runtime_for_uuid",
+        "_load_trust_cache",
+        "kernelSymbol.trust_cache",
+        "kernelSymbol.query_trust_cache",
+    ]
+
     static func kernelPmapFromGlobal(kernTextBase: UInt64) -> UInt64 {
         let ptr = ds_kreadptr(dataSegmentBase(kernTextBase: kernTextBase) &+ kernelPmapOffsetInData)
         guard ptr != 0, ptr > 0xffffffdc00000000 else { return 0 }
@@ -556,7 +577,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("② Probe hanya baca __DATA aman (bukan __ppl_data). ③ Inject setelah ② OK.")
+                Text("② Probe pakai offset kernelcache + XPF. Fetch kernelcache (Settings) dulu. ③ setelah ② hijau.")
                     .font(.system(size: 9))
             }
 
@@ -4167,50 +4188,63 @@ struct AMFIExperimentView: View {
             return true
         }
 
-        // Pre-PPL __DATA only (0 .. +0x8000). Full 512KB scan hit __ppl_data → static region panic.
-        detail += "=== Scan __DATA pre-PPL (0 .. +0x\(String(format: "%x", PhysmapConstants.pplDataOffsetFromData))) ===\n"
-        for off in stride(from: UInt64(0), to: PhysmapConstants.pplDataOffsetFromData, by: 8) {
-            let addr = dataSegBase + off
-            guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
+        func probeGlobalSlot(_ off: UInt64, label: String) {
+            let addr = dataSegBase &+ off
+            guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { return }
             let val = ds_kreadptr(addr)
-            if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
-                break
+            if tryTrustCachePointer(val, label: label) { return }
+            if val != 0, isSafeKernelHeapKreadAddress(val) {
+                let inner = ds_kreadptr(val)
+                _ = tryTrustCachePointer(inner, label: "\(label)→indir")
             }
         }
 
-        // pmap_cs / AMFI globals band (unslid __DATA+0x45b8) — known KRW-safe on A12
+        detail += "=== Kernelcache targets (\(PhysmapConstants.trustCacheGlobalOffsetsInData.count) __DATA slots) ===\n"
+        for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
+            probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
+            if tcStructAddr != 0 { break }
+        }
+
         if tcStructAddr == 0 {
-            detail += "\n=== Scan pmap_cs band (__DATA+0x4000..0x5000) ===\n"
-            for off in stride(from: UInt64(0x4000), to: UInt64(0x5000), by: 8) {
-                let addr = dataSegBase + off
-                guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
-                let val = ds_kreadptr(addr)
-                if tryTrustCachePointer(val, label: "pmap_cs band+0x\(String(format: "%x", off))") {
-                    break
+            detail += "\n=== XPF symbol resolve (needs fetched kernelcache) ===\n"
+            for sym in PhysmapConstants.trustCacheXpfSymbols {
+                let runtime = ds_xpf_resolve_runtime(sym)
+                if runtime == 0 {
+                    detail += "  \(sym): (not found)\n"
+                    continue
                 }
+                detail += "  \(sym): 0x\(String(format: "%llx", runtime))\n"
             }
         }
 
         if tcStructAddr == 0, let rc {
-            detail += "\n=== sysctl (AMFI trust cache count) ===\n"
+            detail += "\n=== sysctl (AMFI) ===\n"
             let mem = rc.trojanMem
-            let tcName = remote_alloc_str(rc, "security.mac.amfi.trust_cache_count")
-            let tcBuf = mem + 0x2800
-            let tcSize = mem + 0x2A00
-            rc[tcSize].setValue64(8)
-            let tcRet = RootExecutor.rcall(rc, "sysctlbyname", tcName, tcBuf, tcSize, 0, 0)
-            if tcRet == 0 {
-                let n = rc[tcBuf].value64()
-                detail += "trust_cache_count: \(n) (kernel punya TC, pointer belum di __DATA scan)\n"
-            } else {
-                detail += "sysctl ret=\(tcRet)\n"
+            for mib in ["security.mac.amfi.trust_cache_count", "security.mac.amfi.trustcache.count"] {
+                let tcName = remote_alloc_str(rc, mib)
+                let tcBuf = mem + 0x2800
+                let tcSize = mem + 0x2A00
+                rc[tcBuf].setValue64(0)
+                rc[tcSize].setValue64(8)
+                let tcRet = RootExecutor.rcall(rc, "sysctlbyname", tcName, tcBuf, tcSize, 0, 0)
+                if tcRet == 0 {
+                    let n = rc[tcBuf].value64()
+                    if n != 0xffff_ffff_ffff_ffff && n < 100_000 {
+                        detail += "\(mib): \(n)\n"
+                    } else {
+                        detail += "\(mib): invalid read 0x\(String(format: "%llx", n))\n"
+                    }
+                } else {
+                    detail += "\(mib): ret=\(tcRet)\n"
+                }
+                RootExecutor.rcall(rc, "free", tcName)
             }
-            RootExecutor.rcall(rc, "free", tcName)
         }
 
         guard tcStructAddr != 0 else {
             detail += "\n❌ Pointer trust cache (heap) tidak ditemukan di __DATA aman.\n"
-            detail += "Heap band 0xdd–0xe7 + PAC strip sudah dipakai; __ppl_data tetap dilewati.\n"
+            detail += "Jalankan: python scripts/analyze_kernelcache.py --trust-cache\n"
+            detail += "Pastikan kernelcache di Settings = IPSW device ini.\n"
             detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
