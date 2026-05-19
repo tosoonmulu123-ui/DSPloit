@@ -4185,17 +4185,41 @@ struct AMFIExperimentView: View {
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
 
-        func tryTrustCachePointer(_ val: UInt64, label: String) -> Bool {
-            guard isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else { return false }
-            let tcVer = safeKread32Heap(val)
-            let tcCnt = safeKread32Heap(val + 4)
-            guard tcVer >= 1 && tcVer <= 4 && tcCnt > 0 && tcCnt < 100_000 else { return false }
-            detail += "🎯 Trust cache \(label)!\n"
-            detail += "  ptr: 0x\(String(format: "%llx", val))\n"
-            detail += "  version: \(tcVer), count: \(tcCnt)\n"
-            tcStructAddr = val
-            tcEntryCount = UInt64(tcCnt)
-            return true
+        func trustCacheHeaderAt(_ va: UInt64) -> (UInt32, UInt32)? {
+            guard va >= 0xfffffff007000000, !isInPPLDataRegion(va, kernTextBase: kernBase) else { return nil }
+            let ver: UInt32
+            let cnt: UInt32
+            if isSafeKernelHeapKreadAddress(va) {
+                ver = safeKread32Heap(va)
+                cnt = safeKread32Heap(va + 4)
+            } else if isSafeKernelKreadAddress(va) {
+                ver = safeKread32Kernel(va)
+                cnt = safeKread32Kernel(va + 4)
+            } else {
+                return nil
+            }
+            guard ver >= 1 && ver <= 4 && cnt > 0 && cnt < 100_000 else { return nil }
+            return (ver, cnt)
+        }
+
+        func tryTrustCacheAt(_ val: UInt64, label: String) -> Bool {
+            guard val >= 0xfffffff007000000 else { return false }
+            if let (tcVer, tcCnt) = trustCacheHeaderAt(val) {
+                let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "kernel static"
+                detail += "🎯 Trust cache \(label) (\(kind))!\n"
+                detail += "  addr: 0x\(String(format: "%llx", val))\n"
+                detail += "  version: \(tcVer), count: \(tcCnt)\n"
+                tcStructAddr = val
+                tcEntryCount = UInt64(tcCnt)
+                return true
+            }
+            guard isSafeKernelKreadAddress(val) || isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else {
+                return false
+            }
+            for inner in [ds_kreadptr(val), ds_kreadsmrptr(val)] where inner != 0 && inner != val {
+                if tryTrustCacheAt(inner, label: "\(label)→deref") { return true }
+            }
+            return false
         }
 
         var probeDiag: [(String, UInt64, UInt32, UInt32)] = []
@@ -4205,20 +4229,17 @@ struct AMFIExperimentView: View {
             guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { return }
             let candidates: [UInt64] = [ds_kreadptr(addr), ds_kreadsmrptr(addr)]
             for val in candidates where val != 0 {
-                if tryTrustCachePointer(val, label: label) { return }
-                if isSafeKernelHeapKreadAddress(val) {
+                if tryTrustCacheAt(val, label: label) { return }
+                if let (ver, cnt) = trustCacheHeaderAt(val) {
+                    if probeDiag.count < 10 { probeDiag.append((label, val, ver, cnt)) }
+                } else if isSafeKernelHeapKreadAddress(val) {
                     let ver = safeKread32Heap(val)
                     let cnt = safeKread32Heap(val + 4)
-                    if probeDiag.count < 10 {
-                        probeDiag.append((label, val, ver, cnt))
-                    }
-                }
-                if val != 0, isSafeKernelHeapKreadAddress(val) {
-                    let inner = ds_kreadptr(val)
-                    _ = tryTrustCachePointer(inner, label: "\(label)→indir")
-                    if tcStructAddr != 0 { return }
-                    let innerSmr = ds_kreadsmrptr(val)
-                    _ = tryTrustCachePointer(innerSmr, label: "\(label)→smr")
+                    if probeDiag.count < 10 { probeDiag.append((label, val, ver, cnt)) }
+                } else if isSafeKernelKreadAddress(val) {
+                    let ver = safeKread32Kernel(val)
+                    let cnt = safeKread32Kernel(val + 4)
+                    if probeDiag.count < 10 { probeDiag.append((label + " (k)", val, ver, cnt)) }
                 }
             }
         }
@@ -4289,21 +4310,29 @@ struct AMFIExperimentView: View {
         }
 
         guard tcStructAddr != 0 else {
-            detail += "\n❌ Pointer trust cache (heap) tidak ditemukan di __DATA aman.\n"
+            detail += "\n❌ Struct trust cache tidak ditemukan (heap atau kernel static dari __DATA).\n"
             detail += "Jalankan: python scripts/analyze_kernelcache.py --trust-cache\n"
             detail += "Pastikan kernelcache di Settings = IPSW device ini.\n"
             detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        detail += "\n=== Sample entries (heap KRW) ===\n"
+        func tcRead64(_ va: UInt64) -> UInt64 {
+            isSafeKernelHeapKreadAddress(tcStructAddr) ? safeKread64Heap(va) : safeKread64Kernel(va)
+        }
+        func tcRead32(_ va: UInt64) -> UInt32 {
+            isSafeKernelHeapKreadAddress(tcStructAddr) ? safeKread32Heap(va) : safeKread32Kernel(va)
+        }
+
+        detail += "\n=== Sample entries (KRW) ===\n"
         let entriesStart = tcStructAddr + 8
         for i in 0..<min(3, Int(tcEntryCount)) {
             let entryAddr = entriesStart + UInt64(i * 22)
-            guard isSafeKernelHeapKreadAddress(entryAddr + 20) else { break }
-            let h0 = safeKread64Heap(entryAddr)
-            let h1 = safeKread64Heap(entryAddr + 8)
-            let h2 = safeKread32Heap(entryAddr + 16)
+            let tail = entryAddr + 20
+            guard isSafeKernelHeapKreadAddress(tail) || isSafeKernelKreadAddress(tail) else { break }
+            let h0 = tcRead64(entryAddr)
+            let h1 = tcRead64(entryAddr + 8)
+            let h2 = tcRead32(entryAddr + 16)
             detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
         }
 
