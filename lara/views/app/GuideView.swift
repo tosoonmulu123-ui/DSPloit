@@ -80,7 +80,7 @@ struct GuideView: View {
                     Label("Tap ikon terminal di Main → filter chip: Exploit, Offsets, Kcache", systemImage: "terminal")
                     Label("Hijau = sukses · Merah = gagal · Oranye = peringatan", systemImage: "paintpalette")
                     Label("Tap satu baris = salin ke clipboard", systemImage: "doc.on.doc")
-                    Label("Settings → Logs Display: **Styled** (disarankan) atau Plain", systemImage: "text.alignleft")
+                    Label("Settings → matikan **Log polos** untuk warna + filter chip", systemImage: "text.alignleft")
                 }
 
                 Section("Peringatan") {

@@ -38,7 +38,7 @@ struct SettingsView: View {
     @State private var showkcachetips: Bool = false
     
     @AppStorage("logsdisplaymode") private var selectedlogdisplaymode: logsdisplaymode = .toolbar
-  @AppStorage("loggernobullshit") private var plainLogsMode: Bool = false
+    @AppStorage("loggernobullshit") private var plainLogsMode: Bool = false
     
     @AppStorage("rcDockUnlimited") private var rcDockUnlimited: Bool = false
     
