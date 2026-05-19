@@ -5059,8 +5059,7 @@ struct AMFIExperimentView: View {
         detail += "\n=== Step 6: Analysis ===\n"
         
         if confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty {
-            let l1Addr = confirmedDARTL1 != 0 ? confirmedDARTL1 : dartL1VA
-            detail += "✅ DART L1 page table at: 0x\(String(format: "%llx", l1Addr))\n"
+            detail += "✅ DART L1 page table at: 0x\(String(format: "%llx", confirmedDARTL1))\n"
             detail += "Total IOVA→PA mappings found: \(confirmedL2Entries.count)\n\n"
             
             // Analyze PA range to determine DAPF constraints
