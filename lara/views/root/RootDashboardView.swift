@@ -37,6 +37,9 @@ struct RootDashboardView: View {
                             NavigationLink(destination: RootPersistenceView()) {
                                 ToolCard(icon: "arrow.clockwise", title: "Persist", color: .purple)
                             }
+                            NavigationLink(destination: NetworkToolsView()) {
+                                ToolCard(icon: "network", title: "Network", color: .indigo)
+                            }
                             NavigationLink(destination: AMFIExperimentView()) {
                                 ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
                             }
