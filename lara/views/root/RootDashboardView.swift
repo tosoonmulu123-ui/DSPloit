@@ -43,6 +43,9 @@ struct RootDashboardView: View {
                             NavigationLink(destination: NetworkToolsView()) {
                                 ToolCard(icon: "network", title: "Network", color: .indigo)
                             }
+                            NavigationLink(destination: DaemonManagerView()) {
+                                ToolCard(icon: "gear.badge", title: "Daemons", color: .brown)
+                            }
                             NavigationLink(destination: AMFIExperimentView()) {
                                 ToolCard(icon: "flask.fill", title: "AMFI Lab", color: .yellow)
                             }

