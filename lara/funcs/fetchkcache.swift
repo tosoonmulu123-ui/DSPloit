@@ -45,6 +45,7 @@ func fetchkcache() -> Bool {
 
     let src = open(fakeread, O_RDONLY)
     if src < 0 {
+        globallogger.log("(fetchkcache) open failed errno=\(errno)")
         vn_fileunredirect(ogvn, ogvd)
         return false
     }
@@ -77,9 +78,31 @@ func fetchkcache() -> Bool {
     if !FileManager.default.fileExists(atPath: outpath) {
         globallogger.log("(fetchkcache) kernelcache output missing")
         return false
+    } else if let attrs = try? FileManager.default.attributesOfItem(atPath: outpath),
+              let size = attrs[.size] as? NSNumber {
+        globallogger.log("(fetchkcache) kernelcache fetch success! size=\(size.intValue) bytes")
     } else {
         globallogger.log("(fetchkcache) kernelcache fetch success!")
     }
 
     return true
+}
+
+/// Copy from preboot (if possible) then run XPF/ChOma resolve. Only true when symbols resolve.
+func ensureKernelcacheResolved() -> Bool {
+    if !FileManager.default.fileExists(atPath: dspkcpath() ?? "") {
+        if fetchkcache() {
+            globallogger.log("(kcache) copied kernelcache from device preboot")
+        } else {
+            globallogger.log("(kcache) device copy failed — will try download")
+        }
+    }
+
+    if emergencyfixfunctiontobereplacedlateronquestionmark() {
+        globallogger.log("(kcache) XPF resolve OK")
+        return true
+    }
+
+    globallogger.log("(kcache) XPF resolve failed — trying grab_kernelcache download")
+    return dlkcache()
 }

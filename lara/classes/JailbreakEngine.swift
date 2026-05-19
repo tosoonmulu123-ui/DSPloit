@@ -211,6 +211,20 @@ final class JailbreakEngine: ObservableObject {
             self.isRunning = false
             self.appendLog("🎉 Jailbreak complete!")
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+
+            // Kernelcache + XPF (Settings "Fetch" needs jailbreak; do it here automatically)
+            DispatchQueue.global(qos: .utility).async {
+                self.appendLog("Fetching kernelcache for XPF offsets...")
+                let ok = ensureKernelcacheResolved()
+                DispatchQueue.main.async {
+                    dspmgr.shared.hasOffsets = ok
+                    if ok {
+                        self.appendLog("✅ Kernelcache + XPF ready")
+                    } else {
+                        self.appendLog("⚠️ Kernelcache failed — Settings → Fetch or Import")
+                    }
+                }
+            }
         }
     }
     

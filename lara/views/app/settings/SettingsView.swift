@@ -75,20 +75,9 @@ struct SettingsView: View {
                             dlingkcache = true
 
                             DispatchQueue.global(qos: .userInitiated).async {
-                                let fetched = fetchkcache()
-
-                                if fetched {
-                                    DispatchQueue.main.async {
-                                        mgr.hasOffsets = true
-                                        dlingkcache = false
-                                    }
-                                    return
-                                }
-
-                                let dlkc = dlkcache()
-
+                                let ok = ensureKernelcacheResolved()
                                 DispatchQueue.main.async {
-                                    mgr.hasOffsets = dlkc
+                                    mgr.hasOffsets = ok
                                     dlingkcache = false
                                 }
                             }
