@@ -4207,7 +4207,7 @@ struct AMFIExperimentView: View {
         let expName = "Trust Cache Probe (Exp 77)"
         var detail = "Experiment 77: Trust Cache Probe (read-only, KRW-safe)\n"
         detail += "====================================================\n\n"
-        detail += "Mode: kernelcache + __DATA pre-PPL only (no __TEXT / foreign kext reads)\n\n"
+        detail += "Mode: offline kernelcache ADRP + KRW aman (analyze_kernelcache.py di device)\n\n"
 
         guard PhysmapConstants.isVerified else {
             detail += "❌ Jalankan Physmap Access (Exp 74) dulu.\n"
@@ -4225,7 +4225,34 @@ struct AMFIExperimentView: View {
         let dataSegBase = PhysmapConstants.dataSegmentBase(kernTextBase: kernBase)
         let pplDataBase = PhysmapConstants.pplDataSegmentBase(kernTextBase: kernBase)
         detail += "__DATA: 0x\(String(format: "%llx", dataSegBase))\n"
-        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase)) (TIDAK dibaca — PPL panic)\n\n"
+        detail += "__DATA.__ppl_data: 0x\(String(format: "%llx", pplDataBase)) (TIDAK dibaca — PPL panic)\n"
+
+        let offlineSlotCount = ds_kcache_trust_slot_count()
+        let fileDataOff = ds_kcache_analyze_data_offset()
+        detail += "\n=== Offline kernelcache scan ===\n"
+        detail += "  ADRP slots: \(offlineSlotCount) (dari file Documents/kernelcache)\n"
+        if fileDataOff != 0 {
+            detail += "  dataOffsetFromText: 0x\(String(format: "%llx", fileDataOff))"
+            if fileDataOff != PhysmapConstants.dataOffsetFromText {
+                detail += " (builtin 0x\(String(format: "%llx", PhysmapConstants.dataOffsetFromText)))"
+            }
+            detail += "\n"
+        }
+        if offlineSlotCount == 0 {
+            detail += "  ⚠️ Jalankan Import/Verifikasi kernelcache dulu (Settings).\n"
+        }
+        detail += "\n"
+
+        var probeOffsets: [UInt64] = []
+        if offlineSlotCount > 0 {
+            for i in 0..<offlineSlotCount {
+                let off = ds_kcache_trust_slot_at(i)
+                if off != 0 { probeOffsets.append(off) }
+            }
+        }
+        if probeOffsets.isEmpty {
+            probeOffsets = PhysmapConstants.trustCacheFastOffsetsInData
+        }
 
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
@@ -4292,43 +4319,10 @@ struct AMFIExperimentView: View {
             }
         }
 
-        detail += "=== Kernelcache symtab (log only + safe KRW) ===\n"
-        for sym in PhysmapConstants.trustCacheXpfSymbols.prefix(6) {
-            let unslid = ds_kcache_symbol_unslid(sym)
-            if unslid == 0 {
-                detail += "  \(sym): (not in symtab)\n"
-            } else {
-                let runtime = ds_kcache_symbol_runtime(sym)
-                detail += "  \(sym): unslid=0x\(String(format: "%llx", unslid)) runtime=0x\(String(format: "%llx", runtime))\n"
-            }
-        }
-        for sym in PhysmapConstants.trustCacheKcacheDataSymbols where tcStructAddr == 0 {
-            let runtime = ds_kcache_symbol_runtime(sym)
-            guard runtime != 0 else { continue }
-            if runtime >= dataSegBase && runtime < pplDataBase {
-                if tryTrustCacheAt(runtime, label: sym) { break }
-            } else if runtime >= kernBase && runtime < dataSegBase {
-                detail += "  \(sym): skip KRW (simbol di __TEXT)\n"
-            }
-        }
-
-        if tcStructAddr == 0 {
-            detail += "\n=== Fast __DATA slots (\(PhysmapConstants.trustCacheFastOffsetsInData.count)) ===\n"
-            for off in PhysmapConstants.trustCacheFastOffsetsInData {
-                probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
-                if tcStructAddr != 0 || krwBudget <= 0 { break }
-            }
-        }
-
-        if tcStructAddr == 0, krwBudget > 8 {
-            detail += "\n=== Fallback __DATA (max 4) ===\n"
-            var extra = 0
-            for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
-                if PhysmapConstants.trustCacheFastOffsetsInData.contains(off) { continue }
-                probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
-                extra += 1
-                if tcStructAddr != 0 || extra >= 4 || krwBudget <= 0 { break }
-            }
+        detail += "=== Probe __DATA (\(probeOffsets.count) slot, pre-PPL) ===\n"
+        for off in probeOffsets {
+            probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
+            if tcStructAddr != 0 || krwBudget <= 0 { break }
         }
 
         guard tcStructAddr != 0 else {

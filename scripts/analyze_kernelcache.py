@@ -7,6 +7,7 @@ Usage:
   python scripts/analyze_kernelcache.py path/to/kernelcache.decompressed
   python scripts/analyze_kernelcache.py --trust-cache
   python scripts/analyze_kernelcache.py --emit-swift
+  python scripts/analyze_kernelcache.py --emit-json
 
 Expects Mach-O arm64 kernel (magic 0xFEEDFACF). IM4P must be decompressed first
 (DSPloit Settings → Fetch kernelcache, or img4tool).
@@ -286,18 +287,40 @@ def run_trust_cache_report(data: bytes, segments: list[dict]) -> None:
     print("3. Do NOT KRW-read __DATA.__ppl_data (+0x8000) — PPL panic.")
 
 
+def emit_json(path: Path, segments: list[dict], tc_offs: list[int]) -> None:
+    import json
+
+    text_base = next((s["vmaddr"] for s in segments if s["name"] == "__TEXT"), 0)
+    data_base = next((s["vmaddr"] for s in segments if s["name"] == "__DATA"), 0)
+    out = {
+        "source": str(path.name),
+        "dataOffsetFromText": data_base - text_base if text_base and data_base else 0,
+        "trustCacheGlobalOffsetsInData": [f"0x{o:x}" for o in tc_offs],
+    }
+    out_path = path.parent / "trust_cache_slots.json"
+    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(f"\nWrote {out_path}")
+    print("Copy to iPhone with kernelcache or rely on on-device ADRP scan after Import.")
+
+
 def main() -> None:
     argv = sys.argv[1:]
     emit_swift = "--emit-swift" in argv
+    emit_json_flag = "--emit-json" in argv
     trust_only = "--trust-cache" in argv
     path_arg = next((a for a in argv if not a.startswith("-")), None)
 
     path = find_kernelcache(path_arg)
     data = path.read_bytes()
 
-    if trust_only or emit_swift:
+    if trust_only or emit_swift or emit_json_flag:
         _, segments = parse_macho_segments(data)
-        run_trust_cache_report(data, segments)
+        if emit_json_flag:
+            hits = scan_adrp_data_refs(data, segments, pre_ppl_only=True)
+            tc_offs = pick_trust_cache_global_offsets(hits)
+            emit_json(path, segments, tc_offs)
+        if trust_only or emit_swift:
+            run_trust_cache_report(data, segments)
         return
 
     print("=== DSPloit kernelcache analysis ===")
