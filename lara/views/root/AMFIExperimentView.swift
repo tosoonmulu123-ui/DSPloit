@@ -4807,38 +4807,80 @@ struct AMFIExperimentView: View {
                 // Get count of properties
                 let countSel = remote_sel(sb, "count")
                 let count = remote_msg(sb, propsDict, countSel, 0, 0, 0, 0)
-                detail += "Properties count: \(count)\n"
+                detail += "Properties count: \(count)\n\n"
                 
-                // Try to get specific keys that might contain DART info
-                let keysToTry = ["IODeviceMemory", "dart-page-table", "IODARTMapperPageSize",
-                                 "compatible", "AAPL,phandle", "reg"]
+                // Enumerate ALL keys using allKeys
+                let allKeysSel = remote_sel(sb, "allKeys")
+                let keysArray = remote_msg(sb, propsDict, allKeysSel, 0, 0, 0, 0)
                 
                 let objectForKey = remote_sel(sb, "objectForKey:")
+                let objectAtIndex = remote_sel(sb, "objectAtIndex:")
+                let descSel = remote_sel(sb, "description")
+                let cstrSel = remote_sel(sb, "UTF8String")
+                let classSel = remote_sel(sb, "className")
                 
-                for key in keysToTry {
-                    let keyStr = remote_NSString(sb, key)
-                    let val = remote_msg(sb, propsDict, objectForKey, keyStr, 0, 0, 0)
-                    if val != 0 {
-                        // Try to get description
-                        let descSel = remote_sel(sb, "description")
-                        let descObj = remote_msg(sb, val, descSel, 0, 0, 0, 0)
-                        if descObj != 0 {
-                            let cstrSel = remote_sel(sb, "UTF8String")
-                            let cstr = remote_msg(sb, descObj, cstrSel, 0, 0, 0, 0)
-                            if cstr != 0 {
-                                // Read first 64 chars
-                                var buf = [UInt8](repeating: 0, count: 64)
-                                for i in 0..<64 {
-                                    let b = ds_kread8(cstr + UInt64(i))
-                                    buf[i] = b
-                                    if b == 0 { break }
-                                }
-                                let str = String(bytes: buf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
-                                detail += "  \(key) = \(str)\n"
+                let keyCount = min(count, 16)  // cap at 16
+                
+                for i in 0..<keyCount {
+                    let keyObj = remote_msg(sb, keysArray, objectAtIndex, UInt64(i), 0, 0, 0)
+                    guard keyObj != 0 else { continue }
+                    
+                    // Get key name
+                    let keyCStr = remote_msg(sb, keyObj, cstrSel, 0, 0, 0, 0)
+                    var keyName = "?"
+                    if keyCStr != 0 {
+                        var buf = [UInt8](repeating: 0, count: 48)
+                        for b in 0..<48 {
+                            let ch = ds_kread8(keyCStr + UInt64(b))
+                            buf[b] = ch
+                            if ch == 0 { break }
+                        }
+                        keyName = String(bytes: buf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
+                    }
+                    
+                    // Get value
+                    let valObj = remote_msg(sb, propsDict, objectForKey, keyObj, 0, 0, 0)
+                    guard valObj != 0 else {
+                        detail += "  [\(i)] \(keyName) = (null)\n"
+                        continue
+                    }
+                    
+                    // Get value class name
+                    let classObj = remote_msg(sb, valObj, classSel, 0, 0, 0, 0)
+                    var className = ""
+                    if classObj != 0 {
+                        let classCStr = remote_msg(sb, classObj, cstrSel, 0, 0, 0, 0)
+                        if classCStr != 0 {
+                            var cbuf = [UInt8](repeating: 0, count: 32)
+                            for b in 0..<32 {
+                                let ch = ds_kread8(classCStr + UInt64(b))
+                                cbuf[b] = ch
+                                if ch == 0 { break }
                             }
+                            className = String(bytes: cbuf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
                         }
                     }
+                    
+                    // Get value description (truncated)
+                    let descObj = remote_msg(sb, valObj, descSel, 0, 0, 0, 0)
+                    var valStr = ""
+                    if descObj != 0 {
+                        let descCStr = remote_msg(sb, descObj, cstrSel, 0, 0, 0, 0)
+                        if descCStr != 0 {
+                            var vbuf = [UInt8](repeating: 0, count: 80)
+                            for b in 0..<80 {
+                                let ch = ds_kread8(descCStr + UInt64(b))
+                                vbuf[b] = ch
+                                if ch == 0 { break }
+                            }
+                            valStr = String(bytes: vbuf.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+                        }
+                    }
+                    
+                    detail += "  [\(i)] \(keyName) (\(className)) = \(valStr.prefix(60))\n"
                 }
+                
+                detail += "\n"
             }
             
             // ============================================================
