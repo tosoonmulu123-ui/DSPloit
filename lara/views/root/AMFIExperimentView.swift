@@ -1412,38 +1412,13 @@ struct AMFIExperimentView: View {
         }
         
         // ═══════════════════════════════════════════════
-        // PATH 3: Trust Cache scan via pmap_cs_allow_invalid neighbors
-        // We know pmap_cs_allow_invalid_internal is at 0xfffffff00a0e45b8 (unslid)
-        // Trust cache pointers might be nearby in __DATA segment
+        // PATH 3: Trust Cache — DISABLED (neighbor scan causes panic)
+        // Reading arbitrary addresses near pmap_cs hits inaccessible zones
         // ═══════════════════════════════════════════════
-        detail += "\n═══ PATH 3: Trust Cache neighbor scan ═══\n"
-        
-        let slide = mgr.kernslide
-        let pmapCSAddr = UInt64(0xfffffff00a0e45b8) + slide
-        
-        // Scan ±256 bytes around pmap_cs_allow_invalid for pointer-like values
-        // Trust cache head is a pointer to a linked list
-        detail += "Scanning near pmap_cs_allow_invalid (±256B)...\n"
-        var pointerCandidates: [(Int, UInt64)] = []
-        
-        for offset in stride(from: -256, through: 256, by: 8) {
-            let addr = pmapCSAddr + UInt64(bitPattern: Int64(offset))
-            let val = ds_kread64(addr)
-            
-            // Look for kernel pointers (0xfffffff0xxxxxxxx pattern)
-            if val > 0xfffffff000000000 && val < 0xffffffffffff0000 {
-                pointerCandidates.append((offset, val))
-                if pointerCandidates.count <= 8 {
-                    detail += "  +\(offset): 0x\(String(format: "%llx", val)) ← kernel ptr!\n"
-                }
-            }
-        }
-        detail += "Found \(pointerCandidates.count) kernel pointers nearby\n"
-        
-        if !pointerCandidates.isEmpty {
-            detail += "These might be trust cache list head or other CS globals\n"
-            detail += "Next: dereference each to check if it's a TC struct\n"
-        }
+        detail += "\n═══ PATH 3: Trust Cache scan ═══\n"
+        detail += "⚠️ DISABLED — scanning kernel memory near pmap_cs causes panic\n"
+        detail += "Socket KRW cannot safely read arbitrary __DATA addresses\n"
+        let pointerCandidates: [(Int, UInt64)] = []
         
         // ═══════════════════════════════════════════════
         // PATH 4: IOSurface external method 9 (getValue)
