@@ -13,6 +13,7 @@ struct TweaksManagerView: View {
     
     @State private var statusBarFormat = "HH:mm"
     @State private var dockIconCount = "5"
+    @State private var carrierText = ""
     @State private var tweakResults: [String] = []
     
     var body: some View {
@@ -66,8 +67,38 @@ struct TweaksManagerView: View {
                 Button("Apply Status Bar Format") {
                     applyTweak("status_bar_\(statusBarFormat)")
                 }
+                
+                HStack {
+                    Text("Carrier Text")
+                    Spacer()
+                    TextField("DSPloit", text: $carrierText)
+                        .font(.system(.body, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 120)
+                }
+                
+                Button("Set Carrier Text") {
+                    applyTweak("carrier_\(carrierText)")
+                }
             } header: {
                 Label("Status Bar", systemImage: "clock")
+            }
+            
+            // Display
+            Section {
+                TweakButton(title: "Force All Apps Landscape", subtitle: "Allow rotation everywhere", icon: "rotate.right") {
+                    applyTweak("force_rotation")
+                }
+                
+                TweakButton(title: "Reduce Motion OFF", subtitle: "Re-enable all animations", icon: "sparkles") {
+                    applyTweak("animations_on")
+                }
+                
+                TweakButton(title: "Bold Text System-wide", subtitle: "Force bold in all apps", icon: "bold") {
+                    applyTweak("bold_text")
+                }
+            } header: {
+                Label("Display", systemImage: "display")
             }
             
             // Dock
@@ -159,6 +190,46 @@ struct TweaksManagerView: View {
             if let count = Int(String(s.dropFirst(11))) {
                 result = Int(set_dock_icon_count(proc, Int32(count)))
             }
+        case let s where s.hasPrefix("carrier_"):
+            let text = String(s.dropFirst(8))
+            // Set carrier text via SpringBoard's status bar
+            let sel = remote_sel(proc, "setOperatorName:forSIM:")
+            let sbApp = remote_msg(proc, remote_getClass(proc, "SpringBoard"), remote_sel(proc, "sharedApplication"), 0, 0, 0, 0)
+            let statusBar = remote_msg(proc, sbApp, remote_sel(proc, "statusBar"), 0, 0, 0, 0)
+            if statusBar != 0 {
+                let nsText = remote_NSString(proc, text)
+                let simStr = remote_NSString(proc, "")
+                remote_msg(proc, statusBar, sel, nsText, simStr, 0, 0)
+                result = 0
+            } else {
+                result = -1
+            }
+        case "force_rotation":
+            // Set orientation mask to allow all orientations
+            let sel = remote_sel(proc, "setForcedInterfaceOrientationMask:")
+            let sbApp = remote_msg(proc, remote_getClass(proc, "SpringBoard"), remote_sel(proc, "sharedApplication"), 0, 0, 0, 0)
+            if sbApp != 0 {
+                // UIInterfaceOrientationMaskAll = 0x1E
+                remote_msg(proc, sbApp, sel, 0x1E, 0, 0, 0)
+                result = 0
+            } else { result = -1 }
+        case "animations_on":
+            // Write to com.apple.Accessibility plist
+            let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+            if defaults != 0 {
+                let key = remote_NSString(proc, "ReduceMotionEnabled")
+                let no = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithBool:"), 0, 0, 0, 0)
+                remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), no, key, 0, 0)
+                result = 0
+            } else { result = -1 }
+        case "bold_text":
+            let defaults = remote_msg(proc, remote_getClass(proc, "NSUserDefaults"), remote_sel(proc, "standardUserDefaults"), 0, 0, 0, 0)
+            if defaults != 0 {
+                let key = remote_NSString(proc, "BoldTextEnabled")
+                let yes = remote_msg(proc, remote_getClass(proc, "NSNumber"), remote_sel(proc, "numberWithBool:"), 1, 0, 0, 0)
+                remote_msg(proc, defaults, remote_sel(proc, "setObject:forKey:"), yes, key, 0, 0)
+                result = 0
+            } else { result = -1 }
         default:
             tweakResults.append("❌ Unknown tweak: \(tweak)")
             return

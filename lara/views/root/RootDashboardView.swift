@@ -34,6 +34,9 @@ struct RootDashboardView: View {
                             NavigationLink(destination: BootstrapView()) {
                                 ToolCard(icon: "shippingbox.fill", title: "Bootstrap", color: .cyan)
                             }
+                            NavigationLink(destination: PrefsEditorView()) {
+                                ToolCard(icon: "slider.horizontal.3", title: "Prefs", color: .mint)
+                            }
                             NavigationLink(destination: RootPersistenceView()) {
                                 ToolCard(icon: "arrow.clockwise", title: "Persist", color: .purple)
                             }
