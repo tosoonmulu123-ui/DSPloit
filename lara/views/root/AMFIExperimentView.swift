@@ -46,12 +46,9 @@ private enum PhysmapConstants {
         0x3980, 0x3920, 0x3930, 0x2d0, 0x1a4, 0x2770, 0x38e0, 0x45b8,
     ]
 
-    /// Mach-O symtab names (Documents/kernelcache) — primary path for Exp 77.
-    static let trustCacheKcacheSymbols: [String] = [
+    /// DATA globals only — jangan KRW-read simbol fungsi di __TEXT (respring A12).
+    static let trustCacheKcacheDataSymbols: [String] = [
         "_trustcache",
-        "_query_trust_cache",
-        "_load_trust_cache",
-        "_pmap_lookup_in_loaded_trust_caches",
     ]
 
     /// Full list (fallback only, capped at runtime).
@@ -245,6 +242,29 @@ private func isInPPLDataRegion(_ va: UInt64, kernTextBase: UInt64) -> Bool {
 private func isLikelyTrustCacheHeapPointer(_ v: UInt64, kernTextBase: UInt64) -> Bool {
     guard isSafeKernelHeapKreadAddress(v) else { return false }
     return !isInPPLDataRegion(v, kernTextBase: kernTextBase)
+}
+
+/// Exp 77: hanya heap 0xdd–0xe7 atau __DATA utama sebelum __ppl_data — bukan __TEXT / kext lain.
+private func isSafeTrustCacheStructVA(
+    _ va: UInt64,
+    dataSegBase: UInt64,
+    pplDataBase: UInt64,
+    kernTextBase: UInt64
+) -> Bool {
+    if isInPPLDataRegion(va, kernTextBase: kernTextBase) { return false }
+    if isSafeKernelHeapKreadAddress(va) { return true }
+    return va >= dataSegBase && va < pplDataBase
+}
+
+/// Pointer dari slot __DATA: boleh ke heap atau struct in-band; tolak __TEXT / 0xfffffff0… kext.
+private func isSafeTrustCacheFollowPointer(
+    _ ptr: UInt64,
+    dataSegBase: UInt64,
+    pplDataBase: UInt64,
+    kernTextBase: UInt64
+) -> Bool {
+    guard ptr >= 0xfffffff007000000 else { return false }
+    return isSafeTrustCacheStructVA(ptr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernTextBase)
 }
 
 private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
@@ -4187,7 +4207,7 @@ struct AMFIExperimentView: View {
         let expName = "Trust Cache Probe (Exp 77)"
         var detail = "Experiment 77: Trust Cache Probe (read-only, KRW-safe)\n"
         detail += "====================================================\n\n"
-        detail += "Mode: kernelcache symtab + fast __DATA (KRW-only, ~1–5s)\n\n"
+        detail += "Mode: kernelcache + __DATA pre-PPL only (no __TEXT / foreign kext reads)\n\n"
 
         guard PhysmapConstants.isVerified else {
             detail += "❌ Jalankan Physmap Access (Exp 74) dulu.\n"
@@ -4209,28 +4229,34 @@ struct AMFIExperimentView: View {
 
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
+        var krwBudget = 48
+
+        func spendKRW() -> Bool {
+            if krwBudget <= 0 { return false }
+            krwBudget -= 1
+            return true
+        }
 
         func trustCacheHeaderAt(_ va: UInt64) -> (UInt32, UInt32)? {
-            guard va >= 0xfffffff007000000, !isInPPLDataRegion(va, kernTextBase: kernBase) else { return nil }
+            guard spendKRW(),
+                  isSafeTrustCacheStructVA(va, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
+            else { return nil }
             let ver: UInt32
             let cnt: UInt32
             if isSafeKernelHeapKreadAddress(va) {
                 ver = safeKread32Heap(va)
                 cnt = safeKread32Heap(va + 4)
-            } else if isSafeKernelKreadAddress(va) {
+            } else {
                 ver = safeKread32Kernel(va)
                 cnt = safeKread32Kernel(va + 4)
-            } else {
-                return nil
             }
             guard ver >= 1 && ver <= 4 && cnt > 0 && cnt < 100_000 else { return nil }
             return (ver, cnt)
         }
 
         func tryTrustCacheAt(_ val: UInt64, label: String) -> Bool {
-            guard val >= 0xfffffff007000000 else { return false }
             if let (tcVer, tcCnt) = trustCacheHeaderAt(val) {
-                let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "kernel static"
+                let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "__DATA"
                 detail += "🎯 Trust cache \(label) (\(kind))!\n"
                 detail += "  addr: 0x\(String(format: "%llx", val))\n"
                 detail += "  version: \(tcVer), count: \(tcCnt)\n"
@@ -4238,75 +4264,70 @@ struct AMFIExperimentView: View {
                 tcEntryCount = UInt64(tcCnt)
                 return true
             }
-            guard isSafeKernelKreadAddress(val) || isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else {
-                return false
-            }
-            for inner in [ds_kreadptr(val), ds_kreadsmrptr(val)] where inner != 0 && inner != val {
-                if tryTrustCacheAt(inner, label: "\(label)→deref") { return true }
-            }
-            return false
+            guard isSafeTrustCacheFollowPointer(val, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
+                || isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase)
+            else { return false }
+            guard spendKRW() else { return false }
+            let inner = ds_kreadptr(val)
+            guard inner != 0, inner != val,
+                  isSafeTrustCacheFollowPointer(inner, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
+            else { return false }
+            return tryTrustCacheAt(inner, label: "\(label)→deref")
         }
-
-        var probeDiag: [(String, UInt64, UInt32, UInt32)] = []
 
         func probeGlobalSlot(_ off: UInt64, label: String) {
             let addr = dataSegBase &+ off
-            guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { return }
-            let candidates: [UInt64] = [ds_kreadptr(addr), ds_kreadsmrptr(addr)]
-            for val in candidates where val != 0 {
-                if tryTrustCacheAt(val, label: label) { return }
-                if let (ver, cnt) = trustCacheHeaderAt(val) {
-                    if probeDiag.count < 10 { probeDiag.append((label, val, ver, cnt)) }
-                } else if isSafeKernelHeapKreadAddress(val) {
-                    let ver = safeKread32Heap(val)
-                    let cnt = safeKread32Heap(val + 4)
-                    if probeDiag.count < 10 { probeDiag.append((label, val, ver, cnt)) }
-                } else if isSafeKernelKreadAddress(val) {
-                    let ver = safeKread32Kernel(val)
-                    let cnt = safeKread32Kernel(val + 4)
-                    if probeDiag.count < 10 { probeDiag.append((label + " (k)", val, ver, cnt)) }
+            guard isSafeTrustCacheStructVA(addr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase)
+            else { return }
+            guard spendKRW() else { return }
+            let val = ds_kreadptr(addr)
+            guard val != 0 else { return }
+            if tryTrustCacheAt(val, label: label) { return }
+            if isSafeTrustCacheFollowPointer(val, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
+               spendKRW() {
+                let smr = ds_kreadsmrptr(addr)
+                if smr != 0, smr != val {
+                    _ = tryTrustCacheAt(smr, label: "\(label)→smr")
                 }
             }
         }
 
-        detail += "=== Kernelcache symtab (Documents/kernelcache) ===\n"
-        for sym in PhysmapConstants.trustCacheKcacheSymbols {
+        detail += "=== Kernelcache symtab (log only + safe KRW) ===\n"
+        for sym in PhysmapConstants.trustCacheXpfSymbols.prefix(6) {
             let unslid = ds_kcache_symbol_unslid(sym)
-            let runtime = ds_kcache_symbol_runtime(sym)
-            if runtime == 0 {
+            if unslid == 0 {
                 detail += "  \(sym): (not in symtab)\n"
-                continue
+            } else {
+                let runtime = ds_kcache_symbol_runtime(sym)
+                detail += "  \(sym): unslid=0x\(String(format: "%llx", unslid)) runtime=0x\(String(format: "%llx", runtime))\n"
             }
-            detail += "  \(sym): unslid=0x\(String(format: "%llx", unslid)) → runtime=0x\(String(format: "%llx", runtime))\n"
-            if tryTrustCacheAt(runtime, label: sym) { break }
-            let loaded = ds_kreadptr(runtime)
-            if loaded != 0, tryTrustCacheAt(loaded, label: "\(sym)@global") { break }
-            if loaded != 0, tryTrustCacheAt(ds_kreadsmrptr(runtime), label: "\(sym)@smr") { break }
+        }
+        for sym in PhysmapConstants.trustCacheKcacheDataSymbols where tcStructAddr == 0 {
+            let runtime = ds_kcache_symbol_runtime(sym)
+            guard runtime != 0 else { continue }
+            if runtime >= dataSegBase && runtime < pplDataBase {
+                if tryTrustCacheAt(runtime, label: sym) { break }
+            } else if runtime >= kernBase && runtime < dataSegBase {
+                detail += "  \(sym): skip KRW (simbol di __TEXT)\n"
+            }
         }
 
         if tcStructAddr == 0 {
             detail += "\n=== Fast __DATA slots (\(PhysmapConstants.trustCacheFastOffsetsInData.count)) ===\n"
             for off in PhysmapConstants.trustCacheFastOffsetsInData {
                 probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
-                if tcStructAddr != 0 { break }
+                if tcStructAddr != 0 || krwBudget <= 0 { break }
             }
         }
 
-        if tcStructAddr == 0 {
-            detail += "\n=== Fallback __DATA (max 12 extra) ===\n"
+        if tcStructAddr == 0, krwBudget > 8 {
+            detail += "\n=== Fallback __DATA (max 4) ===\n"
             var extra = 0
             for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
                 if PhysmapConstants.trustCacheFastOffsetsInData.contains(off) { continue }
                 probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
                 extra += 1
-                if tcStructAddr != 0 || extra >= 12 { break }
-            }
-        }
-
-        if tcStructAddr == 0, !probeDiag.isEmpty {
-            detail += "\n=== Probe diag (ver/cnt sample) ===\n"
-            for row in probeDiag.prefix(6) {
-                detail += "  \(row.0): ptr=0x\(String(format: "%llx", row.1)) ver=\(row.2) cnt=\(row.3)\n"
+                if tcStructAddr != 0 || extra >= 4 || krwBudget <= 0 { break }
             }
         }
 
@@ -4325,16 +4346,17 @@ struct AMFIExperimentView: View {
             isSafeKernelHeapKreadAddress(tcStructAddr) ? safeKread32Heap(va) : safeKread32Kernel(va)
         }
 
-        detail += "\n=== Sample entries (KRW) ===\n"
-        let entriesStart = tcStructAddr + 8
-        for i in 0..<min(3, Int(tcEntryCount)) {
-            let entryAddr = entriesStart + UInt64(i * 22)
-            let tail = entryAddr + 20
-            guard isSafeKernelHeapKreadAddress(tail) || isSafeKernelKreadAddress(tail) else { break }
-            let h0 = tcRead64(entryAddr)
-            let h1 = tcRead64(entryAddr + 8)
-            let h2 = tcRead32(entryAddr + 16)
-            detail += "  [\(i)] 0x\(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))...\n"
+        if isSafeTrustCacheStructVA(tcStructAddr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
+           tcEntryCount <= 32 {
+            detail += "\n=== Sample entries (KRW, max 2) ===\n"
+            let entriesStart = tcStructAddr + 8
+            for i in 0..<min(2, Int(tcEntryCount)) {
+                let entryAddr = entriesStart + UInt64(i * 22)
+                let tail = entryAddr + 20
+                guard isSafeTrustCacheStructVA(tail, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { break }
+                let h0 = tcRead64(entryAddr)
+                detail += "  [\(i)] 0x\(String(format: "%016llx", h0))...\n"
+            }
         }
 
         detail += "\n✅ PROBE OK — trust cache ditemukan (tanpa physmap read).\n"
