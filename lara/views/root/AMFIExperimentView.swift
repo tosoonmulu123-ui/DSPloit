@@ -4344,7 +4344,7 @@ struct AMFIExperimentView: View {
                 let p = ds_kreadptr(addr)
                 let raw = safeKread64Kernel(addr)
                 let show = p != 0 ? p : raw
-                let tag: String
+                var tag: String
                 if show == 0 { tag = "null" }
                 else if isSafeKernelHeapKreadAddress(show) { tag = "heap?" }
                 else if show >= dataSegBase && show < pplDataBase { tag = "__DATA" }
