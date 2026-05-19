@@ -41,19 +41,29 @@ private enum PhysmapConstants {
     static let pmapCsAllowInvalidOffsetInData: UInt64 = 0x45b8
 
     /// __DATA slots referenced from AMFI code (analyze_kernelcache.py --trust-cache).
+    /// Matches `analyze_kernelcache.py --trust-cache` on iphone11b iOS 18.2 kernelcache.
     static let trustCacheGlobalOffsetsInData: [UInt64] = [
         0x45b8, 0x3980, 0x2d0, 0x1a4, 0x2770, 0x1f8, 0x48, 0xb4, 0x38e0, 0x68,
         0x24c, 0x2a0, 0x2f8, 0xc8, 0x3920, 0x3930, 0x208, 0x2780, 0x27ad, 0x38,
         0x2828, 0x280e, 0x28, 0x1c8, 0x2838, 0x38c0, 0x38a0, 0x8, 0x1dc, 0x1e8,
         0x1d8, 0x1e4, 0x2860, 0x2788, 0x2798, 0x308, 0x18, 0x2f0, 0x1b8, 0x1e0,
         0x3900, 0x2878, 0x38b0, 0x2898, 0xa0, 0x1310, 0x1320, 0x39b0,
+        // High ADRP ref (script lists but skips in pick — still worth probing)
+        0xe8, 0x248, 0xf8,
     ]
 
+    /// From kernelcache string table; XPF "base" set may not index these — ChOma names for logging only.
     static let trustCacheXpfSymbols: [String] = [
+        "_trustcache",
         "_query_trust_cache",
-        "_pmap_lookup_in_loaded_trust_caches",
+        "_query_trust_cache_for_rem",
+        "_check_cdhash_in_trustcache",
         "_check_trust_cache_runtime_for_uuid",
         "_load_trust_cache",
+        "_load_trust_cache_with_type",
+        "_pmap_lookup_in_loaded_trust_caches",
+        "_pmap_lookup_in_static_trust_cache",
+        "trust_cache_init",
         "kernelSymbol.trust_cache",
         "kernelSymbol.query_trust_cache",
     ]
@@ -4179,7 +4189,7 @@ struct AMFIExperimentView: View {
             guard isLikelyTrustCacheHeapPointer(val, kernTextBase: kernBase) else { return false }
             let tcVer = safeKread32Heap(val)
             let tcCnt = safeKread32Heap(val + 4)
-            guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
+            guard tcVer >= 1 && tcVer <= 4 && tcCnt > 0 && tcCnt < 100_000 else { return false }
             detail += "🎯 Trust cache \(label)!\n"
             detail += "  ptr: 0x\(String(format: "%llx", val))\n"
             detail += "  version: \(tcVer), count: \(tcCnt)\n"
@@ -4188,14 +4198,28 @@ struct AMFIExperimentView: View {
             return true
         }
 
+        var probeDiag: [(String, UInt64, UInt32, UInt32)] = []
+
         func probeGlobalSlot(_ off: UInt64, label: String) {
             let addr = dataSegBase &+ off
             guard isSafeKernelKreadAddress(addr), !isInPPLDataRegion(addr, kernTextBase: kernBase) else { return }
-            let val = ds_kreadptr(addr)
-            if tryTrustCachePointer(val, label: label) { return }
-            if val != 0, isSafeKernelHeapKreadAddress(val) {
-                let inner = ds_kreadptr(val)
-                _ = tryTrustCachePointer(inner, label: "\(label)→indir")
+            let candidates: [UInt64] = [ds_kreadptr(addr), ds_kreadsmrptr(addr)]
+            for val in candidates where val != 0 {
+                if tryTrustCachePointer(val, label: label) { return }
+                if isSafeKernelHeapKreadAddress(val) {
+                    let ver = safeKread32Heap(val)
+                    let cnt = safeKread32Heap(val + 4)
+                    if probeDiag.count < 10 {
+                        probeDiag.append((label, val, ver, cnt))
+                    }
+                }
+                if val != 0, isSafeKernelHeapKreadAddress(val) {
+                    let inner = ds_kreadptr(val)
+                    _ = tryTrustCachePointer(inner, label: "\(label)→indir")
+                    if tcStructAddr != 0 { return }
+                    let innerSmr = ds_kreadsmrptr(val)
+                    _ = tryTrustCachePointer(innerSmr, label: "\(label)→smr")
+                }
             }
         }
 
@@ -4203,6 +4227,13 @@ struct AMFIExperimentView: View {
         for off in PhysmapConstants.trustCacheGlobalOffsetsInData {
             probeGlobalSlot(off, label: "kc+0x\(String(format: "%x", off))")
             if tcStructAddr != 0 { break }
+        }
+
+        if tcStructAddr == 0, !probeDiag.isEmpty {
+            detail += "\n=== Probe diag (heap ptr, ver, count) ===\n"
+            for row in probeDiag {
+                detail += "  \(row.0): ptr=0x\(String(format: "%llx", row.1)) ver=\(row.2) cnt=\(row.3)\n"
+            }
         }
 
         if tcStructAddr == 0 {
