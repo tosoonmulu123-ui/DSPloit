@@ -4100,11 +4100,7 @@ struct AMFIExperimentView: View {
             let l1Entry = ds_kread64_safe(l1EntryAddr)
             detail += "L1[\(l1Idx)] at 0x\(String(format: "%llx", l1EntryAddr)): 0x\(String(format: "%llx", l1Entry))\n"
 
-            guard l1Entry & 0x3 == 0x3 else {
-                detail += "❌ L1 entry invalid (bits [1:0]=0x\(String(format: "%x", l1Entry & 0x3)))\n"
-                detail += "Fallback: direct __DATA scan...\n\n"
-                usePageTableWalk = false
-            } else {
+            if l1Entry & 0x3 == 0x3 {
                 let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
                 let l2TableVA = l2TablePhys &- gPhysBase &+ gVirtBase
                 let l2Entry = ds_kread64_safe(l2TableVA + l2Idx * 8)
@@ -4129,6 +4125,10 @@ struct AMFIExperimentView: View {
                     detail += "❌ L2 invalid — fallback direct scan\n\n"
                     usePageTableWalk = false
                 }
+            } else {
+                detail += "❌ L1 entry invalid (bits [1:0]=0x\(String(format: "%x", l1Entry & 0x3)))\n"
+                detail += "Fallback: direct __DATA scan...\n\n"
+                usePageTableWalk = false
             }
         }
 
