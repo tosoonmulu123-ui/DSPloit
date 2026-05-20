@@ -85,7 +85,7 @@ struct MobileBankingView: View {
                         showRestoreConfirm = true
                     } label: {
                         Label("Restore /var/jb", systemImage: "arrow.uturn.backward.circle.fill")
-                            .foregroundStyle(hideRestoreDisabled ? .secondary : .blue)
+                            .foregroundStyle(hideRestoreDisabled ? Color.secondary : Color.blue)
                     }
                     .disabled(hideRestoreDisabled)
                     .alert("Restore /var/jb?", isPresented: $showRestoreConfirm) {
@@ -101,7 +101,7 @@ struct MobileBankingView: View {
                         showHideConfirm = true
                     } label: {
                         Label("Sembunyikan /var/jb", systemImage: "eye.slash")
-                            .foregroundStyle(hideRestoreDisabled ? .secondary : .orange)
+                            .foregroundStyle(hideRestoreDisabled ? Color.secondary : Color.orange)
                     }
                     .disabled(hideRestoreDisabled)
                     .alert("Sembunyikan /var/jb?", isPresented: $showHideConfirm) {
