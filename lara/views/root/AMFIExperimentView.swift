@@ -5403,18 +5403,11 @@ struct AMFIExperimentView: View {
         }
 
         if !usePageTableWalk {
-            let directRead = ds_kread64_safe(pplDataBase)
-            detail += "=== Direct KRW probe (__ppl_data) ===\n"
-            detail += "pplDataBase: 0x\(String(format: "%llx", pplDataBase))\n"
-            detail += "Direct read: 0x\(String(format: "%llx", directRead))\n"
-            if directRead == 0 {
-                detail += "(0 = zone/PPL block — scan __DATA.__data below)\n"
-            } else {
-                detail += "✅ Direct read OK\n"
-            }
-            detail += "\n"
+            detail += "=== Skipping Direct KRW probe (__ppl_data) ===\n"
+            detail += "Reading __ppl_data directly via socket KRW triggers PPL panic ('Unexpected fault in kernel static region').\n"
+            detail += "We must rely strictly on scanning the heap for dynamic trust caches.\n\n"
         }
-        
+
         // ============================================================
         // STEP 3: Scan PPL region via physmap to find trust cache
         // Trust cache struct: version(4) + count(4) + entries[](22 bytes each)
