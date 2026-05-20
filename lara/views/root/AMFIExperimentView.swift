@@ -5455,9 +5455,16 @@ struct AMFIExperimentView: View {
         
         // If not found in PPL pages, try scanning __DATA.__data (non-PPL, safe range)
         if tcStructAddr == 0 {
-            detail += "Not found in PPL pages, scanning __DATA (512KB)...\n"
-            for off in stride(from: UInt64(0), to: UInt64(0x80000), by: 8) {
-                let val = ds_kread64_safe(dataSegBase + off)
+            let maxScanSize = (pplDataBase > dataSegBase) ? (pplDataBase - dataSegBase) : 0x80000
+            let safeScanSize = min(UInt64(0x80000), maxScanSize)
+            
+            detail += "Not found in PPL pages, scanning __DATA (max 0x\(String(format: "%x", safeScanSize)) bytes)...\n"
+            for off in stride(from: UInt64(0), to: safeScanSize, by: 8) {
+                let scanVA = dataSegBase + off
+                // Extra safety: stop if we hit pplDataBase exactly
+                if scanVA >= pplDataBase && pplDataBase != 0 { break }
+                
+                let val = ds_kread64_safe(scanVA)
                 if tryTrustCachePointer(val, label: "__DATA+0x\(String(format: "%x", off))") {
                     break
                 }
