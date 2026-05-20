@@ -29,11 +29,12 @@ Use this document as **single source of truth** when continuing work in a new ch
 | G | **Exp 79** — KTRR analysis: KRW write ke __DATA → panic | ✅ (confirmed KTRR blocks write) |
 | H | **Exp 80 Opsi C** — rcallAddr kernel VA | ❌ PANIC: initproc exited |
 | I | **Exp 80 Opsi D** — dlopen userspace libs | ❌ PANIC: SIGBUS (initproc exited) |
-| J | **Exp 83** — CS Flags Bypass via physmap | 🟡 Implemented, belum ditest |
+| J | **Exp 83** — CS Flags Bypass via physmap | ❌ zone RO — write tidak efektif |
+| K | **Exp 83 v2** — Heap KRW write ke proc_ro | 🟡 Implemented, belum ditest |
 
 ### Ultimate technical win
 Bypass AMFI via **cs_flags** di `proc_ro` binary target. Karena semua jalur trust cache API gagal:
-- **Exp 83 (current):** Write `cs_flags |= CS_VALID | CS_PLATFORM_BINARY` via physmap VA ke `proc_ro`
+- **Exp 83 v2 (current):** Attempt 1 = `ds_kwrite32` heap KRW langsung ke `proc_ro+0x1c`, Attempt 2 = physmap fallback
 - Binary dianggap platform binary → AMFI skip signature check
 
 ---
@@ -78,8 +79,8 @@ Kernel VA `0xfffffff0...` tidak ada di launchd address space.
 `dlopen` dari launchd RC → `initproc exited` panic (exit reason namespace 2 subcode 0xb = SIGBUS).
 Library initializer crash di launchd context.
 
-### Exp 83: CS Flags Bypass via Physmap — CURRENT 🎯
-**Implementasi selesai, belum ditest di device.**
+### Exp 83: CS Flags Bypass via Physmap — DITEST, WRITE GAGAL ❌ (zone RO)
+**Device test hasil:**
 
 **Strategi:**
 1. Cari `proc` binary target via `procbyname` (atau our proc untuk self-test)
@@ -149,7 +150,7 @@ Offset `0x1c` sudah dikonfirmasi dari `dspmgr.swift` `readCSFlags()`.
 ③b RC Trust Cache Add (Exp 80) — FAILED (dlopen SIGBUS)
 ③c Heap TC Analysis (Exp 81)
 ③d Deep TC Scan (Exp 82)
-③e CS Flags Bypass (Exp 83) ← CURRENT TARGET
+③e CS Flags Bypass (Exp 83 v2) ← CURRENT TARGET — heap KRW + physmap
 ④ Test Binary Spawn
 ```
 
@@ -243,7 +244,8 @@ Offset `0x1c` sudah dikonfirmasi dari `dspmgr.swift` `readCSFlags()`.
 - [x] MobileBankingView fix — tombol Sembunyikan bereaksi
 - [x] TrustCacheInjector fix — count >= 65535
 - [x] Exp 80 Opsi D — FAILED (SIGBUS panic di launchd)
-- [ ] **Exp 83 CS Flags Bypass** — write cs_flags via physmap ke proc_ro binary target
+- [x] Exp 83 physmap write — FAILED (proc_ro di zone_require_ro, physical page RO)
+- [ ] **Exp 83 v2 heap KRW write** — `ds_kwrite32` langsung ke proc_ro+0x1c
 - [ ] Test binary spawn berhasil tanpa SIGKILL → AMFI bypass confirmed
 - [ ] No regression: JB + XPF + Exp 74 + Import kernelcache + offline 48 slots
 

@@ -6666,11 +6666,6 @@ struct AMFIExperimentView: View {
             detail += "  Physmap write juga tidak efektif — physical page read-only\n"
             detail += "  Jalur selanjutnya: patch amfid memory untuk skip signature check\n"
         }
-            detail += "\nKemungkinan penyebab:\n"
-            detail += "  1. gVirtBase tidak akurat → physmap VA salah\n"
-            detail += "  2. proc_ro di RO zone (iOS 18 memprotect proc_ro)\n"
-            detail += "  3. Write berhasil tapi read cache belum flush\n"
-        }
 
         return ExperimentResult(name: expName, success: writeVerified, detail: detail, timestamp: Date())
     }
