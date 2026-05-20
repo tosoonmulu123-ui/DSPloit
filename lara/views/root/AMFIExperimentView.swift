@@ -281,7 +281,14 @@ private func isLikelyKernelObjectPointer(_ v: UInt64) -> Bool {
     return isLikelyKernelPointer(v)
 }
 
-/// First trust-cache entry: 20-byte CDHash + hashType(1|2) + flags.
+/// iOS 18 trust cache entry layout (24 bytes):
+///   [0..19]  CDHash (20 bytes, SHA1 atau truncated SHA256)
+///   [20]     hashType: 1=SHA1, 2=SHA256-truncated
+///   [21]     flags
+///   [22..23] padding
+///
+/// Heuristik: CDHash harus terlihat seperti hash (entropy tinggi, bukan angka kecil),
+/// dan count harus masuk akal (>= 5 untuk trust cache sistem).
 private func trustCacheEntriesPlausible(
     hdrVA: UInt64,
     count: UInt32,
@@ -289,21 +296,43 @@ private func trustCacheEntriesPlausible(
     pplDataBase: UInt64,
     kernTextBase: UInt64
 ) -> Bool {
-    guard count > 0, count <= 200_000 else { return false }
-    let e0 = hdrVA &+ 8
-    guard isSafeTrustCacheStructVA(e0, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernTextBase)
-    else { return false }
+    // count < 5 = false positive (struct lain yang kebetulan lolos ver/count check)
+    // count > 200k = tidak masuk akal
+    guard count >= 5, count <= 200_000 else { return false }
     let heap = isSafeKernelHeapKreadAddress(hdrVA)
     let r32: (UInt64) -> UInt32 = { heap ? safeKread32Heap($0) : safeKread32Kernel($0) }
-    let w0 = r32(e0)
-    let w1 = r32(e0 &+ 4)
-    let w2 = r32(e0 &+ 8)
-    let w3 = r32(e0 &+ 12)
-    let w4 = r32(e0 &+ 16)
-    if w0 == 0 && w1 == 0 && w2 == 0 && w3 == 0 && (w4 & 0xffff_ffff) == 0 { return false }
-    let hashType = r32(e0 &+ 20) & 0xff
-    guard hashType == 1 || hashType == 2 else { return false }
-    return true
+    let r64: (UInt64) -> UInt64 = { heap ? safeKread64Heap($0) : safeKread64Kernel($0) }
+
+    // Coba stride 24 dan 32 — iOS 18 pakai salah satu
+    for stride: UInt64 in [24, 32] {
+        let e0 = hdrVA &+ 8
+        guard isSafeTrustCacheStructVA(e0 &+ stride - 1, dataSegBase: dataSegBase,
+                                       pplDataBase: pplDataBase, kernTextBase: kernTextBase)
+        else { continue }
+
+        // Baca CDHash entry[0]: 2x uint64 + uint32 (20 bytes total)
+        let h0 = r64(e0)
+        let h1 = r64(e0 &+ 8)
+        let h2 = r32(e0 &+ 16)
+
+        // Semua nol = belum diisi / bukan CDHash
+        if h0 == 0 && h1 == 0 && h2 == 0 { continue }
+
+        // CDHash harus punya entropy: minimal 2 dari 3 word harus > 0xFFFF
+        // (angka kecil seperti 0x0b, 0x25 = bukan hash)
+        let h0entropy = h0 > 0x0000_FFFF_FFFF_FFFF
+        let h1entropy = h1 > 0x0000_FFFF_FFFF_FFFF
+        let h2entropy = h2 > 0x0000_FFFF
+        let entropyCount = (h0entropy ? 1 : 0) + (h1entropy ? 1 : 0) + (h2entropy ? 1 : 0)
+        guard entropyCount >= 2 else { continue }
+
+        // hashType di offset +20: 0–4 valid (iOS 18 tambah type baru)
+        let hashType = r32(e0 &+ 20) & 0xff
+        guard hashType <= 4 else { continue }
+
+        return true
+    }
+    return false
 }
 
 private func safeKread64Kernel(_ va: UInt64) -> UInt64 {
@@ -4289,7 +4318,7 @@ struct AMFIExperimentView: View {
 
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
-        var krwBudget = 256
+        var krwBudget = 512
 
         func spendKRW() -> Bool {
             if krwBudget <= 0 { return false }
@@ -4309,7 +4338,9 @@ struct AMFIExperimentView: View {
             let base = va &+ headerOff
             let ver = readU32(base)
             let cnt = readU32(base + 4)
-            guard cnt > 0 && cnt < 500_000 else { return nil }
+            // count >= 5: trust cache sistem selalu punya banyak entry
+            // count < 5 = false positive (struct lain yang kebetulan lolos)
+            guard cnt >= 5 && cnt < 500_000 else { return nil }
             if ver >= 1 && ver <= 16 { return (ver, cnt) }
             return nil
         }
@@ -4394,8 +4425,13 @@ struct AMFIExperimentView: View {
         detail += "\n"
 
         var orderedOffsets = probeOffsets
+        // Prioritas berdasarkan analisis offline (analyze_kernelcache.py --deep-probe):
+        // 0x39b0 dan 0x38a0 = slot yang di-STR oleh kode kernel (trust_cache_init area)
+        // 0x3980, 0x3920, 0x3930 = ADRP refs tinggi dari AMFI code
         let priority: [UInt64] = [
-            0x3980, 0x3920, 0x3930, 0x38e0, 0x38c0, 0x38a0, 0x3900, 0x39b0,
+            0x39b0, 0x38a0,           // ← STR target dari kernel init code (highest priority)
+            0x3980, 0x3920, 0x3930,   // ← ADRP refs tinggi
+            0x38e0, 0x38c0, 0x38b0, 0x3900,
             0x2d0, 0x1a4, 0x2770, 0x1f8,
         ]
         orderedOffsets.sort { a, b in
@@ -4445,6 +4481,40 @@ struct AMFIExperimentView: View {
                 else { continue }
                 detail += "  follow aux 0x\(String(format: "%llx", p))\n"
                 if tryTrustCacheAt(p, label: "aux") { break }
+            }
+        }
+
+        // === Heap deep scan: ikuti pointer dari __DATA ke heap, lalu scan +0..+0x80 ===
+        // Trust cache iOS 18 sering ada di heap (kalloc), bukan inline __DATA.
+        // Pointer di __DATA → heap object → trust cache struct di dalam object itu.
+        if tcStructAddr == 0 {
+            detail += "\n=== Heap deep scan (pointer __DATA → heap object) ===\n"
+            var heapSeen = Set<UInt64>()
+            for off in orderedOffsets.prefix(24) {
+                guard tcStructAddr == 0 else { break }
+                let addr = dataSegBase &+ off
+                guard spendKRW() else { break }
+                let p = ds_kreadptr(addr)
+                guard isLikelyKernelObjectPointer(p),
+                      isSafeKernelHeapKreadAddress(p),
+                      heapSeen.insert(p).inserted
+                else { continue }
+                // Scan +0x00..+0x80 dari heap object untuk cari trust cache header
+                for innerOff: UInt64 in [0, 8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x40, 0x48, 0x50, 0x60, 0x70, 0x80] {
+                    guard spendKRW() else { break }
+                    let candidate = p &+ innerOff
+                    guard isSafeKernelHeapKreadAddress(candidate) else { continue }
+                    if tryTrustCacheAt(candidate, label: "heap+0x\(String(format: "%x", innerOff))@kc+0x\(String(format: "%x", off))") {
+                        break
+                    }
+                    // Juga ikuti pointer di dalam heap object
+                    let inner = ds_kreadptr(candidate)
+                    guard isLikelyKernelObjectPointer(inner),
+                          isSafeKernelHeapKreadAddress(inner),
+                          inner != p
+                    else { continue }
+                    if tryTrustCacheAt(inner, label: "heap→inner@kc+0x\(String(format: "%x", off))") { break }
+                }
             }
         }
 
