@@ -5203,7 +5203,11 @@ struct AMFIExperimentView: View {
                 ("_trust_cache_runtime_add",   0xfffffff00793c000, "trust_cache_runtime_add(type,mod,sz)"),
                 ("_pmap_load_trust_cache",      0xfffffff007a10000, "pmap_load_trust_cache(mod,sz)"),
             ]
-            let xpfBase = gXPF.kernelBase  // unslid base dari XPF
+            // xpfBase = unslid kernel base dari kernelcache (bukan runtime).
+            // ds_kcache_symbol_unslid() sudah pakai gXPF.kernelBase secara internal di C layer.
+            // Di Swift kita tidak bisa akses gXPF langsung — gunakan ds_get_kernel_slide() sebagai proxy.
+            // Jika slide = runtime_base - unslid_base, maka unslid_base = runtime_base - slide.
+            let xpfBase = kernBase &- kernSlide  // estimasi unslid base
             for entry in knownOffsets {
                 if xpfBase != 0 {
                     let offset = entry.unslidVA &- xpfBase
