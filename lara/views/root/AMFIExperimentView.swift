@@ -287,8 +287,8 @@ private func isLikelyKernelObjectPointer(_ v: UInt64) -> Bool {
 ///   [21]     flags
 ///   [22..23] padding
 ///
-/// Heuristik: CDHash harus terlihat seperti hash (entropy tinggi, bukan angka kecil),
-/// dan count harus masuk akal (>= 5 untuk trust cache sistem).
+/// Heuristik: count harus masuk akal (>= 5), dan setidaknya SATU dari
+/// beberapa entry pertama harus punya entropy CDHash yang wajar.
 private func trustCacheEntriesPlausible(
     hdrVA: UInt64,
     count: UInt32,
@@ -310,27 +310,38 @@ private func trustCacheEntriesPlausible(
                                        pplDataBase: pplDataBase, kernTextBase: kernTextBase)
         else { continue }
 
-        // Baca CDHash entry[0]: 2x uint64 + uint32 (20 bytes total)
-        let h0 = r64(e0)
-        let h1 = r64(e0 &+ 8)
-        let h2 = r32(e0 &+ 16)
+        // Cek beberapa entry (bukan hanya entry[0]) — entry pertama mungkin metadata
+        var entriesWithEntropy = 0
+        let checkCount = min(Int(count), 8)
 
-        // Semua nol = belum diisi / bukan CDHash
-        if h0 == 0 && h1 == 0 && h2 == 0 { continue }
+        for i in 0..<checkCount {
+            let ef = e0 &+ UInt64(i) * stride
+            guard isSafeTrustCacheStructVA(ef &+ 16, dataSegBase: dataSegBase,
+                                           pplDataBase: pplDataBase, kernTextBase: kernTextBase)
+            else { break }
 
-        // CDHash harus punya entropy: minimal 2 dari 3 word harus > 0xFFFF
-        // (angka kecil seperti 0x0b, 0x25 = bukan hash)
-        let h0entropy = h0 > 0x0000_FFFF_FFFF_FFFF
-        let h1entropy = h1 > 0x0000_FFFF_FFFF_FFFF
-        let h2entropy = h2 > 0x0000_FFFF
-        let entropyCount = (h0entropy ? 1 : 0) + (h1entropy ? 1 : 0) + (h2entropy ? 1 : 0)
-        guard entropyCount >= 2 else { continue }
+            let h0 = r64(ef)
+            let h1 = r64(ef &+ 8)
+            let h2 = r32(ef &+ 16)
 
-        // hashType di offset +20: 0–4 valid (iOS 18 tambah type baru)
-        let hashType = r32(e0 &+ 20) & 0xff
-        guard hashType <= 4 else { continue }
+            // Semua nol = belum diisi
+            if h0 == 0 && h1 == 0 && h2 == 0 { continue }
 
-        return true
+            // CDHash harus punya entropy: setidaknya beberapa byte non-trivial
+            // Longgarkan: cukup 1 dari 3 word punya nilai > 0xFFFF
+            let h0entropy = h0 > 0x0000_FFFF
+            let h1entropy = h1 > 0x0000_FFFF
+            let h2entropy = h2 > 0x00FF
+            if h0entropy || h1entropy || h2entropy {
+                entriesWithEntropy += 1
+            }
+        }
+
+        // Minimal 2 entry dari 8 yang dicek harus punya entropy
+        // (lebih longgar dari sebelumnya yang butuh 2 dari 3 word per entry)
+        if entriesWithEntropy >= 2 {
+            return true
+        }
     }
     return false
 }
@@ -4411,14 +4422,14 @@ struct AMFIExperimentView: View {
         }
 
         func tryTrustCacheAt(_ val: UInt64, label: String) -> Bool {
-            for hdrOff: UInt64 in [0, 8, 0x10] {
+            for hdrOff: UInt64 in [0, 8, 0x10, 0x18, 0x20] {
                 if let (tcVer, tcCnt) = trustCacheHeaderAt(val, headerOff: hdrOff) {
                     let hdrVA = val &+ hdrOff
                     guard trustCacheEntriesPlausible(
                         hdrVA: hdrVA, count: tcCnt,
                         dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase
                     ) else {
-                        detail += "  (abaikan \(label): ver=\(tcVer) cnt=\(tcCnt) — entry[0] bukan CDHash)\n"
+                        detail += "  (abaikan \(label)+0x\(String(format: "%x", hdrOff)): ver=\(tcVer) cnt=\(tcCnt) — entry[0] bukan CDHash)\n"
                         continue
                     }
                     let kind = isSafeKernelHeapKreadAddress(val) ? "heap" : "__DATA"

@@ -85,7 +85,9 @@ struct MobileBankingView: View {
                         Label("Sembunyikan /var/jb", systemImage: "eye.slash")
                             .foregroundStyle(.orange)
                     }
-                    .disabled(!mgr.rcready || root.isExecuting || !jbPathVisible || jbHidden)
+                    // FIX: jangan block tombol karena jbPathVisible — FileManager app
+                    // tidak bisa lihat /var/jb dari sandbox. Biarkan launchd yang cek.
+                    .disabled(!mgr.rcready || root.isExecuting)
                 }
             } header: {
                 Label("Aksi", systemImage: "bolt.fill")
