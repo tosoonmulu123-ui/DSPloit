@@ -228,7 +228,8 @@ private func isSafeKernelHeapKreadAddress(_ va: UInt64) -> Bool {
     if va >= 0xfffffffa00000000 { return false }
     // Zone map on iOS 15-18 is typically 0xffffffdc... to 0xffffffe2...
     // DO NOT allow 0xfffffff0... here because it contains MMIO (I/O registers) which causes LLC Bus Error panic if read!
-    let isZoneMap = va >= 0xffffffdc00000000 && va < 0xffffffe800000000
+    // Start from 0xffffffdd to explicitly exclude the VM, Metadata, and Bitmaps regions in 0xffffffdc which can trigger Data Abort panics.
+    let isZoneMap = va >= 0xffffffdd00000000 && va < 0xffffffe800000000
     guard isZoneMap else { return false }
     if let gVirt = PhysmapConstants.load()?.gVirtBase {
         if va >= gVirt, va < gVirt &+ 0x80000000 { return false }
@@ -5425,7 +5426,7 @@ struct AMFIExperimentView: View {
         var tcPhysmapBase: UInt64 = 0
         
         func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
-            let isZoneMap = val >= 0xffffffdc00000000 && val < 0xffffffe800000000
+            let isZoneMap = val >= 0xffffffdd00000000 && val < 0xffffffe800000000
             guard isZoneMap else { return false }
             let tcVer = ds_kread32_safe(val)
             let tcCnt = ds_kread32_safe(val + 4)
