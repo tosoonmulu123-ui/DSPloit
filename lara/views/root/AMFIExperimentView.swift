@@ -4802,6 +4802,97 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: foundHeapStructs > 0, detail: detail, timestamp: Date())
     }
 
+    // MARK: - Exp 82: Deep Trust Cache Scan
+    
+    private func runExp82DeepTCScan() {
+        guard !isTesting else { return }
+        isTesting = true
+        testResult = "Memulai Exp 82: Deep TC Scan...\n"
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let res = self.expDeepTCScan()
+            DispatchQueue.main.async {
+                self.testResult = res.detail
+                self.isTesting = false
+            }
+        }
+    }
+    
+    private func expDeepTCScan() -> ExperimentResult {
+        let expName = "Deep TC Scan (Exp 82)"
+        var detail = "Experiment 82: Deep Trust Cache Scan\n"
+        detail += "=====================================\n\n"
+        
+        guard PhysmapConstants.isVerified else {
+            return ExperimentResult(name: expName, success: false, detail: "Jalankan Physmap Access (Exp 74) dulu.", timestamp: Date())
+        }
+        
+        let kernBase = ds_get_kernel_base()
+        let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+        
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "__DATA base: 0x\(String(format: "%llx", dataSegBase))\n\n"
+        detail += "Memulai scan memori __DATA...\n"
+        
+        // Scan 4MB dari awal __DATA
+        let scanSize: UInt64 = 4 * 1024 * 1024 
+        var foundTCs = 0
+        
+        // Helper untuk mengecek apakah sebuah address adalah Trust Cache
+        func checkIsTC(_ addr: UInt64) -> Bool {
+            let ver = safeKread32Heap(addr)
+            let cnt = safeKread32Heap(addr &+ 4)
+            if (ver >= 1 && ver <= 3) && (cnt >= 1 && cnt <= 500_000) {
+                return true
+            }
+            return false
+        }
+        
+        for offset in stride(from: UInt64(0), to: scanSize, by: 8) {
+            let addr = dataSegBase &+ offset
+            let ptr = ds_kreadptr(addr)
+            
+            // Apakah ptr menunjuk ke heap?
+            if ptr != 0 && isSafeKernelHeapKreadAddress(ptr) {
+                
+                // Cek apakah ptr ini langsung Trust Cache
+                if checkIsTC(ptr) {
+                    detail += "🎯 [DIRECT] Ditemukan Trust Cache di 0x\(String(format: "%llx", ptr)) (dari __DATA+0x\(String(format: "%x", offset)))\n"
+                    let ver = safeKread32Heap(ptr)
+                    let cnt = safeKread32Heap(ptr &+ 4)
+                    detail += "   -> ver: \(ver), count: \(cnt)\n\n"
+                    foundTCs += 1
+                } else {
+                    // Coba baca ptr sebagai struct/linked list
+                    // Baca 4 pointer pertama di dalam struct tsb
+                    for i in 0..<4 {
+                        let innerPtr = safeKread64Heap(ptr &+ UInt64(i * 8))
+                        if innerPtr != 0 && innerPtr != ptr && isSafeKernelHeapKreadAddress(innerPtr) {
+                            if checkIsTC(innerPtr) {
+                                detail += "🎯 [LINKED] Ditemukan Trust Cache di 0x\(String(format: "%llx", innerPtr))\n"
+                                detail += "   (Via __DATA+0x\(String(format: "%x", offset)) -> Heap Struct -> offset +0x\(String(format: "%x", i*8)))\n"
+                                let ver = safeKread32Heap(innerPtr)
+                                let cnt = safeKread32Heap(innerPtr &+ 4)
+                                detail += "   -> ver: \(ver), count: \(cnt)\n\n"
+                                foundTCs += 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        detail += "Scan selesai.\n"
+        if foundTCs > 0 {
+            detail += "Berhasil menemukan \(foundTCs) Trust Cache! Injeksi bisa dilakukan ke alamat tersebut.\n"
+        } else {
+            detail += "Tidak menemukan Trust Cache. Mount Developer Disk Image terlebih dahulu!\n"
+        }
+        
+        return ExperimentResult(name: expName, success: foundTCs > 0, detail: detail, timestamp: Date())
+    }
+
     // MARK: - Exp 79: KTRR Analysis (Write Test DINONAKTIFKAN — akan panic)
 
     /// Exp 79: KTRR Analysis — konfirmasi trust cache di KTRR-protected region.
