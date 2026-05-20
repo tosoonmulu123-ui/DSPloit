@@ -335,6 +335,8 @@ struct MobileBankingView: View {
         statusMessage = "❌ RemoteCall disabled"
         #endif
     }
+
+    private func restoreJbPath() {
         guard mgr.rcready, !isHideRestoreRunning else { return }
         isHideRestoreRunning = true
         statusMessage = "Mengembalikan /var/jb..."
