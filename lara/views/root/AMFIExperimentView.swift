@@ -4463,16 +4463,36 @@ struct AMFIExperimentView: View {
             isSafeKernelHeapKreadAddress(tcStructAddr) ? safeKread32Heap(va) : safeKread32Kernel(va)
         }
 
+        // === Raw struct dump (64 bytes) — untuk diagnosa layout iOS 18 ===
+        if isSafeTrustCacheStructVA(tcStructAddr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) {
+            detail += "\n=== Raw struct dump (64 bytes dari tcStructAddr) ===\n"
+            for dumpOff in stride(from: UInt64(0), to: 64, by: 8) {
+                let dumpVA = tcStructAddr &+ dumpOff
+                guard isSafeTrustCacheStructVA(dumpVA, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { break }
+                let val = tcRead64(dumpVA)
+                detail += "  +0x\(String(format: "%02x", dumpOff)): 0x\(String(format: "%016llx", val))\n"
+            }
+            detail += "\n"
+        }
+
+        // === Sample entries (KRW, max 3) — coba berbagai stride ===
         if isSafeTrustCacheStructVA(tcStructAddr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase),
-           tcEntryCount <= 32 {
-            detail += "\n=== Sample entries (KRW, max 2) ===\n"
-            let entriesStart = tcStructAddr + 8
-            for i in 0..<min(2, Int(tcEntryCount)) {
-                let entryAddr = entriesStart + UInt64(i * 22)
-                let tail = entryAddr + 20
-                guard isSafeTrustCacheStructVA(tail, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { break }
-                let h0 = tcRead64(entryAddr)
-                detail += "  [\(i)] 0x\(String(format: "%016llx", h0))...\n"
+           tcEntryCount > 0 {
+            detail += "=== Sample entries (KRW, max 3) ===\n"
+            // iOS 18 trust cache entry: kemungkinan 24 bytes (CDHash 20B + hashType 1B + flags 1B + pad 2B)
+            // atau 32 bytes. Coba stride 24 dan 32.
+            for stride in [UInt64(24), UInt64(32), UInt64(22)] {
+                let entriesStart = tcStructAddr &+ 8
+                guard isSafeTrustCacheStructVA(entriesStart, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { break }
+                detail += "  [stride=\(stride)]:\n"
+                for i in 0..<min(3, Int(tcEntryCount)) {
+                    let entryAddr = entriesStart &+ UInt64(i) * stride
+                    guard isSafeTrustCacheStructVA(entryAddr &+ 16, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else { break }
+                    let h0 = tcRead64(entryAddr)
+                    let h1 = tcRead64(entryAddr &+ 8)
+                    let h2 = tcRead32(entryAddr &+ 16)
+                    detail += "    [\(i)] 0x\(String(format: "%016llx", h0)) 0x\(String(format: "%016llx", h1)) 0x\(String(format: "%08x", h2))\n"
+                }
             }
         }
 
