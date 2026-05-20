@@ -2,11 +2,9 @@
 
 **Repo:** `tosoonmulu123-ui/DSPloit`  
 **Last meaningful commits (May 2026):**
+- `1ea2d2c` — fix(kernel): remove probe dependency from Exp 80 allowing direct execution of trust_cache_runtime_add
+- `264d465` — fix(kernel): restrict heap read range below 0xffffffe5 to avoid Zone Metadata data aborts
 - `c9cee9f` — Exp 79 KTRR analysis + Exp 80 RC trust_cache_runtime_add + Mobile Banking fix
-- `54a9d2c` — Exp 77 entropy check longgar + hdrOff lebih banyak
-- `ede801e` — Exp 79 write test + CDHash inject + bug fixes (ds_isvalid, cmp8_wait, dll)
-- `79ad1f4` — fix crash saat kernelcache tidak ada
-- `98a99e1` — deep probe script + prioritize 0x39b0/0x38a0
 
 Use this document as **single source of truth** when continuing work in a new chat.
 
@@ -25,12 +23,12 @@ Use this document as **single source of truth** when continuing work in a new ch
 | C | RemoteCall on launchd / SpringBoard | ✅ |
 | D | Kernelcache on device + XPF (`kernproc`, etc.) | ✅ |
 | E | **Exp 74** — physmap verified, KRW `__TEXT` | ✅ |
-| F | **Exp 77 probe** — find trust-cache struct address in live kernel | ✅ (addr ditemukan, count=23) |
+| F | **Exp 77/82 probe** — blind scan memory for trust-cache | ❌ (Memicu "Unexpected fault in kernel static region" / PPL panic) |
 | G | **Exp 79** — KTRR analysis: KRW write ke __DATA → panic | ✅ (confirmed KTRR blocks write) |
 | H | **Exp 80** — RC trust_cache_runtime_add via launchd | 🟡 Belum ditest di device |
 
 ### Ultimate technical win
-**Exp 80:** Panggil `trust_cache_runtime_add` / `_load_trust_cache` dari launchd RemoteCall context. PPL melakukan write internal — tidak ada KTRR fault. Ini satu-satunya jalur yang tersisa setelah KTRR confirmed.
+**Exp 80:** Panggil `trust_cache_runtime_add` / `_load_trust_cache` dari launchd RemoteCall context. PPL melakukan write internal — tidak ada KTRR fault. Kita bypass *blind scan* sepenuhnya untuk menghindari PPL panic. Ini satu-satunya jalur yang aman dan tersisa.
 
 ---
 
@@ -67,27 +65,34 @@ Use this document as **single source of truth** when continuing work in a new ch
 
 ## 4. Current state & next step
 
-### Exp 77 Probe — DONE ✅
-Trust cache struct ditemukan. Probe berjalan ~1–5s tanpa panic.
+### Exp 77 / 82 Probe & Scan — ABANDONED ❌
+*Blind scan* ke global `__DATA` atau heap memicu PPL panic (`Unexpected fault in kernel static region`). Kita tinggalkan pencarian alamat Trust Cache secara manual karena rentan menyentuh memori terproteksi.
 
 ### Exp 79 KTRR Analysis — DONE ✅
 Konfirmasi: `__DATA` di A12 di-protect KTRR (hardware readonly setelah boot).
 - PPL = proteksi page table (bypass via physmap)
 - KTRR = hardware readonly enforcement (tidak bisa bypass via KRW)
 
-### Exp 80 RC Trust Cache Add — NEXT 🎯
-**Jalur satu-satunya yang tersisa:**
-1. Dari launchd RemoteCall context
-2. `dlsym(RTLD_DEFAULT, "_trust_cache_runtime_add")` atau `_load_trust_cache`
-3. Build `trust_cache_module1` struct di `trojanMem`
-4. Panggil API → PPL melakukan write internal
-5. Verify via posix_spawn binary unsigned
+### Exp 80 RC Trust Cache Add — Opsi C 🔄
+**Hasil device test (Exp 80 lama):** Semua `dlsym` gagal — fungsi trust cache tidak ada di userspace dylib.
 
-**Expected results:**
-- ret=0 → sukses, lanjut spawn test
-- ret=EPERM (1) → butuh entitlement, coba dari amfid context
-- ret=EINVAL (22) → format struct salah, adjust layout
-- ret=EROFS (26) → KTRR juga block API ini (unlikely tapi mungkin)
+**Root cause:** `trust_cache_runtime_add` dll. ada di **kernel**, bukan di dylib yang di-export.
+
+**Opsi C (implementasi baru):**
+1. Resolve alamat fungsi dari **kernelcache symtab** via `ds_kcache_symbol_runtime()`
+2. Hitung runtime VA = `kernel_base + (unslid - xpf_kernbase)`
+3. Panggil via `RootExecutor.rcallAddr(rc, fnAddr, ...)` — function pointer langsung
+4. Tidak perlu dlsym, tidak perlu proses lain
+
+**Files yang diubah:**
+- `AMFIExperimentView.swift` — `expRCTrustCacheAdd()` diganti total (Opsi C)
+- `RootExecutor.swift` — tambah `rcallAddr(_:_:_:)` static func
+
+**Expected results Opsi C:**
+- Jika symtab ada → fungsi ditemukan → panggil → ret=0 sukses
+- Jika symtab kosong → log "Jalankan Import Kernelcache dulu"
+- ret=1 (EPERM) → launchd tidak punya entitlement → coba amfid RC
+- ret=22 (EINVAL) → struct layout salah → adjust version/stride
 
 ---
 
@@ -194,4 +199,4 @@ Konfirmasi: `__DATA` di A12 di-protect KTRR (hardware readonly setelah boot).
 
 ## 11. One-paragraph summary for quick paste
 
-We have **socket KRW + full in-app jailbreak** on **iPhone XR iOS 18.2**. **Exp 74** (physmap) dan **Exp 77** (trust cache probe) sudah hijau — trust cache struct ditemukan di `__DATA` (bukan PPL region). **Exp 79** mengkonfirmasi bahwa KRW write ke `__DATA` di A12 di-block oleh **KTRR** (hardware readonly enforcement), bukan PPL. Satu-satunya jalur yang tersisa adalah **Exp 80: launchd RemoteCall ke `trust_cache_runtime_add`** — PPL yang melakukan write internal sehingga tidak ada KTRR fault. Implementasi sudah ada di `AMFIExperimentView.swift` (tombol ③b). **Jangan** coba KRW write langsung ke trust cache — akan panic. Latest commit: **`c9cee9f`**.
+We have **socket KRW + full in-app jailbreak** on **iPhone XR iOS 18.2**. **Exp 74** (physmap) sudah hijau. *Blind scanning* memori (Exp 77 / Exp 82) terbukti tidak stabil dan memicu PPL panic (`Unexpected fault in kernel static region`), sedangkan KRW write langsung ter-blokir oleh KTRR (Exp 79). Pivot utama saat ini: **Exp 80 (RC TC Add)**. Kita **melewati proses pemindaian** dan langsung memanggil `trust_cache_runtime_add` dari *launchd* RemoteCall context — PPL yang melakukan *write* internal. Implementasi sudah ada di `AMFIExperimentView.swift` (tombol ③b) dan sudah diputus dependensinya dari hasil *probe*. Latest commit: **`1ea2d2c`**.

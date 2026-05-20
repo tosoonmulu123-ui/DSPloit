@@ -62,6 +62,36 @@ final class RootExecutor: ObservableObject {
             })
         }
     }
+
+    /// Call a kernel function via direct address (Opsi C — bukan dlsym).
+    /// Digunakan untuk memanggil fungsi kernel yang tidak di-export ke userspace dylib,
+    /// seperti trust_cache_runtime_add yang hanya ada di kernelcache.
+    ///
+    /// fnAddr: runtime VA dari fungsi kernel (kernel_base + offset dari kernelcache symtab)
+    /// args: argumen fungsi (max 8, sesuai ARM64 ABI x0-x7)
+    @discardableResult
+    static func rcallAddr(_ rc: RemoteCall, _ fnAddr: UInt64, _ args: UInt64...) -> UInt64 {
+        guard fnAddr != 0 else { return 0xDEAD }
+        // Konversi kernel VA ke UnsafeMutableRawPointer untuk doStable
+        // RemoteCall.doStable menerima functionPointer sebagai UnsafeMutableRawPointer?
+        // Kita cast langsung dari UInt64 — ini valid karena kita memanggil di remote process
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(fnAddr))
+        var argsCopy = args.isEmpty ? [UInt64(0)] : Array(args)
+        let argCount = UInt(args.count)
+        // Gunakan placeholder name untuk logging saja — tidak dipakai untuk lookup
+        let placeholder = "kernel_fn_\(String(format: "%llx", fnAddr))"
+        return placeholder.withCString { cName -> UInt64 in
+            UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
+                rc.doStable(
+                    withTimeout: 5,
+                    functionName: UnsafeMutablePointer(mutating: cName),
+                    functionPointer: ptr,
+                    args: buffer.baseAddress,
+                    argCount: argCount
+                )
+            })
+        }
+    }
     
     // MARK: - Core: Execute block as root
     
