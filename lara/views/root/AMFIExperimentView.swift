@@ -6870,10 +6870,27 @@ struct AMFIExperimentView: View {
         var amfidPmapRootIsL1 = false
 
         if amfidPmap != 0 {
-            // Read root dari amfid pmap (+0x00 atau +0x08)
-            for (off, name) in [(UInt64(0), "+0x00"), (UInt64(8), "+0x08")] {
-                let l1Root = ds_kreadptr(amfidPmap + off)
-                guard isReasonablePhysTT(l1Root) || isKernelOrPhysmapVA(l1Root) else { continue }
+            // Read L1 root dari amfid pmap
+            // +0x00 biasanya kernel VA (pointer ke struct lain)
+            // +0x08 biasanya physical TTBR (arm64 page table base)
+            // Coba +0x08 dulu (physical TTBR), lalu +0x00 (kernel VA)
+            for (off, name) in [(UInt64(8), "+0x08"), (UInt64(0), "+0x00")] {
+                // Baca RAW value (tanpa PAC strip) untuk physical address
+                let rawVal = ds_kread64_safe(amfidPmap + off)
+                // Juga coba PAC-stripped
+                let ptrVal = ds_kreadptr(amfidPmap + off)
+
+                // Cek apakah raw value adalah physical TTBR
+                let l1Root: UInt64
+                if isReasonablePhysTT(rawVal) {
+                    l1Root = rawVal
+                } else if isReasonablePhysTT(ptrVal) {
+                    l1Root = ptrVal
+                } else if isKernelOrPhysmapVA(ptrVal) {
+                    l1Root = ptrVal
+                } else {
+                    continue
+                }
 
                 // Convert to physmap VA if physical
                 let l1VA: UInt64
