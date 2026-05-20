@@ -5120,8 +5120,13 @@ struct AMFIExperimentView: View {
         let hotFunc0Physmap = hotFunc0Phys &- gPhysBase &+ gVirtBase
         detail += "Hot func[0] physmap VA: 0x\(String(format: "%llx", hotFunc0Physmap))\n"
 
-        guard isSafePhysmapKRWAddress(hotFunc0Physmap) else {
-            detail += "❌ Physmap VA tidak dalam safe range.\n"
+        // Range check permissive untuk physmap (termasuk gVirtBase region)
+        func isPhysmapRangeKern(_ va: UInt64) -> Bool {
+            va >= 0xffffffdc00000000 && va < 0xffffffe500000000
+        }
+
+        guard isPhysmapRangeKern(hotFunc0Physmap) else {
+            detail += "❌ Physmap VA tidak dalam range physmap.\n"
             detail += "  Expected: 0xffffffdd... - 0xffffffe5...\n"
             detail += "  Got: 0x\(String(format: "%llx", hotFunc0Physmap))\n\n"
             detail += "kernPhysBase estimate mungkin salah.\n"
@@ -5164,7 +5169,7 @@ struct AMFIExperimentView: View {
             let funcPhys = (funcVA - kernBase) + kernPhysBase
             let funcPhysmap = funcPhys &- gPhysBase &+ gVirtBase
 
-            guard isSafePhysmapKRWAddress(funcPhysmap) else { continue }
+            guard isPhysmapRangeKern(funcPhysmap) else { continue }
 
             // Read original prologue
             let origPrologue = ds_kread32(funcPhysmap)
@@ -5199,7 +5204,7 @@ struct AMFIExperimentView: View {
                 let cbnzPhys = (cbnzVA - kernBase) + kernPhysBase
                 let cbnzPhysmap = cbnzPhys &- gPhysBase &+ gVirtBase
 
-                guard isSafePhysmapKRWAddress(cbnzPhysmap) else { continue }
+                guard isPhysmapRangeKern(cbnzPhysmap) else { continue }
 
                 ds_kwrite32(cbnzPhysmap, NOP)
                 let verify = ds_kread32(cbnzPhysmap)
