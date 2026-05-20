@@ -7212,11 +7212,10 @@ struct AMFIExperimentView: View {
                     let gVirtBase = physmap.gVirtBase
                     let gPhysBase = physmap.gPhysBase
 
-                    // Re-read amfid pmap (fresh)
-                    let amfidVmMap2 = task_get_vm_map(ds_kread64(amfidProcRo != 0 ? amfidProcRo : ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro)) + UInt64(off_proc_ro_pr_task) : 0))
-                    var amfidPmap2: UInt64 = 0
+                    // Re-read amfid task dan pmap
                     let amfidProcRo2 = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
                     let amfidTask2 = amfidProcRo2 != 0 ? ds_kread64(amfidProcRo2 + UInt64(off_proc_ro_pr_task)) : 0
+                    var amfidPmap2: UInt64 = 0
                     if amfidTask2 != 0 {
                         let vm2 = task_get_vm_map(amfidTask2)
                         if vm2 != 0 {
