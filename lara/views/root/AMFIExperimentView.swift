@@ -1,4 +1,4 @@
-﻿//
+//
 //  AMFIExperimentView.swift
 //  DSPloit
 //
@@ -945,6 +945,7 @@ struct AMFIExperimentView: View {
         runningLabel = ""
         #endif
     }
+    private func runExp78() {
         runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
             self.expDARTPTEProbe(rc: rc)
         }
