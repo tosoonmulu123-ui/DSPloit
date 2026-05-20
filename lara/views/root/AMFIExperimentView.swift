@@ -5464,17 +5464,7 @@ struct AMFIExperimentView: View {
                 if tcStructAddr != 0 { break }
             }
         } else {
-            detail += "Direct KRW scan __ppl_data (16 pages)...\n"
-            for pageIdx in 0..<16 {
-                let scanVA = pplDataBase &+ UInt64(pageIdx) * 0x4000
-                for off in stride(from: UInt64(0), to: UInt64(0x4000), by: 8) {
-                    let val = ds_kread64_safe(scanVA + off)
-                    if tryTrustCachePointer(val, label: "direct ppl page \(pageIdx)+0x\(String(format: "%x", off))") {
-                        break
-                    }
-                }
-                if tcStructAddr != 0 { break }
-            }
+            detail += "Skipping direct KRW scan of __ppl_data because it triggers PPL panic.\n"
         }
         
         // If not found in PPL pages, try scanning __DATA.__data (non-PPL, safe range)
