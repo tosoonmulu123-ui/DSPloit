@@ -218,8 +218,15 @@ private func safeKread64Physmap(_ va: UInt64) -> UInt64 {
 /// Kernel __TEXT / __DATA / fileset aux (0xffffff80… and legacy 0xfffffff0…).
 private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
     if va >= 0xfffffffa00000000 { return false }
-    if va >= 0xffffff8000000000 && va < 0xffffffe000000000 { return true }
-    if va >= 0xfffffff007000000 && va < 0xfffffffc00000000 { return true }
+    
+    // For iOS 15-18, Kernel text/data is always at 0xfffffff0...
+    if va >= 0xfffffff000000000 && va < 0xfffffffc00000000 { return true }
+    
+    // For older iOS versions, kernel text might be at 0xffffff80...
+    // But we MUST exclude 0xffffffdc... to 0xffffffe8... (Zone Map / Physmap)
+    // because unmapped reads there cause Kernel Data Abort panics.
+    if va >= 0xffffff8000000000 && va < 0xffffffdc00000000 { return true }
+    
     return false
 }
 
