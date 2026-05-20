@@ -5330,12 +5330,24 @@ struct AMFIExperimentView: View {
         let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
         let dstFd = RootExecutor.rcall(rc, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
 
-        guard srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) else {
-            detail += "❌ open gagal\n"
+        guard srcFd != UInt64(bitPattern: -1) else {
+            let err = remote_errno(rc)
+            detail += "❌ open(\(srcBin)) gagal: errno=\(err)\n"
             RootExecutor.rcall(rc, "free", srcAddr)
             RootExecutor.rcall(rc, "free", dstAddr)
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
+        detail += "✅ src opened (fd=\(srcFd))\n"
+
+        guard dstFd != UInt64(bitPattern: -1) else {
+            let err = remote_errno(rc)
+            detail += "❌ open(\(dstBin)) gagal: errno=\(err)\n"
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "free", srcAddr)
+            RootExecutor.rcall(rc, "free", dstAddr)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ dst opened (fd=\(dstFd))\n"
 
         let buf = mem + 0x800
         var copied: UInt64 = 0
