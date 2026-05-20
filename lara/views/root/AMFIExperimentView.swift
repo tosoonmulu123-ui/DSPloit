@@ -711,6 +711,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③d Deep TC Scan (Exp 82)",
+                    icon: "memorychip",
+                    color: .cyan,
+                    label: "Deep TC",
+                    action: runExp82DeepTCScan,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
