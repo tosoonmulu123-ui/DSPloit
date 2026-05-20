@@ -4095,7 +4095,7 @@ struct AMFIExperimentView: View {
         
         // Scan forward from proc in 32-byte steps (kalloc.32 alignment)
         var markerFound = false
-        var _: UInt64 = 0
+        var markerAddr: UInt64 = 0
         var scanCount = 0
         let scanRange: UInt64 = 0x10000  // 64KB scan range
         
@@ -4346,7 +4346,7 @@ struct AMFIExperimentView: View {
         }
 
         let kernBase = ds_get_kernel_base()
-        let _ = ds_get_kernel_slide()
+        let kernSlide = ds_get_kernel_slide()
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
 
@@ -4417,7 +4417,7 @@ struct AMFIExperimentView: View {
 
         let physmap = PhysmapConstants.loadOrDefault()
         let kernBase = ds_get_kernel_base()
-        let _ = ds_get_kernel_slide()
+        let kernSlide = ds_get_kernel_slide()
         detail += "gVirtBase: 0x\(String(format: "%llx", physmap.gVirtBase)) (saved)\n"
         detail += "gPhysBase: 0x\(String(format: "%llx", physmap.gPhysBase))\n"
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
@@ -5176,7 +5176,7 @@ struct AMFIExperimentView: View {
         let gPhysBase = physmap.gPhysBase
         let gVirtBase = physmap.gVirtBase
         let kernBase = ds_get_kernel_base()
-        let _ = ds_get_kernel_slide()
+        let kernSlide = ds_get_kernel_slide()
 
         detail += "Mode: INJECT (physmap write)\n"
         detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\(PhysmapConstants.isVerified ? "" : " (default)")\n"
@@ -5314,7 +5314,7 @@ struct AMFIExperimentView: View {
         
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
-        var _: UInt64 = 0
+        var tcPhysmapBase: UInt64 = 0
         
         func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
             guard val > 0xffffffdc00000000 && val < 0xffffffe500000000 else { return false }
@@ -5630,7 +5630,7 @@ struct AMFIExperimentView: View {
         
         // Step 1: Get kernel pmap (page table root)
         let kernBase = ds_get_kernel_base()
-        let _ = ds_get_kernel_slide()
+        let kernSlide = ds_get_kernel_slide()
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
         
@@ -5987,7 +5987,7 @@ struct AMFIExperimentView: View {
         detail += "⚠️ NO IOKit calls — pure ds_kread64 only\n\n"
         
         let kernBase = ds_get_kernel_base()
-        let _ = ds_get_kernel_slide()
+        let kernSlide = ds_get_kernel_slide()
         let physmap = PhysmapConstants.loadOrDefault()
         let gPhysBase = physmap.gPhysBase
         let gVirtBase = physmap.gVirtBase
@@ -6010,7 +6010,7 @@ struct AMFIExperimentView: View {
         var confirmedDARTL1: UInt64 = 0
         var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
         var dartMmioVA: UInt64 = 0
-        var _: UInt64 = 0
+        var dartObjectAddr: UInt64 = 0
         
         // ============================================================
         // STEP 1: Find IODARTMapper kernel object via vtable scan
