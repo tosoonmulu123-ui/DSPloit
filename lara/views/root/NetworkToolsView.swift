@@ -203,7 +203,7 @@ struct NetworkToolsView: View {
         
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "add_host") { rc in
-            let mem = rc.trojanMem
+            let _ = rc.trojanMem
             let hostsPath = remote_alloc_str(rc, "/etc/hosts")
             let fd = RootExecutor.rcall(rc, "open", hostsPath, UInt64(O_WRONLY | O_APPEND), 0)
             

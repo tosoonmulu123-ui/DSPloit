@@ -225,7 +225,7 @@ final class RootExecutor: ObservableObject {
             let argvBase = mem + 0x400
             var argvPtrs: [UInt64] = [binAddr]
             
-            for (i, arg) in args.prefix(6).enumerated() { // max 6 args
+            for (_, arg) in args.prefix(6).enumerated() { // max 6 args
                 let argAddr = remote_alloc_str(rc, arg)
                 argvPtrs.append(argAddr)
             }

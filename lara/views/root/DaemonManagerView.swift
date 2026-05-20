@@ -245,7 +245,7 @@ struct DaemonManagerView: View {
     private func applyChanges() {
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "write_daemons") { rc in
-            let mem = rc.trojanMem
+            let _ = rc.trojanMem
             
             // Build plist XML
             var plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

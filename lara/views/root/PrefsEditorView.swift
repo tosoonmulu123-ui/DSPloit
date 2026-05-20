@@ -132,12 +132,12 @@ struct PrefsEditorView: View {
         }
         
         root.executeAsRoot(operation: "write_pref") { rc in
-            let mem = rc.trojanMem
+            let _ = rc.trojanMem
             
             // Use CFPreferences from launchd context (has root access to all domains)
             let RTLD_DEFAULT = UInt64(bitPattern: -2)
             let cfPrefsSet = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFPreferencesSetValue"))
-            let cfPrefsSync = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFPreferencesAppSynchronize"))
+            let _ = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "CFPreferencesAppSynchronize"))
             
             guard cfPrefsSet != 0 else {
                 DispatchQueue.main.async { self.results.append("❌ CFPreferences not available") }
@@ -205,7 +205,7 @@ struct PrefsEditorView: View {
     private func extractWiFiPasswords() {
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "wifi_pass") { rc in
-            let mem = rc.trojanMem
+            let _ = rc.trojanMem
             
             // WiFi passwords stored in /var/Keychains/keychain-2.db
             // or via SecItemCopyMatching from root context

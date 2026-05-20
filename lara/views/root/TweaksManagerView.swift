@@ -269,7 +269,7 @@ struct TweaksManagerView: View {
             } else { result = -1 }
         case "disable_app_library":
             // SBIconController → setAppLibraryEnabled:NO
-            let sbApp = remote_msg(proc, remote_getClass(proc, "SpringBoard"), remote_sel(proc, "sharedApplication"), 0, 0, 0, 0)
+            let _ = remote_msg(proc, remote_getClass(proc, "SpringBoard"), remote_sel(proc, "sharedApplication"), 0, 0, 0, 0)
             let iconCtrl = remote_msg(proc, remote_getClass(proc, "SBIconController"), remote_sel(proc, "sharedInstance"), 0, 0, 0, 0)
             if iconCtrl != 0 {
                 let sel = remote_sel(proc, "setAppLibraryEnabled:")

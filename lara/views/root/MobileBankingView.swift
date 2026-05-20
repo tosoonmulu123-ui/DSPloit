@@ -78,6 +78,14 @@ struct MobileBankingView: View {
                             .foregroundStyle(.blue)
                     }
                     .disabled(!mgr.rcready || root.isExecuting)
+                    .alert("Restore /var/jb?", isPresented: $showRestoreConfirm) {
+                        Button("Batal", role: .cancel) {}
+                        Button("Restore") {
+                            restoreJbPath()
+                        }
+                    } message: {
+                        Text("Mengembalikan \(Self.jbPath) dari \(Self.hiddenPath). App perbankan mungkin akan blokir lagi.")
+                    }
                 } else {
                     Button {
                         showHideConfirm = true
@@ -88,6 +96,14 @@ struct MobileBankingView: View {
                     // FIX: jangan block tombol karena jbPathVisible — FileManager app
                     // tidak bisa lihat /var/jb dari sandbox. Biarkan launchd yang cek.
                     .disabled(!mgr.rcready || root.isExecuting)
+                    .alert("Sembunyikan /var/jb?", isPresented: $showHideConfirm) {
+                        Button("Batal", role: .cancel) {}
+                        Button("Sembunyikan", role: .destructive) {
+                            hideJbPath()
+                        }
+                    } message: {
+                        Text("Folder \(Self.jbPath) akan dipindah ke \(Self.hiddenPath). Jailbreak tools di dalamnya tidak bisa dipakai sampai Anda restore.")
+                    }
                 }
 
                 if !mgr.rcready {
@@ -188,22 +204,6 @@ struct MobileBankingView: View {
             default:
                 break
             }
-        }
-        .alert("Sembunyikan /var/jb?", isPresented: $showHideConfirm) {
-            Button("Batal", role: .cancel) {}
-            Button("Sembunyikan", role: .destructive) {
-                hideJbPath()
-            }
-        } message: {
-            Text("Folder \(Self.jbPath) akan dipindah ke \(Self.hiddenPath). Jailbreak tools di dalamnya tidak bisa dipakai sampai Anda restore.")
-        }
-        .alert("Restore /var/jb?", isPresented: $showRestoreConfirm) {
-            Button("Batal", role: .cancel) {}
-            Button("Restore") {
-                restoreJbPath()
-            }
-        } message: {
-            Text("Mengembalikan \(Self.jbPath) dari \(Self.hiddenPath). App perbankan mungkin akan blokir lagi.")
         }
     }
 
