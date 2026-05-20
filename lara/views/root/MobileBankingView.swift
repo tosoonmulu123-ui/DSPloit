@@ -223,8 +223,15 @@ struct MobileBankingView: View {
     private func refreshJbPathsLocal() {
         jbPathVisible = localPathExists(Self.jbPath)
         stashPathVisible = localPathExists(Self.hiddenPath)
+        // jbHidden = stash ada DAN /var/jb tidak ada
+        // Jika keduanya ada = kondisi tidak konsisten (hide gagal di tengah jalan)
         jbHidden = stashPathVisible && !jbPathVisible
         UserDefaults.standard.set(jbHidden, forKey: "dsploit.jb_hidden")
+
+        // Update status message jika kondisi tidak konsisten
+        if jbPathVisible && stashPathVisible {
+            statusMessage = "⚠️ Kondisi tidak konsisten: /var/jb DAN stash keduanya ada. Tap Sembunyikan untuk coba lagi (stash akan dihapus dulu)."
+        }
     }
 
     /// Scan jejak — FileManager lokal + update state jb hidden
@@ -299,7 +306,45 @@ struct MobileBankingView: View {
                     self.stashPathVisible = stashExists
                 }
             } else if stashExists {
-                msg = "❌ \(Self.hiddenPath) sudah ada — restore dulu atau hapus manual"
+                // Kondisi tidak konsisten: keduanya ada — hapus stash lama dulu lalu rename
+                let rmResult = RootExecutor.rcall(rc, "unlink", toAddr)
+                if rmResult == 0 {
+                    // Stash berhasil dihapus, coba rename sekarang
+                    let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
+                    let err = remote_errno(rc)
+                    ok = result == 0
+                    msg = ok
+                        ? "✅ \(Self.jbPath) disembunyikan (stash lama dihapus dulu). Force-quit app bank lalu buka lagi."
+                        : "❌ rename gagal setelah hapus stash: errno=\(err)"
+                    if ok {
+                        DispatchQueue.main.async {
+                            self.jbHidden = true
+                            self.jbPathVisible = false
+                            self.stashPathVisible = true
+                        }
+                    }
+                } else {
+                    // unlink gagal — stash mungkin folder, coba rmdir
+                    let rmdirResult = RootExecutor.rcall(rc, "rmdir", toAddr)
+                    if rmdirResult == 0 {
+                        let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
+                        let err = remote_errno(rc)
+                        ok = result == 0
+                        msg = ok
+                            ? "✅ \(Self.jbPath) disembunyikan (stash folder lama dihapus). Force-quit app bank lalu buka lagi."
+                            : "❌ rename gagal setelah rmdir stash: errno=\(err)"
+                        if ok {
+                            DispatchQueue.main.async {
+                                self.jbHidden = true
+                                self.jbPathVisible = false
+                                self.stashPathVisible = true
+                            }
+                        }
+                    } else {
+                        let rmErr = remote_errno(rc)
+                        msg = "❌ \(Self.hiddenPath) sudah ada dan tidak bisa dihapus (errno=\(rmErr)). Hapus manual via File Manager."
+                    }
+                }
             } else {
                 let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
                 let err = remote_errno(rc)

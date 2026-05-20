@@ -30,12 +30,14 @@ Use this document as **single source of truth** when continuing work in a new ch
 | H | **Exp 80 Opsi C** — rcallAddr kernel VA | ❌ PANIC: initproc exited |
 | I | **Exp 80 Opsi D** — dlopen userspace libs | ❌ PANIC: SIGBUS (initproc exited) |
 | J | **Exp 83** — CS Flags Bypass via physmap | ❌ zone RO — write tidak efektif |
-| K | **Exp 83 v2** — Heap KRW write ke proc_ro | 🟡 Implemented, belum ditest |
+| K | **Exp 83 v2** — Heap KRW write ke proc_ro | ❌ zone_require_ro — hardware RO |
+| L | **Exp 84** — amfid Patch via physmap | 🟡 Implemented, belum ditest |
 
 ### Ultimate technical win
 Bypass AMFI via **cs_flags** di `proc_ro` binary target. Karena semua jalur trust cache API gagal:
-- **Exp 83 v2 (current):** Attempt 1 = `ds_kwrite32` heap KRW langsung ke `proc_ro+0x1c`, Attempt 2 = physmap fallback
-- Binary dianggap platform binary → AMFI skip signature check
+- **Exp 84 (current):** Patch amfid userspace text via physmap — NOP instruksi CBNZ W0 (skip error branch setelah signature check)
+- amfid __TEXT bukan zone_require_ro → bisa di-patch via physmap
+- Worst case: amfid crash → restart otomatis (KeepAlive), tidak bootloop
 
 ---
 
@@ -226,7 +228,8 @@ Offset `0x1c` sudah dikonfirmasi dari `dspmgr.swift` `readCSFlags()`.
 ## 9. Git / CI rules (user preferences)
 
 - Push ke **`main`** langsung (user requested).
-- **Jangan push** sampai batch siap — push trigger IPA build.
+- **Jangan push dikit-dikit** — jika ada lebih dari 1 file yang perlu diubah, selesaikan SEMUA file dulu, baru 1x commit + 1x push. Jangan commit per-file atau per-fix kecil.
+- **Jangan push** sampai semua file dalam batch siap dan diagnostics bersih.
 - Setelah push: beri **tabel** — expected result, next step, impact.
 - Komunikasi dalam **Bahasa Indonesia**.
 - Hindari bootloop; respring OK.
@@ -245,7 +248,8 @@ Offset `0x1c` sudah dikonfirmasi dari `dspmgr.swift` `readCSFlags()`.
 - [x] TrustCacheInjector fix — count >= 65535
 - [x] Exp 80 Opsi D — FAILED (SIGBUS panic di launchd)
 - [x] Exp 83 physmap write — FAILED (proc_ro di zone_require_ro, physical page RO)
-- [ ] **Exp 83 v2 heap KRW write** — `ds_kwrite32` langsung ke proc_ro+0x1c
+- [x] Exp 83 v2 heap KRW write — FAILED (zone_require_ro hardware RO, tidak bisa ditulis)
+- [ ] **Exp 84 amfid Patch** — patch amfid text via physmap, NOP CBNZ W0
 - [ ] Test binary spawn berhasil tanpa SIGKILL → AMFI bypass confirmed
 - [ ] No regression: JB + XPF + Exp 74 + Import kernelcache + offline 48 slots
 
