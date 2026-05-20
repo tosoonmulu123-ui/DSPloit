@@ -5189,42 +5189,56 @@ struct AMFIExperimentView: View {
             }
         }
 
-        // Fallback: coba ADRP scan dari kernelcache jika symtab kosong
+        // Fallback: pakai offset yang ditemukan via find_trust_cache_fn2.py
         if resolvedFnAddr == 0 {
-            detail += "\nSymtab kosong — coba ADRP scan offset dari kernelcache...\n"
-            // Offset trust_cache_runtime_add dari kernelcache iOS 18.2 A12 (T8020)
-            // Didapat dari: nm kernelcache.decompressed | grep trust_cache_runtime_add
-            // Nilai ini unslid VA dari kernelcache iphone11b iOS 18.2:
-            let knownOffsets: [(sym: String, unslidVA: UInt64, sig: String)] = [
-                // Offset dari kernelcache.release.iphone11b iOS 18.2 (22C152)
-                // Hitung: unslid_va - xpf_kernbase = offset dari __TEXT start
-                // Jika kernelcache ada di device, ds_kcache_symbol_runtime akan handle ini.
-                // Fallback hardcode untuk A12 iOS 18.2 jika symtab strip:
-                ("_trust_cache_runtime_add",   0xfffffff00793c000, "trust_cache_runtime_add(type,mod,sz)"),
-                ("_pmap_load_trust_cache",      0xfffffff007a10000, "pmap_load_trust_cache(mod,sz)"),
+            detail += "\nSymtab kosong — pakai offset dari kernelcache analysis (find_trust_cache_fn2.py)...\n"
+            // Offset ditemukan via string xref analysis pada kernelcache iOS 18.2 A12 (22C152)
+            // Script: scripts/find_trust_cache_fn2.py kernelcache 0xfffffff007004000
+            // kernel_base (unslid) = 0xfffffff007004000
+            let knownOffsets: [(sym: String, offset: UInt64, sig: String, confidence: String)] = [
+                // #1 HIGH — string_ref:_load_trust_cache + load_trust_cache
+                // First instr: 0xa9127bfd = STP x29,x30,[sp,#-0xd0]! ✅
+                ("_load_trust_cache",          0x1f84304, "_load_trust_cache(module, size)", "HIGH"),
+                // #6 HIGH — string_ref:_load_trust_cache (smaller frame)
+                // First instr: 0xa9037bfd = STP x29,x30,[sp,#-0x30]! ✅
+                ("_load_trust_cache_v2",       0x1f84ef0, "_load_trust_cache variant", "HIGH"),
+                // #9 HIGH — string_ref:_load_trust_cache (smallest frame)
+                // First instr: 0xa9027bfd = STP x29,x30,[sp,#-0x20]! ✅
+                ("_load_trust_cache_v3",       0x1f84d00, "_load_trust_cache small variant", "HIGH"),
+                // #3 HIGH — string_ref:TrustCache (large function)
+                // First instr: 0xa9097bfd = STP x29,x30,[sp,#-0x70]! ✅
+                ("_TrustCache_fn",             0x12817f4, "TrustCache related function", "MEDIUM"),
             ]
-            // xpfBase = unslid kernel base dari kernelcache (bukan runtime).
-            // ds_kcache_symbol_unslid() sudah pakai gXPF.kernelBase secara internal di C layer.
-            // Di Swift kita tidak bisa akses gXPF langsung — gunakan ds_get_kernel_slide() sebagai proxy.
-            // Jika slide = runtime_base - unslid_base, maka unslid_base = runtime_base - slide.
-            let xpfBase = kernBase &- kernSlide  // estimasi unslid base
+
+            detail += "Mencoba \(knownOffsets.count) offset dari kernelcache analysis:\n"
             for entry in knownOffsets {
-                if xpfBase != 0 {
-                    let offset = entry.unslidVA &- xpfBase
-                    let runtime = kernBase &+ offset
-                    // Sanity check: harus di __TEXT range
-                    if isSafeKernelKreadAddress(runtime) {
-                        let magic = ds_kread32_safe(runtime)
-                        detail += "  \(entry.sym) fallback: 0x\(String(format: "%llx", runtime)) magic=0x\(String(format: "%08x", magic))\n"
-                        // Jangan pakai fallback hardcode — terlalu berisiko salah offset
-                        // Hanya log untuk diagnosa
+                let runtime = kernBase &+ entry.offset
+                if isSafeKernelKreadAddress(runtime) {
+                    let firstInsn = ds_kread32_safe(runtime)
+                    let isSTP = (firstInsn & 0xFF000000) == 0xA9000000
+                    let isSUB = (firstInsn & 0xFF000000) == 0xD1000000
+                    let isPAC = firstInsn == 0xD503235F
+                    let valid = isSTP || isSUB || isPAC
+                    detail += "  \(entry.sym) [offset=0x\(String(format: "%llx", entry.offset))]:\n"
+                    detail += "    runtime=0x\(String(format: "%llx", runtime))\n"
+                    detail += "    first_insn=0x\(String(format: "%08x", firstInsn)) \(valid ? "✅ valid prologue" : "⚠️ unexpected")\n"
+                    detail += "    confidence=\(entry.confidence)\n"
+                    if valid && resolvedFnAddr == 0 {
+                        resolvedFnAddr = runtime
+                        resolvedSym = entry.sym
+                        resolvedSig = entry.sig
+                        detail += "    → DIPILIH sebagai kandidat\n"
                     }
                 }
             }
-            detail += "\n⚠️ Tidak ada simbol ditemukan di kernelcache.\n"
-            detail += "Pastikan kernelcache ada di Documents/ dan sudah di-import.\n"
-            detail += "Jalankan 'Import Kernelcache' dari menu utama lalu coba lagi.\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+
+            if resolvedFnAddr == 0 {
+                detail += "\n❌ Semua offset fallback tidak valid.\n"
+                detail += "Kemungkinan kernel_base berbeda dari yang diasumsikan.\n"
+                detail += "kernel_base saat ini: 0x\(String(format: "%llx", kernBase))\n"
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
+            detail += "\n✅ Menggunakan fallback offset: \(resolvedSym)\n\n"
         }
 
         detail += "\n✅ Resolved: \(resolvedSym)\n"
