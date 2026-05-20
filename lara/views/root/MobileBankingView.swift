@@ -326,8 +326,9 @@ struct MobileBankingView: View {
                 // FIX: jika sukses, jangan refresh dari FileManager — sandbox masih
                 // melihat /var/jb karena kernel vnode cache belum flush.
                 // State sudah di-set benar dari RC result di atas.
+                // FIX: jangan panggil scanIndicators() jika ok — akan overwrite jbHidden via refreshJbPathsLocal
                 if !ok { self.refreshJbPathsLocal() }
-                if !self.indicators.isEmpty { self.scanIndicators() }
+                if !ok, !self.indicators.isEmpty { self.scanIndicators() }
             }
         }
         #else
@@ -399,8 +400,9 @@ struct MobileBankingView: View {
                 // FIX: jika sukses, jangan refresh dari FileManager — sandbox masih
                 // melihat /var/jb karena kernel vnode cache belum flush.
                 // State sudah di-set benar dari RC result di atas.
+                // FIX: jangan panggil scanIndicators() jika ok — akan overwrite jbHidden via refreshJbPathsLocal
                 if !ok { self.refreshJbPathsLocal() }
-                if !self.indicators.isEmpty { self.scanIndicators() }
+                if !ok, !self.indicators.isEmpty { self.scanIndicators() }
             }
         }
         #else
