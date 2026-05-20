@@ -810,10 +810,22 @@ struct AMFIExperimentView: View {
                     }
                 }
                 .disabled(isRunning || !mgr.rcready)
+
+                Button(action: runDumpAmfid) {
+                    HStack {
+                        Label("Dump amfid binary", systemImage: "arrow.down.doc")
+                            .foregroundStyle(isRunning ? .gray : .green)
+                        Spacer()
+                        if isRunning && runningLabel.contains("Dump") {
+                            ProgressView().scaleEffect(0.7)
+                        }
+                    }
+                }
+                .disabled(isRunning || !mgr.rcready)
             } header: {
                 Label("Advanced", systemImage: "flask")
             } footer: {
-                Text("Exp 60/78 opsional. Exp 78 = pure KRW, tanpa IOKit.")
+                Text("Exp 60/78 opsional. Dump amfid: copy /usr/libexec/amfid ke Documents (ambil via Files app).")
                     .font(.system(size: 9))
             }
             
@@ -4915,6 +4927,147 @@ struct AMFIExperimentView: View {
             }
         }
     }
+
+    // MARK: - Dump amfid binary
+
+    /// Copy /usr/libexec/amfid ke Documents folder via launchd RC.
+    /// User bisa ambil dari Files app → On My iPhone → DSPloit.
+    /// Untuk analisis offline dengan scripts/analyze_amfid.py.
+    private func runDumpAmfid() {
+        isRunning = true
+        runningLabel = "Dump amfid"
+        guard mgr.rcready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "dump_amfid") { rc in
+            let result = self.expDumpAmfid(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    /// Copy /usr/libexec/amfid ke app Documents folder.
+    private func expDumpAmfid(rc: RemoteCall) -> ExperimentResult {
+        let expName = "Dump amfid"
+        var detail = "Dump /usr/libexec/amfid ke Documents\n"
+        detail += "=====================================\n\n"
+
+        let mem = rc.trojanMem
+        let srcPathStr = "/usr/libexec/amfid"
+
+        // Destination: app Documents folder
+        let docsDir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? "/var/mobile/Documents"
+        let dstPathStr = "\(docsDir)/amfid_dump"
+
+        detail += "Source: \(srcPathStr)\n"
+        detail += "Destination: \(dstPathStr)\n\n"
+
+        let srcPath = remote_alloc_str(rc, srcPathStr)
+        let dstPath = remote_alloc_str(rc, dstPathStr)
+
+        // Open source (read-only)
+        let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        guard srcFd != UInt64(bitPattern: -1) else {
+            let err = remote_errno(rc)
+            detail += "❌ open(\(srcPathStr)) gagal: errno=\(err)\n"
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ Source opened (fd=\(srcFd))\n"
+
+        // Open destination (write, create, truncate)
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        guard dstFd != UInt64(bitPattern: -1) else {
+            let err = remote_errno(rc)
+            detail += "❌ open(dst) gagal: errno=\(err)\n"
+            detail += "Coba tulis ke /var/mobile/Documents/amfid_dump...\n"
+
+            // Fallback: tulis ke path absolut
+            let fallbackPath = remote_alloc_str(rc, "/var/mobile/Documents/amfid_dump")
+            RootExecutor.rcall(rc, "unlink", fallbackPath)
+            let fallbackFd = RootExecutor.rcall(rc, "open", fallbackPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            RootExecutor.rcall(rc, "free", fallbackPath)
+
+            guard fallbackFd != UInt64(bitPattern: -1) else {
+                let err2 = remote_errno(rc)
+                detail += "❌ Fallback juga gagal: errno=\(err2)\n"
+                RootExecutor.rcall(rc, "close", srcFd)
+                RootExecutor.rcall(rc, "free", srcPath)
+                RootExecutor.rcall(rc, "free", dstPath)
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
+
+            // Copy loop dengan fallback fd
+            let buf = mem + 0x800
+            var totalBytes: UInt64 = 0
+            for _ in 0..<2048 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                if n == 0 || n > 4096 { break }
+                RootExecutor.rcall(rc, "write", fallbackFd, buf, n)
+                totalBytes += n
+            }
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "close", fallbackFd)
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+
+            detail += "✅ Dumped \(totalBytes) bytes ke /var/mobile/Documents/amfid_dump\n\n"
+            detail += "Ambil file via:\n"
+            detail += "  Files app → On My iPhone → cari amfid_dump\n"
+            detail += "  Atau: AirDrop dari Files app ke PC\n"
+            detail += "\nLalu jalankan di PC:\n"
+            detail += "  python scripts/analyze_amfid.py amfid_dump\n"
+            return ExperimentResult(name: expName, success: totalBytes > 0, detail: detail, timestamp: Date())
+        }
+        detail += "✅ Destination opened (fd=\(dstFd))\n"
+
+        // Copy loop: read 4KB at a time
+        let buf = mem + 0x800
+        var totalBytes: UInt64 = 0
+        for _ in 0..<2048 {  // max 8MB (2048 * 4KB)
+            let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+            if n == 0 || n > 4096 { break }
+            RootExecutor.rcall(rc, "write", dstFd, buf, n)
+            totalBytes += n
+        }
+
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+
+        detail += "\n✅ Dumped \(totalBytes) bytes (\(totalBytes / 1024) KB)\n\n"
+
+        if totalBytes == 0 {
+            detail += "❌ File kosong atau tidak bisa dibaca.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "=== NEXT STEPS ===\n"
+        detail += "1. Buka Files app → On My iPhone → DSPloit → amfid_dump\n"
+        detail += "2. Share/AirDrop ke PC\n"
+        detail += "3. Rename jadi 'amfid' dan taruh di workspace DSPloit\n"
+        detail += "4. Jalankan: python scripts/analyze_amfid.py amfid\n"
+        detail += "5. Script akan output offset patch untuk Exp 84 v2\n"
+
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+    #endif
     
     private func expDeepTCScan() -> ExperimentResult {
         let expName = "Deep TC Scan (Exp 82)"
