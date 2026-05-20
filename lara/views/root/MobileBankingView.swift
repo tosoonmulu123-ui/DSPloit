@@ -1,4 +1,4 @@
-﻿//
+//
 //  MobileBankingView.swift
 //  DSPloit
 //
@@ -306,15 +306,19 @@ struct MobileBankingView: View {
                     self.stashPathVisible = stashExists
                 }
             } else if stashExists {
-                // Kondisi tidak konsisten: keduanya ada — hapus stash lama dulu lalu rename
-                let rmResult = RootExecutor.rcall(rc, "unlink", toAddr)
-                if rmResult == 0 {
-                    // Stash berhasil dihapus, coba rename sekarang
+                // Kondisi tidak konsisten: keduanya ada — pindahkan stash lama ke trash
+                let trashPath = "/var/.dsploit_jb_trash_\(Int(Date().timeIntervalSince1970))"
+                let trashAddr = remote_alloc_str(rc, trashPath)
+                let renameStashResult = RootExecutor.rcall(rc, "rename", toAddr, trashAddr)
+                RootExecutor.rcall(rc, "free", trashAddr)
+
+                if renameStashResult == 0 {
+                    // Stash berhasil dipindah, coba rename jbPath sekarang
                     let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
                     let err = remote_errno(rc)
                     ok = result == 0
                     msg = ok
-                        ? "✅ \(Self.jbPath) disembunyikan (stash lama dihapus dulu). Force-quit app bank lalu buka lagi."
+                        ? "✅ \(Self.jbPath) disembunyikan (stash lama dipindah ke trash). Force-quit app bank lalu buka lagi."
                         : "❌ rename gagal setelah hapus stash: errno=\(err)"
                     if ok {
                         DispatchQueue.main.async {
@@ -324,26 +328,8 @@ struct MobileBankingView: View {
                         }
                     }
                 } else {
-                    // unlink gagal — stash mungkin folder, coba rmdir
-                    let rmdirResult = RootExecutor.rcall(rc, "rmdir", toAddr)
-                    if rmdirResult == 0 {
-                        let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
-                        let err = remote_errno(rc)
-                        ok = result == 0
-                        msg = ok
-                            ? "✅ \(Self.jbPath) disembunyikan (stash folder lama dihapus). Force-quit app bank lalu buka lagi."
-                            : "❌ rename gagal setelah rmdir stash: errno=\(err)"
-                        if ok {
-                            DispatchQueue.main.async {
-                                self.jbHidden = true
-                                self.jbPathVisible = false
-                                self.stashPathVisible = true
-                            }
-                        }
-                    } else {
-                        let rmErr = remote_errno(rc)
-                        msg = "❌ \(Self.hiddenPath) sudah ada dan tidak bisa dihapus (errno=\(rmErr)). Hapus manual via File Manager."
-                    }
+                    let err = remote_errno(rc)
+                    msg = "❌ Gagal memindah stash lama (errno=\(err))."
                 }
             } else {
                 let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
@@ -414,10 +400,29 @@ struct MobileBankingView: View {
             if !stashExists {
                 msg = "⚠️ Stash \(Self.hiddenPath) tidak ditemukan"
             } else if jbExists {
-                msg = "⚠️ \(Self.jbPath) sudah ada — tidak perlu restore"
-                DispatchQueue.main.async {
-                    self.jbHidden = false
-                    self.jbPathVisible = true
+                // Kondisi tidak konsisten: keduanya ada. Pindahkan /var/jb saat ini ke trash agar stash bisa di-restore.
+                let trashPath = "/var/.dsploit_jb_trash_\(Int(Date().timeIntervalSince1970))"
+                let trashAddr = remote_alloc_str(rc, trashPath)
+                let renameJbResult = RootExecutor.rcall(rc, "rename", toAddr, trashAddr)
+                RootExecutor.rcall(rc, "free", trashAddr)
+
+                if renameJbResult == 0 {
+                    let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
+                    let err = remote_errno(rc)
+                    ok = result == 0
+                    msg = ok
+                        ? "✅ \(Self.jbPath) dikembalikan (folder jb lama dipindah ke trash)."
+                        : "❌ rename gagal: errno=\(err)"
+                    if ok {
+                        DispatchQueue.main.async {
+                            self.jbHidden = false
+                            self.jbPathVisible = true
+                            self.stashPathVisible = false
+                        }
+                    }
+                } else {
+                    let err = remote_errno(rc)
+                    msg = "❌ Gagal memindah /var/jb lama (errno=\(err))."
                 }
             } else {
                 let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
