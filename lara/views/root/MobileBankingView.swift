@@ -83,16 +83,29 @@ struct MobileBankingView: View {
                         showHideConfirm = true
                     } label: {
                         Label("Sembunyikan /var/jb", systemImage: "eye.slash")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(mgr.rcready ? .orange : .secondary)
                     }
                     // FIX: jangan block tombol karena jbPathVisible — FileManager app
                     // tidak bisa lihat /var/jb dari sandbox. Biarkan launchd yang cek.
                     .disabled(!mgr.rcready || root.isExecuting)
                 }
+
+                if !mgr.rcready {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text("Butuh RemoteCall — jalankan Jailbreak di tab Main dulu, lalu kembali ke sini.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Label("Aksi", systemImage: "bolt.fill")
             } footer: {
-                Text("Sembunyikan = rename cepat via launchd (<3 detik). Scan hanya cek lokal (tanpa launchd) — menghindari respring. Setelah hide: force-quit app bank, buka lagi.")
+                Text(mgr.rcready
+                     ? "Sembunyikan = rename cepat via launchd (<3 detik). Setelah hide: force-quit app bank, buka lagi."
+                     : "RC belum ready. Jalankan Jailbreak di tab Main → tunggu 'exploit success' → kembali ke sini.")
             }
 
             if !indicators.isEmpty {

