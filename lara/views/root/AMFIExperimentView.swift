@@ -7059,6 +7059,7 @@ struct AMFIExperimentView: View {
             detail += "Launchd akan restart amfid dari disk → patched version.\n\n"
 
             let amfidPath = remote_alloc_str(rc, "/usr/libexec/amfid")
+            let nopBuf = mem + 0x2000
 
             // Open amfid for read+write
             let fd = RootExecutor.rcall(rc, "open", amfidPath, UInt64(O_RDWR), 0)
@@ -7274,7 +7275,6 @@ struct AMFIExperimentView: View {
 
             // Patch setiap offset: seek + write NOP
             // File offset = offset dari __TEXT start (karena __TEXT fileoff=0)
-            let nopBuf = mem + 0x2000
             rc[nopBuf].setValue32(NOP)
 
             var diskPatched = 0
