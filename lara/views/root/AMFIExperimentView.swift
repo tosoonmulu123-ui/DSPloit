@@ -198,7 +198,7 @@ private func isReasonablePhysTT(_ v: UInt64) -> Bool {
 
 /// Socket KRW must not touch garbage VAs — caused panic: copy_validate_kernel_addr(0xfffffffbffffffff).
 private func isSafePhysmapKRWAddress(_ va: UInt64) -> Bool {
-    guard va >= 0xffffffdd00000000 && va < 0xffffffe800000000 else { return false }
+    guard va >= 0xffffffdd00000000 && va < 0xffffffe500000000 else { return false }
     if va >= 0xfffffffa00000000 { return false }
     return true
 }
@@ -223,7 +223,7 @@ private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
     if va >= 0xfffffff000000000 && va < 0xfffffffc00000000 { return true }
     
     // For older iOS versions, kernel text might be at 0xffffff80...
-    // But we MUST exclude 0xffffffdc... to 0xffffffe8... (Zone Map / Physmap)
+    // But we MUST exclude 0xffffffdc... to 0xffffffe5... (Zone Map / Physmap)
     // because unmapped reads there cause Kernel Data Abort panics.
     if va >= 0xffffff8000000000 && va < 0xffffffdc00000000 { return true }
     
@@ -236,7 +236,8 @@ private func isSafeKernelHeapKreadAddress(_ va: UInt64) -> Bool {
     // Zone map on iOS 15-18 is typically 0xffffffdc... to 0xffffffe2...
     // DO NOT allow 0xfffffff0... here because it contains MMIO (I/O registers) which causes LLC Bus Error panic if read!
     // Start from 0xffffffdd to explicitly exclude the VM, Metadata, and Bitmaps regions in 0xffffffdc which can trigger Data Abort panics.
-    let isZoneMap = va >= 0xffffffdd00000000 && va < 0xffffffe800000000
+    // End at 0xffffffe5 to explicitly exclude Metadata / Bitmaps regions which start at 0xffffffe7...
+    let isZoneMap = va >= 0xffffffdd00000000 && va < 0xffffffe500000000
     guard isZoneMap else { return false }
     if let gVirt = PhysmapConstants.load()?.gVirtBase {
         if va >= gVirt, va < gVirt &+ 0x80000000 { return false }
@@ -5443,8 +5444,7 @@ struct AMFIExperimentView: View {
         var tcPhysmapBase: UInt64 = 0
         
         func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
-            let isZoneMap = val >= 0xffffffdd00000000 && val < 0xffffffe800000000
-            guard isZoneMap else { return false }
+            guard isSafeKernelHeapKreadAddress(val) && isSafeKernelHeapKreadAddress(val + 4) else { return false }
             let tcVer = ds_kread32_safe(val)
             let tcCnt = ds_kread32_safe(val + 4)
             guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
