@@ -225,8 +225,10 @@ private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
 
 /// kalloc heap (amfid/proc/trust cache — 0xdd/0xde/0xe0…). Jangan pakai aturan physmap 0xdc–0xe6 di sini.
 private func isSafeKernelHeapKreadAddress(_ va: UInt64) -> Bool {
-    guard va >= 0xffffffdd00000000, va < 0xffffffe800000000 else { return false }
     if va >= 0xfffffffa00000000 { return false }
+    let isLegacyHeap = va >= 0xffffffdd00000000 && va < 0xffffffe800000000
+    let isModernHeap = va >= 0xfffffff020000000
+    guard isLegacyHeap || isModernHeap else { return false }
     if let gVirt = PhysmapConstants.load()?.gVirtBase {
         if va >= gVirt, va < gVirt &+ 0x80000000 { return false }
     }
@@ -5317,7 +5319,9 @@ struct AMFIExperimentView: View {
         var tcPhysmapBase: UInt64 = 0
         
         func tryTrustCachePointer(_ val: UInt64, label: String, physmapBase: UInt64 = 0) -> Bool {
-            guard val > 0xffffffdc00000000 && val < 0xffffffe500000000 else { return false }
+            let isLegacyHeap = val >= 0xffffffdd00000000 && val < 0xffffffe800000000
+            let isModernHeap = val >= 0xfffffff020000000 && val < 0xfffffffa00000000
+            guard isLegacyHeap || isModernHeap else { return false }
             let tcVer = ds_kread32_safe(val)
             let tcCnt = ds_kread32_safe(val + 4)
             guard tcVer >= 1 && tcVer <= 3 && tcCnt > 0 && tcCnt < 50000 else { return false }
