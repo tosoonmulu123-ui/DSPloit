@@ -6467,7 +6467,7 @@ struct AMFIExperimentView: View {
             detail += "⚠️ Proses '\(procName)' tidak ditemukan — pakai our proc (self-test)\n"
             detail += "Our proc: 0x\(String(format: "%llx", targetProc)), PID: \(targetPid)\n\n"
         } else {
-            targetPid = ds_kread32(targetProc + UInt64(off_proc_p_pid))
+            targetPid = Int32(bitPattern: ds_kread32(targetProc + UInt64(off_proc_p_pid)))
             detail += "✅ Found proc: 0x\(String(format: "%llx", targetProc)), PID: \(targetPid)\n\n"
         }
 
