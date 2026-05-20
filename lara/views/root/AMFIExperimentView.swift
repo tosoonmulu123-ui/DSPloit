@@ -4805,15 +4805,19 @@ struct AMFIExperimentView: View {
     // MARK: - Exp 82: Deep Trust Cache Scan
     
     private func runExp82DeepTCScan() {
-        guard !isTesting else { return }
-        isTesting = true
-        testResult = "Memulai Exp 82: Deep TC Scan...\n"
-        
+        isRunning = true
+        runningLabel = "Deep TC Scan"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = self.expDeepTCScan()
+            let result = self.expDeepTCScan()
             DispatchQueue.main.async {
-                self.testResult = res.detail
-                self.isTesting = false
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
             }
         }
     }
