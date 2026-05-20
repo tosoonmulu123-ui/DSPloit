@@ -725,7 +725,7 @@ struct AMFIExperimentView: View {
                     label: "RC TC Add",
                     action: runExp80RCTrustCacheAdd,
                     needsVerified: true,
-                    needsProbe: true
+                    needsProbe: false
                 )
 
                 pathButton(
@@ -964,18 +964,7 @@ struct AMFIExperimentView: View {
     private func runExp80RCTrustCacheAdd() {
         isRunning = true
         runningLabel = "RC TC Add"
-        guard mgr.dsready, PhysmapConstants.isVerified, PhysmapConstants.isProbeOK else {
-            isRunning = false
-            runningLabel = ""
-            return
-        }
-        guard probedTCAddr != 0 else {
-            results.insert(ExperimentResult(
-                name: "RC TC Add (Exp 80)",
-                success: false,
-                detail: "tc_addr belum diset — probe ulang Exp 77 dulu.",
-                timestamp: Date()
-            ), at: 0)
+        guard mgr.dsready, PhysmapConstants.isVerified else {
             isRunning = false
             runningLabel = ""
             return
