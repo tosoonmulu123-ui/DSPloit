@@ -753,115 +753,16 @@ struct AMFIExperimentView: View {
                     needsProbe: false
                 )
 
-                pathButton(
-                    title: "③e CS Flags Bypass (Exp 83)",
-                    icon: "shield.lefthalf.filled",
-                    color: .purple,
-                    label: "CS Flags",
-                    action: runExp83CSFlagsBypass,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③f amfid Patch (Exp 84)",
-                    icon: "waveform.badge.exclamationmark",
-                    color: .red,
-                    label: "amfid",
-                    action: runExp84AmfidPatch,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③g Kernel AMFI Patch (Exp 85)",
-                    icon: "bolt.trianglebadge.exclamationmark",
-                    color: .red,
-                    label: "Kern AMFI",
-                    action: runExp85KernelAmfiPatch,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③h Ad-hoc Sign + Spawn (Exp 86)",
-                    icon: "signature",
-                    color: .yellow,
-                    label: "AdHoc",
-                    action: runExp86AdHocSpawn,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③i DYLD Hijack (Exp 87)",
-                    icon: "link.badge.plus",
-                    color: .yellow,
-                    label: "DYLD Hijack",
-                    action: runExp87DyldHijack,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③j SB dlopen (Exp 88)",
-                    icon: "app.badge",
-                    color: .green,
-                    label: "SB dlopen",
-                    action: runExp88SBDlopen,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③k JIT Shellcode (Exp 89)",
-                    icon: "memorychip.fill",
-                    color: .green,
-                    label: "JIT",
-                    action: runExp89JIT,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③l SB system() (Exp 90)",
-                    icon: "terminal",
-                    color: .green,
-                    label: "SB system",
-                    action: runExp90SBSystem,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③m Fork+Exec (Exp 91)",
-                    icon: "arrow.triangle.branch",
-                    color: .green,
-                    label: "Fork+Exec",
-                    action: runExp91ForkExec,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③n TC Inject (Exp 92)",
-                    icon: "plus.circle.fill",
-                    color: .green,
-                    label: "TC Inject",
-                    action: runExp92TCInject,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③o AMFI Data Write (Exp 93)",
-                    icon: "shield.slash",
-                    color: .red,
-                    label: "AMFI Data",
-                    action: runExp93AMFIDataWrite,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
                 pathButton(
                     title: "③o2 AMFI Flag Disable (Exp 93b)",
@@ -923,55 +824,10 @@ struct AMFIExperimentView: View {
                     needsProbe: false
                 )
 
-                pathButton(
-                    title: "③r DATA_CONST Write (Exp 96)",
-                    icon: "bolt.shield.fill",
-                    color: .gray,
-                    label: "DC Write",
-                    action: runExp96DataConstWrite,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③s amfid Race (Exp 97)",
-                    icon: "hare.fill",
-                    color: .purple,
-                    label: "amfid Race",
-                    action: runExp97AmfidRace,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③t CT Data Write (Exp 98)",
-                    icon: "lock.doc.fill",
-                    color: .purple,
-                    label: "CT Write",
-                    action: runExp98CoreTrustData,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③t2 CT Patch+Spawn (Exp 98b)",
-                    icon: "lock.open.doc.fill",
-                    color: .purple,
-                    label: "CT Patch",
-                    action: runExp98bCoreTrustPatch,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③u AMFI IOKit Exploit (Exp 99)",
-                    icon: "ant.fill",
-                    color: .purple,
-                    label: "AMFI IOKit",
-                    action: runExp99AMFIIOKit,
-                    needsVerified: false,
-                    needsProbe: false
-                )
 
                 pathButton(
                     title: "③v TC Load XPC via SB (Exp 100)",
@@ -1043,25 +899,7 @@ struct AMFIExperimentView: View {
                     needsProbe: false
                 )
 
-                pathButton(
-                    title: "③p Heap TC Scan (Exp 94)",
-                    icon: "magnifyingglass.circle",
-                    color: .orange,
-                    label: "Heap TC",
-                    action: runExp94HeapTCScan,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
-                pathButton(
-                    title: "③q CS Disable (Exp 95)",
-                    icon: "lock.open.fill",
-                    color: .red,
-                    label: "CS Disable",
-                    action: runExp95CSDisable,
-                    needsVerified: true,
-                    needsProbe: false
-                )
 
                 pathButton(
                     title: "④ Test Binary Spawn",
@@ -1081,59 +919,6 @@ struct AMFIExperimentView: View {
                     .font(.system(size: 9))
             }
 
-            Section {
-                Button(action: runAmfidRC) {
-                    HStack {
-                        Label("amfid RC (Exp 60)", systemImage: "bolt.shield")
-                            .foregroundStyle(isRunning ? .gray : .orange)
-                        Spacer()
-                        if isRunning && runningLabel.contains("amfid") {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-
-                Button(action: runExp78) {
-                    HStack {
-                        Label("DART PTE Probe (Exp 78)", systemImage: "cpu")
-                            .foregroundStyle(isRunning ? .gray : .purple)
-                        Spacer()
-                        if isRunning && runningLabel.contains("DART") {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-
-                Button(action: runPatchAmfidOnly) {
-                    HStack {
-                        Label("Patch amfid (safe)", systemImage: "wrench.and.screwdriver")
-                            .foregroundStyle(isRunning ? .gray : .mint)
-                        Spacer()
-                        if isRunning && runningLabel.contains("Patch safe") {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-
-                Button(action: runDumpAmfid) {
-                    HStack {
-                        Label("Dump amfid binary", systemImage: "arrow.down.doc")
-                            .foregroundStyle(isRunning ? .gray : .green)
-                        Spacer()
-                        if isRunning && runningLabel.contains("Dump") {
-                            ProgressView().scaleEffect(0.7)
-                        }
-                    }
-                }
-                .disabled(isRunning || !mgr.rcready)
-            } header: {
-                Label("Advanced", systemImage: "flask")
-            } footer: {
-                Text("Exp 60/78 opsional. Dump amfid: copy /usr/libexec/amfid ke Documents (ambil via Files app).")
-                    .font(.system(size: 9))
             }
             
             // Results
@@ -1341,11 +1126,6 @@ struct AMFIExperimentView: View {
             }
         }
     }
-    private func runExp78() {
-        runExperiment(label: "DART", operation: "exp78_dart", append: true) { rc in
-            self.expDARTPTEProbe(rc: rc)
-        }
-    }
 
     /// Exp 79 Tahap 1: Write test — tulis sentinel ke slot kosong, verify, restore.
     /// Tidak memodifikasi entry yang ada. Aman untuk dijalankan.
@@ -1404,23 +1184,6 @@ struct AMFIExperimentView: View {
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "test_binary") { rc in
             let result = self.expPosixSpawn(rc: rc, binary: path, name: "posix_spawn \(path)")
-            DispatchQueue.main.async {
-                self.results.insert(result, at: 0)
-                self.isRunning = false
-                self.runningLabel = ""
-            }
-            return (result.success, result.detail, 0)
-        }
-        #endif
-    }
-    
-    private func runAmfidRC() {
-        isRunning = true
-        runningLabel = "amfid RC (may take 10s)..."
-        
-        #if !DISABLE_REMOTECALL
-        root.executeAsRoot(operation: "amfid_rc") { rc in
-            let result = self.expRCIntoAmfid(rc: rc)
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
@@ -1990,121 +1753,10 @@ struct AMFIExperimentView: View {
                 self.runningLabel = ""
             }
         }
-    }
-
-    /// If writable: flip boolean flags → disable AMFI checks entirely.
-    private func runExp93AMFIDataWrite() {
-        detail += "AMFI __DATA size:     0x\(String(format: "%llx", amfiDataSize))\n\n"
-
-        // Step 1: Read test — confirm we can read AMFI __DATA
-        detail += "=== Step 1: Read AMFI __DATA ===\n"
-
-        let readTest = ds_kread64_safe(amfiDataSlid)
-        detail += "AMFI __DATA[0]: 0x\(String(format: "%016llx", readTest))\n"
-
-        if readTest == 0 {
-            // Could be zero (valid) or could be unmapped
-            let readTest2 = ds_kread64_safe(amfiDataSlid + 8)
-            detail += "AMFI __DATA[8]: 0x\(String(format: "%016llx", readTest2))\n"
-            if readTest2 == 0 {
-                let readTest3 = ds_kread64_safe(amfiDataSlid + 0x110)
-                detail += "AMFI __DATA[0x110]: 0x\(String(format: "%016llx", readTest3))\n"
-                if readTest3 == 0 {
-                    detail += "⚠️ All reads return 0 — might be unmapped or wrong address\n\n"
-                }
-            }
-        }
-
-        // Dump first 0x200 bytes
-        detail += "\nAMFI __DATA dump (first 0x200 bytes):\n"
-        for off: UInt64 in stride(from: 0, to: 0x200, by: 8) {
-            let v = ds_kread64_safe(amfiDataSlid + off)
-            if v != 0 {
-                detail += "  +0x\(String(format: "%03x", off)): 0x\(String(format: "%016llx", v))\n"
-            }
-        }
-        detail += "\n"
-
-        // Step 2: Find boolean flags (values = 1)
-        detail += "=== Step 2: Find boolean flags ===\n"
-
-        // Known flag offsets from deep_tc_analysis.py (value=1 in kernelcache)
-        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
-        var foundFlags: [(offset: UInt64, value: UInt64)] = []
-
-        for off in flagOffsets {
-            guard off < amfiDataSize else { continue }
-            let v = ds_kread64_safe(amfiDataSlid + off)
-            detail += "  +0x\(String(format: "%03x", off)): 0x\(String(format: "%016llx", v))"
-            if v == 1 {
-                detail += " ← BOOL FLAG (1)\n"
-                foundFlags.append((off, v))
-            } else if v == 0 {
-                detail += " ← zero\n"
-            } else {
-                detail += "\n"
-            }
-        }
-        detail += "\nFound \(foundFlags.count) boolean flags set to 1\n\n"
-
-        // Step 3: WRITE TEST — try to flip ONE flag (safest: pick last one)
-        detail += "=== Step 3: Write test (single flag) ===\n"
-
-        guard !foundFlags.isEmpty else {
-            detail += "❌ No boolean flags found — AMFI __DATA might be at different address\n"
-            detail += "Or: AMFI __DATA is not readable (wrong slide?)\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-
-        // Pick the LAST flag (least likely to be critical for stability)
-        let testFlag = foundFlags.last!
-        let testAddr = amfiDataSlid + testFlag.offset
-        detail += "Test target: AMFI __DATA+0x\(String(format: "%x", testFlag.offset))\n"
-        detail += "Address: 0x\(String(format: "%llx", testAddr))\n"
-        detail += "Current value: \(testFlag.value)\n"
-        detail += "Writing: 0 (disable flag)\n\n"
-
-        // Read before
-        let before = ds_kread64_safe(testAddr)
-        detail += "Before write: 0x\(String(format: "%016llx", before))\n"
-
-        // Write 0 (flip flag off)
-        ds_kwrite64(testAddr, 0)
-
-        // Read after
-        let after = ds_kread64_safe(testAddr)
-        detail += "After write:  0x\(String(format: "%016llx", after))\n\n"
-
-        let writeOK = (after == 0 && before == 1)
-
-        if writeOK {
-            detail += "✅✅✅ AMFI __DATA IS WRITABLE! ✅✅✅\n\n"
-            detail += "AMFI.kext __DATA is NOT protected by KTRR!\n"
-            detail += "We can patch ALL boolean flags to disable AMFI checks!\n\n"
-
-            // Restore the flag for now (don't break things yet)
-            ds_kwrite64(testAddr, 1)
-            let restored = ds_kread64_safe(testAddr)
-            detail += "Restored flag to 1: \(restored == 1 ? "OK" : "FAILED")\n\n"
-
-            detail += "=== NEXT STEPS ===\n"
-            detail += "1. Identify which flags control CDHash validation\n"
-            detail += "2. Flip the right flags → AMFI stops checking signatures\n"
-            detail += "3. posix_spawn unsigned binary → SUCCESS!\n\n"
-
-            detail += "=== ALL AMFI FLAGS (for batch disable) ===\n"
-            for off in flagOffsets {
-                detail += "  0x\(String(format: "%llx", amfiDataSlid + off)) (+0x\(String(format: "%x", off)))\n"
-            }
-        } else {
-            detail += "❌ Write FAILED — AMFI __DATA is also KTRR-protected.\n"
-            detail += "Fileset component __DATA is within KTRR range on A12.\n\n"
-            detail += "Value after write: 0x\(String(format: "%016llx", after))\n"
-            detail += "Expected: 0x0000000000000000\n"
-            detail += "This means KTRR covers ALL kernel segments including fileset.\n"
-        }
-
-        return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
+    
+    private func expDeepTCScan() -> ExperimentResult {
+        // TODO: implementasi deep TC scan
+        return ExperimentResult(name: "Deep TC Scan (Exp 82)", success: false, detail: "Not implemented yet", timestamp: Date())
     }
 
     // MARK: - Exp 93b: AMFI Flag Disable + Spawn Test
@@ -4033,10 +3685,10 @@ struct AMFIExperimentView: View {
 
 
     // MARK: - Dead-end experiments 96-99 REMOVED
-    // Exp 96: __DATA_CONST write � KTRR panic
-    // Exp 97: amfid kill race � kernel enforces independently
-    // Exp 98/98b: CoreTrust __DATA � writable tapi bukan enforcement
-    // Exp 99: AMFI IOKit � no useful selectors found
+    // Exp 96: __DATA_CONST write � KTRR panic
+    // Exp 97: amfid kill race � kernel enforces independently
+    // Exp 98/98b: CoreTrust __DATA � writable tapi bukan enforcement
+    // Exp 99: AMFI IOKit � no useful selectors found
 
     // MARK: - Exp 100: Trust Cache Load via XPC
 
@@ -4393,8 +4045,8 @@ struct AMFIExperimentView: View {
     // MARK: - Exp 94: Heap Trust Cache Scan
 
     // MARK: - Dead-end experiments 94-95, 79/80 duplicates REMOVED
-    // Exp 94: Heap TC scan � merged into Exp 77/82
-    // Exp 95: cs_enforcement_disable � kernel __DATA panic
+    // Exp 94: Heap TC scan � merged into Exp 77/82
+    // Exp 95: cs_enforcement_disable � kernel __DATA panic
     // Exp 79/80 duplicates removed (originals kept above)
 
     // MARK: - Exp 101: cryptexd TOCTOU Race
