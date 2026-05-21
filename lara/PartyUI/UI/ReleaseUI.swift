@@ -63,7 +63,7 @@ struct ReadinessBanner: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Butuh: \(requirement.rawValue)")
+                    Text("Requires: \(requirement.rawValue)")
                         .font(.subheadline.bold())
                     Text(hint ?? defaultHint)
                         .font(.caption)
@@ -84,13 +84,13 @@ struct ReadinessBanner: View {
     private var defaultHint: String {
         switch requirement {
         case .kernel:
-            return "Buka tab Main → tap Jailbreak untuk menjalankan exploit kernel."
+            return "Open Main tab → tap Jailbreak to run kernel exploit."
         case .vfs:
-            return "Selesaikan jailbreak di Main. VFS aktif setelah System Init."
+            return "Complete jailbreak in Main. VFS activates after System Init."
         case .sandbox:
-            return "Selesaikan jailbreak di Main. Sandbox escape aktif setelah System Init."
+            return "Complete jailbreak in Main. Sandbox escape activates after System Init."
         case .remoteCall:
-            return "Selesaikan jailbreak di Main sampai langkah RemoteCall hijau."
+            return "Complete jailbreak in Main until RemoteCall step turns green."
         }
     }
 }

@@ -31,9 +31,9 @@ struct RootDashboardView: View {
                     } else {
                         EmptyStateView(
                             icon: "lock.fill",
-                            title: "Root belum aktif",
-                            message: "Jalankan Jailbreak di tab Main sampai langkah RemoteCall dan Root hijau.",
-                            buttonTitle: "Buka Panduan",
+                            title: "Root not active",
+                            message: "Run Jailbreak in Main tab until RemoteCall and Root turn green.",
+                            buttonTitle: "Open Guide",
                             action: { showGuide = true }
                         )
                     }

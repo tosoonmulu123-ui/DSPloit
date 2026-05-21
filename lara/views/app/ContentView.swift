@@ -273,6 +273,7 @@ struct ContentView: View {
     
     // MARK: - Jailbreak Button
     
+    @ViewBuilder
     private var jailbreakButton: some View {
         #if !DISABLE_REMOTECALL
         Button(action: {
@@ -438,15 +439,15 @@ struct ContentView: View {
                     .font(.title3)
                     .foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Mulai di sini")
+                    Text("Start here")
                         .font(.subheadline.bold())
-                    Text("Tap Jailbreak untuk memulai. Setelah selesai, buka tab Root untuk tools.")
+                    Text("Tap Jailbreak to begin. Once done, open Root tab for tools.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             
-            Button("Buka Panduan") { showGuide = true }
+            Button("Open Guide") { showGuide = true }
                 .font(.caption.bold())
                 .foregroundStyle(.blue)
         }

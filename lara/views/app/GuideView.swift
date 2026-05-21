@@ -13,12 +13,12 @@ struct GuideView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Panduan untuk **iPhone XR (iPhone11,8) · iOS 18.2 · build 22C152**. Setelah reboot, ulangi dari Langkah 1.")
+                    Text("Guide for **all supported devices** (A11–A18, iOS 16.0–18.2). After reboot, repeat from Step 1.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Status sekarang") {
+                Section("Current Status") {
                     SystemStatusStrip(mgr: mgr)
                         .listRowBackground(Color.clear)
                     checklistRow("Kernel (KRW)", mgr.dsready)
@@ -29,35 +29,35 @@ struct GuideView: View {
                 }
 
                 Section {
-                    stepHeader("Langkah 1", "Jalankan exploit")
+                    stepHeader("Step 1", "Run exploit")
                     stepBody("""
-                    Tab **Main** → tap **Jailbreak** → tunggu sampai selesai atau gagal di sandbox.
+                    **Main** tab → tap **Jailbreak** → wait until complete or fails at sandbox.
 
-                    **Sukses di Logs:** baris hijau `(ds) exploit success!` dan `kernel r/w is ready!`
+                    **Success in Logs:** green line `(ds) exploit success!` and `kernel r/w is ready!`
 
-                    **Tidak perlu reboot** setelah ini.
+                    **No reboot needed** after this.
                     """)
                 }
 
                 Section {
-                    stepHeader("Langkah 2", "Kernelcache (wajib untuk AMFI)")
+                    stepHeader("Step 2", "Kernelcache (required for AMFI)")
                     stepBody("""
-                    **Settings** (ikon gear) → bagian **Kernelcache**:
+                    **Settings** (gear icon) → **Kernelcache** section:
 
-                    • Pertama kali: tap **Fetch Kernelcache** (harus **setelah** Langkah 1).
-                    • Kalau sudah pernah: jangan hapus kecuali bermasalah.
-                    • **Remove** hanya jika mau mulai bersih → Fetch lagi.
+                    • First time: tap **Fetch Kernelcache** (must be **after** Step 1).
+                    • If already fetched: don't delete unless having issues.
+                    • **Remove** only to start fresh → Fetch again.
 
-                    **Sukses di Logs:** `(kcache) XPF resolve OK` atau `(offs) kernproc: 0x...`
+                    **Success in Logs:** `(kcache) XPF resolve OK` or `(offs) kernproc: 0x...`
 
-                    **Gagal:** `(offs) kernelcache download failed` → coba **Import** file dari IPSW 22C152 (lihat info ⓘ di Settings).
+                    **Failed:** `(offs) kernelcache download failed` → try **Import** file from your IPSW (see info ⓘ in Settings).
                     """)
                 }
 
                 Section {
-                    stepHeader("Langkah 3", "AMFI Lab (tanpa jailbreak penuh)")
+                    stepHeader("Step 3", "AMFI Lab (without full jailbreak)")
                     stepBody("""
-                    Cukup **Langkah 1 + 2**. Tab **Root** → **AMFI Lab** → **Jailbreak Path**:
+                    Only need **Step 1 + 2**. **Root** tab → **AMFI Lab** → **Jailbreak Path**:
 
                     ① **Physmap Access (74)** — tunggu hijau (boleh skip jika sudah verified).
                     ② **Trust Cache Probe (77)** — baca hasil di kartu + Logs.

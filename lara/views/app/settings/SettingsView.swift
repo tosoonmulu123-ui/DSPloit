@@ -149,7 +149,7 @@ struct SettingsView: View {
                     if (!mgr.hasOffsets && (!mgr.dsready || (!mgr.vfsready && !mgr.sbxready))) {
                         Text("NOTE: You will have to click \"Run Exploit\" before you can fetch kernelcache.\n\nDeleting and refetching kernelcache may fix some issues. Try doing this before opening a GitHub issue or asking for support in our [Discord](https://discord.gg/gw8PcRF3Jr) server.")
                     } else if mgr.hasOffsets {
-                        Text("Tombol **Fetch** hilang karena kernelcache sudah ter-resolve (XPF OK). Jalankan Jailbreak dulu jika **Verifikasi ulang** nonaktif. Pakai **Remove** hanya untuk ganti file / mulai bersih.")
+                        Text("The **Fetch** button is hidden because kernelcache is already resolved (XPF OK). Run Jailbreak first if **Re-verify** is disabled. Use **Remove** only to swap file / start fresh.")
                     } else {
                         Text("Deleting and refetching kernelcache may fix some issues. Try doing this before opening a GitHub issue or asking for support in our [Discord](https://discord.gg/gw8PcRF3Jr) server.")
                     }
