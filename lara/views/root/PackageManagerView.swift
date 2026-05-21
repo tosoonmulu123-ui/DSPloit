@@ -212,6 +212,9 @@ struct PackageManagerView: View {
                 quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
                     installFromURL(name: "Ellekit", url: "https://apt.autotouch.net/debs/iphoneos-arm/ellekit_1.1.3_iphoneos-arm.deb")
                 }
+                quickInstallRow("Frida", "Dynamic instrumentation", "ant.fill", .orange) {
+                    installFromURL(name: "Frida", url: "https://build.frida.re/pool/main/r/re.frida.server/re.frida.server_17.9.10_iphoneos-arm.deb")
+                }
                 
                 Text("If download fails, add the repo in Sources tab and install from there.")
                     .font(.caption2)
