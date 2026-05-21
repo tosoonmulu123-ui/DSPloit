@@ -5318,7 +5318,7 @@ struct AMFIExperimentView: View {
         // ── Step 3: Copy /usr/bin/id ke /var/tmp dan spawn ───────────
         detail += "=== Step 3: Copy /usr/bin/id → /var/tmp + spawn ===\n"
 
-        let srcBin = "/usr/bin/id"
+        let srcBin = "/bin/ls"
         let dstBin = "/var/tmp/.dsp_signed_copy"
         let srcAddr = remote_alloc_str(rc, srcBin)
         let dstAddr = remote_alloc_str(rc, dstBin)
@@ -5410,7 +5410,7 @@ struct AMFIExperimentView: View {
         }
 
         // ── Step 4: Coba spawn /usr/bin/id langsung (baseline) ────────
-        detail += "\n=== Step 4: Baseline — spawn /usr/bin/id langsung ===\n"
+        detail += "\n=== Step 4: Baseline — spawn \(srcBin) langsung ===\n"
         rc[argvBase].setValue64(srcAddr)
         rc[argvBase + 8].setValue64(0)
         rc[pidOut].setValue32(0)
