@@ -595,15 +595,14 @@ struct PackageManagerView: View {
         installLog.append("[install] Extracting \(name).deb with DebInstaller...")
         installProgress = 0.8
         
-        let installer = DebInstaller { [weak self] msg in
+        let installer = DebInstaller { msg in
             DispatchQueue.main.async {
-                self?.installLog.append(msg)
+                self.installLog.append(msg)
             }
         }
         
-        installer.install(debData: data, name: name) { [weak self] success, fileCount in
+        installer.install(debData: data, name: name) { success, fileCount in
             DispatchQueue.main.async {
-                guard let self else { return }
                 self.installProgress = 1.0
                 self.isInstalling = false
                 

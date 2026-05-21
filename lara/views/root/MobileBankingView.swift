@@ -163,13 +163,6 @@ struct MobileBankingView: View {
             }
 
             Section {
-                NavigationLink {
-                    VarCleanView()
-                } label: {
-                    Label("VarClean (jejak tambahan)", systemImage: "trash")
-                }
-                .disabled(!mgr.sbxready)
-
                 Button {
                     mgr.respring()
                 } label: {
