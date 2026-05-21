@@ -118,6 +118,15 @@ final class RootExecutor: ObservableObject {
             return
         }
         
+        // Prevent overlapping launchd connections — queue if busy
+        if isExecuting {
+            appendLog("[\(operation)] Queued — waiting for previous operation...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.executeAsRoot(operation: operation, block: block)
+            }
+            return
+        }
+        
         isExecuting = true
         
         // Auto-reconnect SpringBoard RC if it died
