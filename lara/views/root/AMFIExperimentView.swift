@@ -8825,12 +8825,14 @@ struct AMFIExperimentView: View {
 
         // Retry from launchd
         detail += "--- Launchd (flags OFF) ---\n"
-        for path in successPaths.prefix(3) {
+        for path in successPaths {
             let (ret, pid, err) = doSpawn(rc: rc, path: path, mem: mem)
             detail += "  \(path): ret=\(ret), pid=\(pid), errno=\(err)"
             if ret == 0 && pid != 0 {
                 let (sig, code) = doWait(rc: rc, pid: pid, mem: mem)
                 detail += ", sig=\(sig), code=\(code)"
+                if sig == 9 { detail += " SIGKILL" }
+                else if sig == 0 { detail += " ✅ NO SIGKILL" }
             }
             detail += "\n"
         }
@@ -8841,13 +8843,13 @@ struct AMFIExperimentView: View {
         detail += "--- SpringBoard (flags OFF) ---\n"
         if let sb = dspmgr.shared.sbProc {
             let sbMem = sb.trojanMem
-            for path in successPaths.prefix(3) {
+            for path in successPaths {
                 let (ret, pid, err) = doSpawn(rc: sb, path: path, mem: sbMem)
                 detail += "  \(path): ret=\(ret), pid=\(pid), errno=\(err)"
                 if ret == 0 && pid != 0 {
                     let (sig, code) = doWait(rc: sb, pid: pid, mem: sbMem)
                     detail += ", sig=\(sig), code=\(code)"
-                    if sig != 9 { sbFlagsOffSuccess = true }
+                    if sig != 9 { sbFlagsOffSuccess = true; detail += " ✅ NO SIGKILL" }
                     if sig == 9 { detail += " SIGKILL" }
                 }
                 detail += "\n"
@@ -8859,6 +8861,7 @@ struct AMFIExperimentView: View {
             if retF == 0 && pidF != 0 {
                 let (sig, code) = doWait(rc: sb, pid: pidF, mem: sbMem)
                 detail += ", sig=\(sig), code=\(code)"
+                if sig != 9 { sbFlagsOffSuccess = true }
             }
             detail += "\n"
         }
