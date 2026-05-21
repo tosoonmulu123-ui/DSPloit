@@ -593,19 +593,14 @@ struct PackageManagerView: View {
                     return
                 }
                 
-                // Write .deb to /var/jb/var/cache/apt/archives/
-                let debPath = "/var/jb/var/cache/apt/archives/\(name.lowercased().replacingOccurrences(of: " ", with: "-")).deb"
-                self.installLog.append("[install] Writing to \(debPath)...")
+                // Skip writing .deb to cache — we already have data in memory
+                // Writing 14MB via launchd causes watchdog panic
+                // Just pass data directly to DebInstaller
+                self.installLog.append("[install] Skipping cache write (direct extract)...")
+                self.installProgress = 0.7
                 
-                self.root.writeFileAsRoot(path: debPath, content: data)
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                    self.installProgress = 0.7
-                    self.installLog.append("[install] ✅ Written to disk")
-                    
-                    // Extract .deb (ar archive → data.tar → extract)
-                    self.extractDeb(name: name, debPath: debPath, data: data)
-                }
+                // Extract .deb directly from memory
+                self.extractDeb(name: name, debPath: "", data: data)
             }
         }.resume()
     }

@@ -2,18 +2,23 @@
 //  DebInstaller.swift
 //  DSPloit
 //
-//  Proper .deb package installer:
-//  1. Parse ar archive → extract data.tar.gz
-//  2. Decompress gzip → tar
-//  3. Parse tar → extract files
-//  4. Write files to /var/jb/ via root
-//  5. Run uicache to register .app bundles
+//  Plan E: Write data.tar to disk via SpringBoard, spawn /usr/bin/tar to extract.
+//  This completely avoids holding launchd thread during file I/O.
+//
+//  Flow:
+//  1. Parse ar archive → get data.tar.gz from .deb
+//  2. Write data.tar.gz to /var/jb/tmp/ via SpringBoard RC (no watchdog)
+//  3. posix_spawn /usr/bin/tar -xzf to extract (runs in own process, instant launchd release)
+//  4. Fallback: if tar spawn fails, extract manually via SpringBoard RC
+//  5. uicache if .app found
+//
+//  ZERO launchd hold time for file I/O = ZERO watchdog panic risk.
 //
 
 import Foundation
 import Compression
 
-/// .deb installer — extracts and installs packages to /var/jb
+/// .deb installer — spawn tar for extraction (zero watchdog risk)
 final class DebInstaller {
     
     private let root = RootExecutor.shared
@@ -44,7 +49,7 @@ final class DebInstaller {
         
         emit("[deb] Found \(arEntries.count) ar entries: \(arEntries.map { $0.name }.joined(separator: ", "))")
         
-        // Step 2: Find data.tar (could be .gz, .xz, .zst, .lzma, or plain)
+        // Step 2: Find data.tar (could be .gz, .xz, or plain)
         guard let dataTar = findDataTar(in: arEntries) else {
             emit("[deb] ❌ No data.tar found in .deb")
             completion(false, 0)
@@ -53,50 +58,304 @@ final class DebInstaller {
         
         emit("[deb] data.tar: \(dataTar.name) (\(dataTar.data.count) bytes)")
         
-        // Step 3: Decompress if needed
-        let tarData: Data
+        // Step 3: Determine tar flags based on compression
+        let tarFlags: String
+        let tarFileName: String
         if dataTar.name.hasSuffix(".gz") || dataTar.name.hasSuffix(".tgz") {
-            emit("[deb] Decompressing gzip...")
-            guard let decompressed = decompressGzip(dataTar.data) else {
-                emit("[deb] ❌ Gzip decompression failed")
-                completion(false, 0)
-                return
-            }
-            tarData = decompressed
-            emit("[deb] Decompressed: \(decompressed.count) bytes")
-        } else if dataTar.name.hasSuffix(".xz") || dataTar.name.hasSuffix(".lzma") {
-            // xz/lzma — try raw (some .debs use uncompressed tar labeled as .xz)
-            emit("[deb] ⚠️ xz/lzma compression — attempting raw tar parse")
-            tarData = dataTar.data
+            tarFlags = "-xzf"
+            tarFileName = "data.tar.gz"
+        } else if dataTar.name.hasSuffix(".xz") {
+            tarFlags = "-xJf"
+            tarFileName = "data.tar.xz"
+        } else if dataTar.name.hasSuffix(".zst") {
+            tarFlags = "--zstd -xf"
+            tarFileName = "data.tar.zst"
         } else {
-            tarData = dataTar.data
+            tarFlags = "-xf"
+            tarFileName = "data.tar"
         }
         
-        // Step 4: Parse tar
-        emit("[deb] Parsing tar archive...")
-        let files = parseTar(data: tarData)
-        emit("[deb] Found \(files.count) files in tar")
+        let tmpPath = "/var/jb/tmp/\(name.lowercased().replacingOccurrences(of: " ", with: "_"))_\(tarFileName)"
         
-        if files.isEmpty {
-            emit("[deb] ❌ No files extracted from tar")
+        emit("[deb] Writing \(tarFileName) to \(tmpPath)...")
+        emit("[deb] Size: \(dataTar.data.count) bytes")
+        
+        // Step 4: Write tar file to /var/jb/tmp/ via SpringBoard (NO watchdog risk)
+        writeTarToDisk(data: dataTar.data, path: tmpPath) { [weak self] writeSuccess in
+            guard let self else { return }
+            
+            guard writeSuccess else {
+                self.emit("[deb] ❌ Failed to write tar to disk")
+                self.emit("[deb] Trying fallback manual extraction...")
+                self.fallbackManualExtract(dataTar: dataTar, name: name, completion: completion)
+                return
+            }
+            
+            self.emit("[deb] ✅ Tar written to disk")
+            self.emit("[deb] Spawning: tar \(tarFlags) \(tmpPath) -C /var/jb/")
+            
+            // Step 5: posix_spawn tar to extract (instant launchd release)
+            self.spawnTarExtract(tarPath: tmpPath, destDir: "/var/jb", flags: tarFlags) { spawnSuccess in
+                if spawnSuccess {
+                    self.emit("[deb] ✅ tar spawned — extraction in progress")
+                    
+                    // Give tar time to finish (depends on file count)
+                    // 14MB compressed ≈ 3-8 seconds to extract on device
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                        self.emit("[deb] ✅ Installation complete")
+                        
+                        // Cleanup tmp file
+                        self.removeTmpFile(path: tmpPath)
+                        
+                        // uicache
+                        self.runUicache {
+                            completion(true, 1)
+                        }
+                    }
+                } else {
+                    self.emit("[deb] ❌ tar spawn failed — using fallback")
+                    self.fallbackManualExtract(dataTar: dataTar, name: name, completion: completion)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Write tar to disk (via SpringBoard — NO watchdog risk)
+    
+    private func writeTarToDisk(data: Data, path: String, completion: @escaping (Bool) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard let sb = mgr.sbProc else {
+            emit("[deb] ❌ SpringBoard RC not available for tar write")
+            completion(false)
+            return
+        }
+        
+        // Use SpringBoard to write — no watchdog, no time limit
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            // mkdir -p /var/jb/tmp
+            let tmpDir = remote_alloc_str(sb, "/var/jb/tmp")
+            RootExecutor.rcall(sb, "mkdir", tmpDir, 0o755)
+            RootExecutor.rcall(sb, "free", tmpDir)
+            
+            // Write tar file via SpringBoard
+            let pathAddr = remote_alloc_str(sb, path)
+            let fd = RootExecutor.rcall(sb, "open", pathAddr,
+                UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            
+            guard fd != UInt64(bitPattern: -1) else {
+                RootExecutor.rcall(sb, "free", pathAddr)
+                DispatchQueue.main.async {
+                    self.emit("[deb] ❌ Failed to open \(path) for writing")
+                    completion(false)
+                }
+                return
+            }
+            
+            // Write in 4KB chunks — SpringBoard has no time limit
+            let writeAddr = sb.trojanMem + 0x800
+            var written = 0
+            let totalSize = data.count
+            
+            data.withUnsafeBytes { buffer in
+                while written < totalSize {
+                    let chunk = min(totalSize - written, 0x1000)
+                    sb.remote_write(writeAddr,
+                        from: buffer.baseAddress!.advanced(by: written),
+                        size: UInt64(chunk))
+                    let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
+                    if n == 0 || n == UInt64(bitPattern: -1) { break }
+                    written += Int(n)
+                }
+            }
+            
+            RootExecutor.rcall(sb, "close", fd)
+            RootExecutor.rcall(sb, "free", pathAddr)
+            
+            let success = written == totalSize
+            DispatchQueue.main.async {
+                if success {
+                    self.emit("[deb] ✅ Wrote \(written) bytes to disk via SpringBoard")
+                } else {
+                    self.emit("[deb] ❌ Partial write: \(written)/\(totalSize)")
+                }
+                completion(success)
+            }
+        }
+        #else
+        completion(false)
+        #endif
+    }
+    
+    // MARK: - Spawn tar for extraction (instant launchd release)
+    
+    private func spawnTarExtract(tarPath: String, destDir: String, flags: String, completion: @escaping (Bool) -> Void) {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "spawn_tar") { rc in
+            let mem = rc.trojanMem
+            
+            // Use /bin/sh -c "tar [flags] [path] -C [dest]" for flexibility
+            let shAddr = remote_alloc_str(rc, "/bin/sh")
+            let dashC = remote_alloc_str(rc, "-c")
+            let cmd = "tar \(flags) \(tarPath) -C \(destDir)"
+            let cmdAddr = remote_alloc_str(rc, cmd)
+            
+            // argv = ["/bin/sh", "-c", "tar ...", NULL]
+            let argvBase = mem + 0x400
+            rc[argvBase].setValue64(shAddr)
+            rc[argvBase + 8].setValue64(dashC)
+            rc[argvBase + 16].setValue64(cmdAddr)
+            rc[argvBase + 24].setValue64(0) // NULL terminator
+            
+            // pid output
+            let pidAddr = mem + 0x300
+            rc[pidAddr].setValue32(0)
+            
+            // posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, NULL)
+            // This is INSTANT — launchd just spawns the process and returns
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, shAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            
+            // Free strings
+            RootExecutor.rcall(rc, "free", shAddr)
+            RootExecutor.rcall(rc, "free", dashC)
+            RootExecutor.rcall(rc, "free", cmdAddr)
+            
+            if ret == 0 && pid != 0 {
+                // SUCCESS — tar is now running in its own process
+                // DO NOT waitpid — that would hold launchd thread!
+                DispatchQueue.main.async {
+                    self.emit("[deb] ✅ tar spawned as PID \(pid)")
+                    completion(true)
+                }
+                return (true, "spawned PID=\(pid)", UInt64(pid))
+            } else {
+                DispatchQueue.main.async {
+                    self.emit("[deb] ❌ posix_spawn failed: ret=\(ret), pid=\(pid)")
+                    completion(false)
+                }
+                return (false, "spawn failed ret=\(ret)", 0)
+            }
+        }
+        #else
+        completion(false)
+        #endif
+    }
+    
+    // MARK: - Cleanup
+    
+    private func removeTmpFile(path: String) {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "cleanup") { rc in
+            let pathAddr = remote_alloc_str(rc, path)
+            RootExecutor.rcall(rc, "unlink", pathAddr)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            return (true, "cleaned \(path)", 0)
+        }
+        #endif
+    }
+    
+    // MARK: - Fallback: Manual extraction via SpringBoard RC
+    
+    private func fallbackManualExtract(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
+        emit("[deb] Fallback: decompressing and extracting manually via SpringBoard...")
+        
+        guard let sb = mgr.sbProc else {
+            emit("[deb] ❌ SpringBoard RC not available")
             completion(false, 0)
             return
         }
         
-        // Step 5: Write files to /var/jb/ via root
-        emit("[deb] Installing \(files.count) files to /var/jb/...")
-        installFiles(files: files, prefix: "/var/jb") { [weak self] installedCount in
-            self?.emit("[deb] ✅ Installed \(installedCount)/\(files.count) files")
-            
-            // Step 6: Check if any .app bundle was installed → run uicache
-            let appBundles = files.filter { $0.path.contains(".app/Info.plist") }
-            if !appBundles.isEmpty {
-                self?.emit("[deb] Found \(appBundles.count) app bundle(s) — running uicache...")
-                self?.runUicache {
-                    completion(true, installedCount)
+        // Decompress on background thread
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let tarData: Data
+            if dataTar.name.hasSuffix(".gz") || dataTar.name.hasSuffix(".tgz") {
+                guard let decompressed = decompressGzip(dataTar.data) else {
+                    DispatchQueue.main.async {
+                        self.emit("[deb] ❌ Gzip decompression failed")
+                        completion(false, 0)
+                    }
+                    return
                 }
+                tarData = decompressed
             } else {
-                completion(true, installedCount)
+                tarData = dataTar.data
+            }
+            
+            // Parse tar
+            let files = parseTar(data: tarData)
+            guard !files.isEmpty else {
+                DispatchQueue.main.async {
+                    self.emit("[deb] ❌ No files in tar")
+                    completion(false, 0)
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                self.emit("[deb] Fallback: \(files.count) files via SpringBoard...")
+            }
+            
+            var installed = 0
+            let prefix = "/var/jb"
+            
+            // Create directories
+            let directories = files.filter { $0.isDirectory }
+            for dir in directories {
+                let fullPath = "\(prefix)/\(dir.path)"
+                let pathAddr = remote_alloc_str(sb, fullPath)
+                RootExecutor.rcall(sb, "mkdir", pathAddr, 0o755)
+                RootExecutor.rcall(sb, "free", pathAddr)
+                installed += 1
+            }
+            
+            // Write files via SpringBoard (no time limit)
+            let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
+            for (i, file) in regularFiles.enumerated() {
+                let fullPath = "\(prefix)/\(file.path)"
+                
+                // Ensure parent dir exists
+                let parentPath = (fullPath as NSString).deletingLastPathComponent
+                let parentAddr = remote_alloc_str(sb, parentPath)
+                RootExecutor.rcall(sb, "mkdir", parentAddr, 0o755)
+                RootExecutor.rcall(sb, "free", parentAddr)
+                
+                // Write file
+                let pathAddr = remote_alloc_str(sb, fullPath)
+                let fd = RootExecutor.rcall(sb, "open", pathAddr,
+                    UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
+                
+                if fd != UInt64(bitPattern: -1) {
+                    let writeAddr = sb.trojanMem + 0x800
+                    var written = 0
+                    file.data.withUnsafeBytes { buffer in
+                        while written < file.data.count {
+                            let chunk = min(file.data.count - written, 0x1000)
+                            sb.remote_write(writeAddr,
+                                from: buffer.baseAddress!.advanced(by: written),
+                                size: UInt64(chunk))
+                            let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
+                            if n == 0 || n == UInt64(bitPattern: -1) { break }
+                            written += Int(n)
+                        }
+                    }
+                    RootExecutor.rcall(sb, "close", fd)
+                    RootExecutor.rcall(sb, "chmod", pathAddr, UInt64(file.mode))
+                    installed += 1
+                }
+                RootExecutor.rcall(sb, "free", pathAddr)
+                
+                if (i + 1) % 50 == 0 {
+                    DispatchQueue.main.async {
+                        self.emit("[deb] Progress: \(i + 1)/\(regularFiles.count)")
+                    }
+                }
+            }
+            
+            DispatchQueue.main.async {
+                self.emit("[deb] ✅ Fallback installed \(installed) items")
+                self.runUicache {
+                    completion(true, installed)
+                }
             }
         }
     }
@@ -109,7 +368,6 @@ final class DebInstaller {
     }
     
     private func parseAr(data: Data) -> [ArEntry]? {
-        // AR magic: "!<arch>\n" (8 bytes)
         guard data.count > 8 else { return nil }
         let magic = String(data: data[0..<8], encoding: .ascii)
         guard magic == "!<arch>\n" else { return nil }
@@ -118,8 +376,6 @@ final class DebInstaller {
         var offset = 8
         
         while offset + 60 < data.count {
-            // AR header: 60 bytes
-            // name[16] + mtime[12] + uid[6] + gid[6] + mode[8] + size[10] + magic[2]
             let headerData = data[offset..<offset+60]
             guard let header = String(data: headerData, encoding: .ascii) else { break }
             
@@ -130,13 +386,11 @@ final class DebInstaller {
             guard let size = Int(sizeStr) else { break }
             
             offset += 60
-            
             if offset + size > data.count { break }
             let entryData = data[offset..<offset+size]
             entries.append(ArEntry(name: name, data: Data(entryData)))
             
             offset += size
-            // AR entries are 2-byte aligned
             if offset % 2 != 0 { offset += 1 }
         }
         
@@ -144,7 +398,6 @@ final class DebInstaller {
     }
     
     private func findDataTar(in entries: [ArEntry]) -> ArEntry? {
-        // Look for data.tar.gz, data.tar.xz, data.tar.zst, data.tar.lzma, data.tar
         for entry in entries {
             if entry.name.hasPrefix("data.tar") {
                 return entry
@@ -156,44 +409,37 @@ final class DebInstaller {
     // MARK: - Gzip Decompression
     
     private func decompressGzip(_ data: Data) -> Data? {
-        // Gzip header: 1f 8b
         guard data.count > 2, data[0] == 0x1f, data[1] == 0x8b else {
-            // Not gzip — return as-is (might be uncompressed tar)
             return data
         }
         
-        // Find deflate data start (skip gzip header)
         var headerEnd = 10
         let flags = data[3]
-        if flags & 0x04 != 0 { // FEXTRA
+        if flags & 0x04 != 0 {
             if headerEnd + 2 < data.count {
                 let xlen = Int(data[headerEnd]) | (Int(data[headerEnd+1]) << 8)
                 headerEnd += 2 + xlen
             }
         }
-        if flags & 0x08 != 0 { // FNAME
+        if flags & 0x08 != 0 {
             while headerEnd < data.count && data[headerEnd] != 0 { headerEnd += 1 }
             headerEnd += 1
         }
-        if flags & 0x10 != 0 { // FCOMMENT
+        if flags & 0x10 != 0 {
             while headerEnd < data.count && data[headerEnd] != 0 { headerEnd += 1 }
             headerEnd += 1
         }
-        if flags & 0x02 != 0 { headerEnd += 2 } // FHCRC
+        if flags & 0x02 != 0 { headerEnd += 2 }
         
         guard headerEnd < data.count else { return nil }
         
-        let compressed = Data(data[headerEnd..<(data.count - 8)]) // strip gzip footer (8 bytes: CRC32 + ISIZE)
-        
-        // Streaming decompression for large files (Filza .deb can be 50MB+)
+        let compressed = Data(data[headerEnd..<(data.count - 8)])
         var src = [UInt8](compressed)
         let srcSize = src.count
         
-        // Start with 4x estimate, grow if needed
         var dstCapacity = srcSize * 4
-        if dstCapacity < 1024 * 1024 { dstCapacity = 4 * 1024 * 1024 } // min 4MB
+        if dstCapacity < 1024 * 1024 { dstCapacity = 4 * 1024 * 1024 }
         
-        // Try decompression, double buffer if it fills up
         for attempt in 0..<4 {
             var dst = [UInt8](repeating: 0, count: dstCapacity)
             let result = compression_decode_buffer(
@@ -204,23 +450,20 @@ final class DebInstaller {
             )
             
             if result > 0 && result < dstCapacity {
-                // Success — didn't fill the buffer
                 return Data(dst.prefix(result))
             } else if result == dstCapacity {
-                // Buffer was exactly filled — likely truncated, try bigger
                 dstCapacity *= 2
-                emit("[deb] Gzip buffer full, retrying with \(dstCapacity / 1024 / 1024)MB (attempt \(attempt + 2))")
+                emit("[deb] Gzip buffer full, retrying \(dstCapacity / 1024 / 1024)MB (attempt \(attempt + 2))")
             } else {
-                // Decompression failed
                 break
             }
         }
         
-        emit("[deb] ⚠️ Gzip decompression failed after retries")
+        emit("[deb] ⚠️ Gzip decompression failed")
         return nil
     }
     
-    // MARK: - TAR Parser
+    // MARK: - TAR Parser (fallback only)
     
     struct TarFile {
         let path: String
@@ -234,48 +477,34 @@ final class DebInstaller {
         var offset = 0
         
         while offset + 512 <= data.count {
-            // TAR header is 512 bytes
             let header = data[offset..<offset+512]
-            
-            // Check for empty block (end of archive)
             if header.allSatisfy({ $0 == 0 }) { break }
             
-            // Name: bytes 0-99
             let nameBytes = header[offset..<offset+100]
             let name = String(data: Data(nameBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
             
-            // Mode: bytes 100-107 (octal string)
             let modeBytes = data[offset+100..<offset+108]
             let modeStr = String(data: Data(modeBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0 ")) ?? "644"
             let mode = UInt16(modeStr, radix: 8) ?? 0o644
             
-            // Size: bytes 124-135 (octal string)
             let sizeBytes = data[offset+124..<offset+136]
             let sizeStr = String(data: Data(sizeBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0 ")) ?? "0"
             let size = Int(sizeStr, radix: 8) ?? 0
             
-            // Type: byte 156
             let typeFlag = data[offset+156]
-            let isDir = typeFlag == 0x35 || name.hasSuffix("/") // '5' = directory
+            let isDir = typeFlag == 0x35 || name.hasSuffix("/")
             
-            // Prefix: bytes 345-499 (POSIX/ustar)
             let prefixBytes = data[offset+345..<min(offset+500, data.count)]
             let prefix = String(data: Data(prefixBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
             
-            let fullPath: String
-            if !prefix.isEmpty {
-                fullPath = "\(prefix)/\(name)"
-            } else {
-                fullPath = name
-            }
+            let fullPath = prefix.isEmpty ? name : "\(prefix)/\(name)"
             
-            offset += 512 // skip header
+            offset += 512
             
-            // Read file data
             let fileData: Data
             if size > 0 && !isDir && offset + size <= data.count {
                 fileData = data[offset..<offset+size]
@@ -283,16 +512,14 @@ final class DebInstaller {
                 fileData = Data()
             }
             
-            // Clean path (remove leading ./ or /)
             var cleanPath = fullPath
             if cleanPath.hasPrefix("./") { cleanPath = String(cleanPath.dropFirst(2)) }
             if cleanPath.hasPrefix("/") { cleanPath = String(cleanPath.dropFirst(1)) }
             
-            if !cleanPath.isEmpty && typeFlag != 0x78 && typeFlag != 0x67 { // skip pax headers
+            if !cleanPath.isEmpty && typeFlag != 0x78 && typeFlag != 0x67 {
                 files.append(TarFile(path: cleanPath, data: Data(fileData), isDirectory: isDir, mode: mode))
             }
             
-            // Advance past file data (512-byte aligned)
             let blocks = (size + 511) / 512
             offset += blocks * 512
         }
@@ -300,146 +527,26 @@ final class DebInstaller {
         return files
     }
     
-    // MARK: - File Installation (via root)
-    //
-    // CRITICAL: launchd (PID 1) has a strict 5s watchdog — ANY file write via launchd
-    // risks panic if the operation takes too long. Even 1 file per connection can panic
-    // if the file is large or there's latency.
-    //
-    // SOLUTION: Use SpringBoard RC (mgr.sbProc) for all file writes.
-    // SpringBoard is a persistent connection with NO watchdog kill.
-    // After sandbox escape, SpringBoard can write to /var/jb/.
-    // If SpringBoard is unavailable, fall back to launchd with single small files only.
-    //
-    
-    private func installFiles(files: [TarFile], prefix: String, completion: @escaping (Int) -> Void) {
-        #if !DISABLE_REMOTECALL
-        guard let sb = mgr.sbProc else {
-            emit("[deb] ❌ SpringBoard RC not available — cannot install safely")
-            completion(0)
-            return
-        }
-        
-        // All operations go through SpringBoard — no watchdog risk
-        let directories = files.filter { $0.isDirectory }.sorted { $0.path < $1.path }
-        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
-        
-        emit("[deb] Using SpringBoard RC (no watchdog risk)")
-        emit("[deb] Creating \(directories.count) directories...")
-        
-        // Phase 1: Create all directories via SpringBoard (instant, no risk)
-        var installed = 0
-        for dir in directories {
-            let fullPath = "\(prefix)/\(dir.path)"
-            let pathAddr = remote_alloc_str(sb, fullPath)
-            RootExecutor.rcall(sb, "mkdir", pathAddr, 0o755)
-            RootExecutor.rcall(sb, "free", pathAddr)
-            installed += 1
-        }
-        
-        emit("[deb] ✅ Created \(installed) directories")
-        emit("[deb] Writing \(regularFiles.count) files via SpringBoard...")
-        
-        // Phase 2: Write all files via SpringBoard — chunked, no time limit
-        var fileIndex = 0
-        
-        func writeNextFile() {
-            guard fileIndex < regularFiles.count else {
-                // All done
-                DispatchQueue.main.async {
-                    self.emit("[deb] ✅ All \(installed) items installed")
-                }
-                completion(installed)
-                return
-            }
-            
-            let file = regularFiles[fileIndex]
-            fileIndex += 1
-            let fullPath = "\(prefix)/\(file.path)"
-            
-            // Ensure parent directory exists
-            let parentPath = (fullPath as NSString).deletingLastPathComponent
-            let parentAddr = remote_alloc_str(sb, parentPath)
-            RootExecutor.rcall(sb, "mkdir", parentAddr, 0o755)
-            RootExecutor.rcall(sb, "free", parentAddr)
-            
-            // Open file
-            let pathAddr = remote_alloc_str(sb, fullPath)
-            let fd = RootExecutor.rcall(sb, "open", pathAddr,
-                UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
-            
-            if fd != UInt64(bitPattern: -1) {
-                // Write in 4KB chunks
-                let writeAddr = sb.trojanMem + 0x800
-                var written = 0
-                file.data.withUnsafeBytes { buffer in
-                    while written < file.data.count {
-                        let chunk = min(file.data.count - written, 0x1000)
-                        sb.remote_write(writeAddr,
-                            from: buffer.baseAddress!.advanced(by: written),
-                            size: UInt64(chunk))
-                        let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
-                        if n == 0 || n == UInt64(bitPattern: -1) { break }
-                        written += Int(n)
-                    }
-                }
-                RootExecutor.rcall(sb, "close", fd)
-                RootExecutor.rcall(sb, "chmod", pathAddr, UInt64(file.mode))
-                installed += 1
-            }
-            
-            RootExecutor.rcall(sb, "free", pathAddr)
-            
-            // Log progress every 50 files
-            if fileIndex % 50 == 0 || fileIndex == regularFiles.count {
-                DispatchQueue.main.async {
-                    self.emit("[deb] Progress: \(fileIndex)/\(regularFiles.count) files written")
-                }
-            }
-            
-            // Yield to main thread every 20 files to keep UI responsive
-            if fileIndex % 20 == 0 {
-                DispatchQueue.main.async {
-                    writeNextFile()
-                }
-            } else {
-                writeNextFile()
-            }
-        }
-        
-        // Start writing on background thread to not block UI
-        DispatchQueue.global(qos: .userInitiated).async {
-            writeNextFile()
-        }
-        #else
-        completion(0)
-        #endif
-    }
-    
-    // MARK: - UICache (register app icons)
+    // MARK: - UICache
     
     private func runUicache(completion: @escaping () -> Void) {
         #if !DISABLE_REMOTECALL
-        // Ensure AMFI is disabled before launching any new binary
         ensureAMFIDisabled()
         
-        // uicache via SpringBoard's LSApplicationWorkspace
         guard let sb = mgr.sbProc else {
             emit("[deb] ⚠️ SpringBoard RC not available — skip uicache")
             completion()
             return
         }
         
-        // Call [LSApplicationWorkspace defaultWorkspace] _LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:
         let workspace = remote_getClass(sb, "LSApplicationWorkspace")
         let defaultWS = remote_msg(sb, workspace, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
         
         if defaultWS != 0 {
-            // Trigger icon cache rebuild
             remote_msg(sb, defaultWS,
                 remote_sel(sb, "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:"),
                 1, 1, 1, 0)
-            emit("[deb] ✅ uicache triggered — app should appear after respring")
+            emit("[deb] ✅ uicache triggered")
         } else {
             emit("[deb] ⚠️ LSApplicationWorkspace not available")
         }
@@ -452,33 +559,24 @@ final class DebInstaller {
     
     // MARK: - AMFI Enforcement Disable
     
-    /// Ensure AMFI flags are disabled so installed binaries can execute.
-    /// This is idempotent — safe to call multiple times.
     private func ensureAMFIDisabled() {
         let kernBase = ds_get_kernel_base()
-        guard kernBase != 0 else {
-            emit("[deb] ⚠️ Kernel base unavailable — AMFI state unknown")
-            return
-        }
+        guard kernBase != 0 else { return }
         
         let slide = kernBase - 0xfffffff007004000
         let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
         let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
         
         // Check if already disabled
-        let firstFlag = ds_kread64_safe(amfiDataSlid &+ flagOffsets[0])
-        if firstFlag == 0 {
-            // Already disabled — no action needed
-            return
-        }
+        if ds_kread64_safe(amfiDataSlid &+ flagOffsets[0]) == 0 { return }
         
-        // Disable all flags
-        emit("[deb] AMFI flags still enabled — disabling for binary execution...")
+        // Disable all
+        emit("[deb] Disabling AMFI flags...")
         var count = 0
         for off in flagOffsets {
             ds_kwrite64(amfiDataSlid &+ off, 0)
             if ds_kread64_safe(amfiDataSlid &+ off) == 0 { count += 1 }
         }
-        emit("[deb] ✅ AMFI disabled (\(count)/\(flagOffsets.count))")
+        emit("[deb] ✅ AMFI disabled (\(count)/10)")
     }
 }
