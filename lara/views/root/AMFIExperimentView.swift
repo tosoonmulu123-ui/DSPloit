@@ -5929,11 +5929,11 @@ struct AMFIExperimentView: View {
                     detail += "  → Bisa inject ke proses lain via mach ports\n"
                     detail += "  → Bisa load unsigned dylib via manual mapping\n"
                 } else {
-                    detail += "  ⚠️ Return bukan 42 (got \(result)) \u2014 mungkin crash/abort\n"
+                    detail += "  ⚠️ Return bukan 42 (got \(result)) — mungkin crash/abort\n"
                 }
             } else {
                 detail += "  ❌ mprotect gagal (errno=\(mprotErr))\n"
-                if mprotErr == 1 { detail += "  EPERM \u2014 W^X enforced tanpa MAP_JIT\n" }
+                if mprotErr == 1 { detail += "  EPERM — W^X enforced tanpa MAP_JIT\n" }
                 if mprotErr == 12 { detail += "  ENOMEM\n" }
             }
 
@@ -5945,7 +5945,7 @@ struct AMFIExperimentView: View {
 
         // ═══ TEST B: mmap dengan MAP_JIT flag ═══
         detail += "\n=== Test B: mmap(RW, MAP_JIT) + mprotect(RX) ===\n"
-        detail += "MAP_JIT = 0x0800 \u2014 khusus untuk JIT compilation.\n"
+        detail += "MAP_JIT = 0x0800 — khusus untuk JIT compilation.\n"
 
         let mmapB = RootExecutor.rcall(sb, "mmap", 0, PAGE_SIZE,
                                        PROT_READ | PROT_WRITE,
@@ -5984,7 +5984,7 @@ struct AMFIExperimentView: View {
         } else {
             let mmapBErr = remote_errno(sb)
             detail += "  ❌ mmap MAP_JIT gagal (errno=\(mmapBErr))\n"
-            if mmapBErr == 1 { detail += "  EPERM \u2014 MAP_JIT butuh entitlement\n" }
+            if mmapBErr == 1 { detail += "  EPERM — MAP_JIT butuh entitlement\n" }
         }
 
         // ═══ TEST C: mmap RWX langsung ═══
@@ -6067,7 +6067,7 @@ struct AMFIExperimentView: View {
             detail += "🏆 ARBITRARY CODE EXECUTION ACHIEVED!\n"
             detail += "Bisa execute ARM64 code apapun di SpringBoard!\n"
         } else {
-            detail += "W^X enforced \u2014 tidak bisa execute writable memory.\n"
+            detail += "W^X enforced — tidak bisa execute writable memory.\n"
             detail += "SpringBoard tidak punya dynamic-codesigning entitlement.\n"
         }
 
