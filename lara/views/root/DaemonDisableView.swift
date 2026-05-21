@@ -111,31 +111,33 @@ struct DaemonDisableView: View {
             }
             
             // Known daemons not yet in list
-            let existingNames = Set(daemons.map { $0.name })
-            let available = knownDaemons.filter { !existingNames.contains($0.0) }
-            if !available.isEmpty {
-                Section {
-                    ForEach(available, id: \.0) { name, label, category in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(label)
-                                    .font(.subheadline)
-                                Text(name)
-                                    .font(.system(size: 9, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+            if !isLoading {
+                let existingNames = Set(daemons.map { $0.name })
+                let available = knownDaemons.filter { !existingNames.contains($0.0) }
+                if !available.isEmpty {
+                    Section {
+                        ForEach(available, id: \.0) { name, label, category in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(label)
+                                        .font(.subheadline)
+                                    Text(name)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Disable") {
+                                    addDaemon(name, disabled: true)
+                                }
+                                .font(.caption.bold())
+                                .buttonStyle(.bordered)
+                                .tint(.red)
+                                .disabled(!mgr.rcready)
                             }
-                            Spacer()
-                            Button("Disable") {
-                                addDaemon(name, disabled: true)
-                            }
-                            .font(.caption.bold())
-                            .buttonStyle(.bordered)
-                            .tint(.red)
-                            .disabled(!mgr.rcready)
                         }
+                    } header: {
+                        Label("Available Daemons", systemImage: "list.bullet")
                     }
-                } header: {
-                    Label("Available Daemons", systemImage: "list.bullet")
                 }
             }
         }

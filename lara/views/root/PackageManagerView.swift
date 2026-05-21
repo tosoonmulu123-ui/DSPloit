@@ -25,6 +25,7 @@ struct PackageManagerView: View {
     @State private var bootstrapReady = false
     @State private var isInstalling = false
     @State private var installProgress: Double = 0
+    @State private var bootstrapChecked = false
     
     enum PMTab: String, CaseIterable {
         case sources = "Sources"
@@ -117,7 +118,8 @@ struct PackageManagerView: View {
             }
         }
         .onAppear {
-            if mgr.rcready {
+            if mgr.rcready && !bootstrapChecked {
+                bootstrapChecked = true
                 checkBootstrap()
             }
         }
@@ -197,7 +199,7 @@ struct PackageManagerView: View {
             // Quick install section
             Section("Quick Install") {
                 quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
-                    installFromURL(name: "Filza", url: "https://tigisoftware.com/cydia/debs/com.tigisoftware.filza_4.0.2_iphoneos-arm64.deb")
+                    installFromURL(name: "Filza", url: "https://github.com/NitoTV/Bootstrap/releases/download/v1.0/com.tigisoftware.Filza_3.9.8-2_iphoneos-arm64.deb")
                 }
                 quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
                     installFromURL(name: "Sileo", url: "https://github.com/Sileo/Sileo/releases/latest/download/org.coolstar.sileo_2.6_iphoneos-arm64.deb")
@@ -573,6 +575,14 @@ struct PackageManagerView: View {
                 
                 self.installLog.append("[install] ✅ Downloaded \(data.count) bytes")
                 self.installProgress = 0.5
+                
+                // Validate it's actually a .deb (ar archive starts with "!<arch>\n")
+                if data.count < 100 || String(data: data.prefix(8), encoding: .ascii) != "!<arch>\n" {
+                    self.installLog.append("[install] ❌ Downloaded file is not a valid .deb (got HTML/redirect?)")
+                    self.installLog.append("[install] ℹ️ First bytes: \(String(data: data.prefix(min(50, data.count)), encoding: .utf8) ?? "binary")")
+                    self.isInstalling = false
+                    return
+                }
                 
                 // Write .deb to /var/jb/var/cache/apt/archives/
                 let debPath = "/var/jb/var/cache/apt/archives/\(name.lowercased().replacingOccurrences(of: " ", with: "-")).deb"
