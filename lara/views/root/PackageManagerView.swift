@@ -65,7 +65,7 @@ struct PackageManagerView: View {
     }
     
     static let defaultRepos: [RepoInfo] = [
-        RepoInfo(name: "TIGI Software", url: "http://tigisoftware.com/repo", icon: "folder.circle.fill"),
+        RepoInfo(name: "TIGI Software", url: "https://tigisoftware.com/repo", icon: "folder.circle.fill"),
         RepoInfo(name: "Sileo", url: "https://repo.getsileo.app", icon: "shippingbox.circle.fill"),
         RepoInfo(name: "Chariz", url: "https://repo.chariz.com", icon: "star.circle.fill"),
         RepoInfo(name: "Havoc", url: "https://havoc.app", icon: "bolt.circle.fill"),
@@ -201,16 +201,16 @@ struct PackageManagerView: View {
             // Quick install section
             Section("Quick Install") {
                 quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
-                    installFromURL(name: "Filza", url: "http://tigisoftware.com/repo/debs/com.tigisoftware.Filza64_4.0.2-1_iphoneos-arm64.deb")
+                    installFromURL(name: "Filza", url: "https://tigisoftware.com/cydia/com.tigisoftware.filza_4.0.1-2_iphoneos-arm.deb")
                 }
                 quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
-                    installFromURL(name: "Sileo", url: "https://repo.getsileo.app/debs/org.coolstar.sileo_2.5_iphoneos-arm64.deb")
+                    installFromURL(name: "Sileo", url: "https://repo.getsileo.app/pool/org.coolstar.sileo_2.5.1_iphoneos-arm.deb")
+                }
+                quickInstallRow("TrollStore", "Install IPAs permanently", "app.badge.checkmark", .cyan) {
+                    installFromURL(name: "TrollStore", url: "https://havoc.app/api/download/package/66d4ee514ce732df1fd8b283/com.opa334.trollstorehelper_2.1_iphoneos-arm.deb")
                 }
                 quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
                     installFromURL(name: "Ellekit", url: "https://ellekit.space/ellekit.deb")
-                }
-                quickInstallRow("PreferenceLoader", "Settings integration", "gear", .gray) {
-                    installFromURL(name: "PreferenceLoader", url: "https://apt.thebigboss.org/repofiles/cydia/debs2.0/preferenceloader_2.2.6-1_iphoneos-arm.deb")
                 }
                 
                 Text("If download fails, add the repo in Sources tab and install from there.")
