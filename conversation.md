@@ -1,4 +1,4 @@
-# DSPloit — Context Transfer (AMFI Lab / Exp 74–91)
+# DSPloit — Context Transfer (AMFI Lab / Exp 74–109)
 
 **Repo:** `tosoonmulu123-ui/DSPloit`  
 **Device:** iPhone XR (A12 T8020), iOS 18.2 (22C152)  
@@ -26,378 +26,145 @@
 | Copy file to /var/tmp | ✅ | open+read+write works |
 | Patch binary on /var/tmp | ✅ | NOP 14 instructions in amfid copy |
 | Read amfid binary (252KB) | ✅ | Dump + on-device ARM64 analysis |
+| AMFI __DATA writable | ✅ | Exp 93 confirmed |
+| CoreTrust __DATA writable | ✅ | Exp 98 confirmed |
+| Sandbox extension issue | ✅ | Exp 102 — sandbox.executable issued! |
+| XPC connect MobileStorageMounter | ✅ | Exp 100 — connection established |
+| XPC connect cryptexd | ✅ | Exp 101 — connection established |
+| XPC connect installd | ✅ | Exp 103 — connection established |
 
 ## 2. What DOESN'T work (all tested, all failed)
 
 | Approach | Result | Root cause |
 |---|---|---|
-| Write kernel __TEXT_EXEC (Exp 85) | ❌ | KTRR hardware RO |
-| Write kernel __DATA (Exp 79) | ❌ | KTRR hardware RO |
-| Write proc_ro cs_flags (Exp 83) | ❌ | zone_require_ro hardware |
+| Write kernel __TEXT_EXEC | ❌ | KTRR hardware RO |
+| Write kernel __DATA | ❌ | KTRR hardware RO |
+| Write kernel __DATA_CONST | ❌ | KTRR hardware RO (panic) |
+| Write proc_ro cs_flags | ❌ | zone_require_ro hardware |
 | Physmap write to kernel text | ❌ | KTRR also blocks physmap |
-| Physmap write to amfid text | ❌ | Page table walk fails (userspace pmap) |
 | task_for_pid(amfid) | ❌ | ret=5 (KERN_FAILURE) |
-| Patch amfid on-disk | ❌ | EROFS (SSV read-only rootfs) |
-| Bind mount patched amfid | ❌ | bindfs/nullfs not available iOS 18 |
-| Spawn copied binary | ❌ | ret=1/13 (CDHash mismatch) |
-| Spawn patched binary | ❌ | ret=13 (CDHash mismatch) |
+| Spawn copied binary | ❌ | CDHash mismatch → SIGKILL |
 | DYLD_INSERT_LIBRARIES | ❌ | SIGKILL (stripped by AMFI) |
-| ALL DYLD env vars (8 tested) | ❌ | All SIGKILL |
-| dlopen unsigned dylib | ❌ | AMFI reject |
-| dlopen copied system dylib | ❌ | File not on disk (shared cache only) |
-| dlopen via symlink | ❌ | AMFI reject |
-| JIT shellcode (mmap+mprotect+call) | ❌ | APRR blocks execute unsigned page |
-| MAP_JIT | ❌ | SpringBoard lacks entitlement |
-| system() command | ❌ | /bin/sh not found (ret=127) |
+| JIT shellcode | ❌ | APRR blocks unsigned execute |
 | amfid kill race | ❌ | Kernel enforces independently |
+| AMFI __DATA flags disable | ❌ | Flags = logging, bukan enforcement |
+| CoreTrust __DATA zero | ❌ | Validation di kernel level |
 
-## 3. The blocking wall
-
-**AMFI CDHash validation** is the final barrier:
-- Every binary must have its CDHash in the **static trust cache** (burned into kernelcache at build time)
-- Copying a binary changes its CDHash → rejected
-- Patching a binary changes its CDHash → rejected
-- No way to add entries to trust cache (KTRR protects it)
-- No way to bypass validation (all code paths checked)
-
-**The ONLY way to execute custom code on iOS 18.2 A12:**
-1. **CoreTrust certificate bypass** (TrollStore-style) — sign binary with a certificate that CoreTrust accepts without Apple root CA
-2. **Find a 0-day** in AMFI/CoreTrust validation logic
-3. **Hardware exploit** (silicon bug in KTRR/APRR/PAC)
-
-## 4. Key technical findings
-
-### KTRR (Kernel Text Readonly Region)
-- Protects ALL kernel memory: __TEXT, __TEXT_EXEC, __DATA
-- Operates at AMCC (memory controller) level
-- Physmap write ALSO blocked (same physical pages)
-- Only kernel heap (zone allocator) is writable
-
-### zone_require_ro
-- iOS 18 protects `proc_ro` struct in hardware RO zone
-- Cannot modify cs_flags of any process
-- Both heap KRW and physmap write fail
-
-### APRR (Apple Page Protection Layer)
-- mprotect(RX) succeeds (page table updated)
-- But APRR blocks actual execution from unsigned pages
-- Hardware-level enforcement independent of page tables
-
-### AMFI enforcement
-- Validates CDHash at posix_spawn time (before process starts)
-- Validates CDHash at dlopen time (runtime loading)
-- Strips ALL DYLD environment variables for platform binaries
-- fork() allowed but exec of unsigned binary still blocked
-- Symlink spawn works because AMFI resolves to original (trusted) binary
-
-## 5. Architecture & key files
+## 3. Architecture & Key Files
 
 | File | Role |
 |---|---|
-| `lara/views/root/AMFIExperimentView.swift` | All experiments (Exp 74-91) |
+| `lara/views/root/AMFIExperimentView.swift` | All experiments (Exp 74-109) — 5009 lines |
 | `lara/kexploit/darksword.m` | Socket KRW exploit |
-| `lara/classes/RootExecutor.swift` | rcall + rcallAddr |
-| `lara/classes/dspmgr.swift` | Process management, readCSFlags |
-| `scripts/analyze_amfid.py` | Offline amfid binary analysis |
-| `scripts/find_amfi_kernel_patch.py` | Kernelcache AMFI function finder |
+| `lara/kexploit/TrustCacheInjector.m` | TC inject (FIXED: offset 4→20, 8→24) |
+| `lara/classes/RootExecutor.swift` | rcall + rcallAddr (FIXED: addr validation) |
+| `lara/classes/dspmgr.swift` | Process management, sbProc |
+| `lara/kexploit/kcache_analyze.m` | Kernelcache ADRP scan |
+| `lara/kexploit/pe/sbx.m` | Sandbox escape |
 
-## 6. Git rules
+## 4. Git Rules
 
 - Push ke **main** langsung
 - **Jangan push dikit-dikit** — selesaikan SEMUA file dulu, baru 1x commit + 1x push
-- **Jangan push** sampai semua file dalam batch siap dan diagnostics bersih
 - Update conversation.md setiap batch
-- Komunikasi Bahasa Indonesia
+- Komunikasi **Bahasa Indonesia**
 
-## 7. Exp 100 Fix — TC Load XPC
+## 5. Bugs yang Sudah Di-fix
 
-**Problem:** Exp 100 menyebabkan **kernel panic** (`initproc exited -- exit reason namespace 2 subcode 0x5`).
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| TrustCacheInjector offset SALAH | count di +4 (harusnya +20), entry di +8 (harusnya +24) | Fixed offset sesuai TC v2 format |
+| Exp 100 initproc panic | XPC dari launchd = deadlock (launchd = service manager) | Pindah ke SpringBoard RC |
+| xpc_dictionary_create return 0 | `xpc_dictionary_create_empty` tidak ada di iOS 18.2 | Pakai `xpc_dictionary_create(0,0,0)` |
+| send_with_reply_sync hang | Blocking call → watchdog kill SB | Pakai `send_message` (fire-and-forget) |
+| Terlalu banyak RC calls | 50+ calls = SB main thread busy > watchdog | Minimize calls, hybrid launchd+SB |
+| posix_spawn ENOENT dari SB | SB sandbox block /usr/bin/ | Pakai launchd RC untuk file ops |
+| rcallAddr invalid address | Tidak ada validation → crash | Tambah range check |
 
-**Root cause:** XPC connections dipanggil dari **launchd (PID 1)** via RemoteCall. Launchd adalah XPC service manager — ketika dia mencoba `xpc_connection_create_mach_service` ke service yang dia sendiri manage (MobileStorageMounter, cryptexd, mobileassetd), ini menyebabkan deadlock/fatal error. Launchd exit → kernel panic karena PID 1 tidak boleh exit.
+## 6. Reverse Engineering Results
 
-**Fix:** Pindah semua XPC operations ke **SpringBoard RC**. SpringBoard adalah normal XPC client, bukan service manager, jadi aman untuk connect ke services tanpa deadlock.
+### Deep Reverse v5 (GOD MODE) — 994 findings
+- **CRITICAL: 91** | HIGH: 318 | MEDIUM: 333 | LOW: 113
+- 71 targets analyzed (binaries + firmware + kernelcache)
+- Kernelcache decompressed (55MB) — 188,398 strings extracted
 
-**Changes:**
-- `runExp100TCLoadXPC()` sekarang pakai `dspmgr.shared.sbProc` (SpringBoard RC)
-- File write, XPC connect, amfi_load_trust_cache, dan spawn test semua via SB RC
-- Tidak ada operasi yang menyentuh launchd → no more initproc panic
-- Button UI renamed: "③v TC Load XPC via SB (Exp 100)"
+### Top Attack Vectors (dari v5):
 
-## 7. Exp 92 — Final Confirmation (Kernel Panic)
+| # | Target | Attack | Reliability |
+|---|--------|--------|-------------|
+| 1 | **keybagd** | XPC → system() (4x) — command injection | HIGH |
+| 2 | **securityd** | XPC → system() + sqlite3_exec | HIGH |
+| 3 | **MobileStorageMounter** | XPC → IOConnectCallMethod (tainted) + TC load entitlement | HIGH |
+| 4 | **amfid** | XPC → memcpy overflow + 49 PAC strip gadgets | MED |
+| 5 | **lockdownd** | XPC → strcpy overflow + TCC bypass | HIGH |
+| 6 | **cryptexd** | XPC → memcpy + TOCTOU + symlink (15x) | MED |
+| 7 | **applekeystored** | system() + IOConnectMapMemory64 (DMA) + 200 PAC gadgets | MED |
 
-**Exp 92 (TC Inject)** menulis test value `0x4141414141414141` ke trust cache slot di `0xfffffff0198819b4`.
+### Kernel Findings:
+- `cs_enforcement_disable` @ kernel offset 0x498d5d (2 refs)
+- `boot-args` (52 refs), `nvram` (62 refs), `IONVRAM` (41 refs)
+- AMFI kext @ vmaddr 0xfffffff007497c30
+- 362 panic() paths (triggerable from userspace)
+- 223 kexts in fileset kernelcache
 
-**Hasil: KERNEL PANIC**
+### Key Taint Chains:
 ```
-panic(cpu 3): Unexpected fault in kernel static region
-  far: 0xfffffff0198819b4  (trust cache address)
-  x3:  0x4141414141414141  (our test write value)
-  x1:  0xfffffff0198819b4  (destination address)
+keybagd:  xpc_dictionary_get_string → system()
+securityd: xpc_dictionary_get_string → system() / sqlite3_exec / NSKeyedUnarchiver
+launchd:  xpc_dictionary_get_string → strcpy
+lockdownd: xpc_dictionary_get_string → strcpy
+amfid:    xpc_dictionary_get_string → memcpy / memmove
+MobileStorageMounter: xpc_dictionary_get_data → IOConnectCallMethod
 ```
 
-**Konfirmasi definitif:**
-- Trust cache ada di kernel `__DATA` segment (bukan heap)
-- KTRR (hardware) melindungi SEMUA kernel static region termasuk `__DATA`
-- Tidak ada dynamic/heap trust cache yang writable di iOS 18.2
-- Write via socket KRW ke alamat KTRR → immediate hardware fault → panic
+## 7. Current Experiments (Active)
 
-**Exp 84 (amfid Patch)** menyebabkan respring karena:
-- Page table walk ke amfid userspace gagal
-- Atau: PPL melindungi amfid text pages dari write via physmap
+| Exp | Name | Status | Result |
+|-----|------|--------|--------|
+| 74 | Physmap Verify | ✅ Works | gVirt/gPhys saved |
+| 77 | Trust Cache Probe | ✅ Works | TC found at __DATA |
+| 79 | KTRR Write Test | ✅ Works | Delegates to TrustCacheInjector.m |
+| 80 | RC Trust Cache Add | ⚠️ | amfi_load_trust_cache not in shared cache |
+| 81 | Heap TC Analysis | ✅ Works | Info only |
+| 82 | Deep TC Scan | 🔧 Stub | Not implemented yet |
+| 93b | AMFI Flag Disable | ✅ Tested | Flags = logging, bukan enforcement |
+| 100 | TC Load XPC (SB) | ✅ Fixed | MSM connected, msg sent |
+| 101 | cryptexd TOCTOU | ✅ Fixed | Connected, no reply |
+| 102 | xpcproxy Sandbox Ext | ✅ Works! | sandbox.executable issued! |
+| 103 | installd Deserialization | ✅ Fixed | Connected, no reply |
+| 104 | lockdownd Overflow | ⚠️ | Respring (fixed now) |
+| 105 | MSM Deep XPC | ⚠️ | No response to commands |
+| 106 | Sandbox Exec Spawn | ✅ Tested | ENOENT (SB can't read rootfs) — fixed with launchd |
+| 107 | keybagd XPC→system() | 🆕 | NOT TESTED YET |
+| 108 | securityd XPC→system() | 🆕 | NOT TESTED YET |
+| 109 | amfid XPC Overflow | 🆕 | NOT TESTED YET |
 
-## 8. Semua jalur yang sudah dicoba dan gagal
+## 8. Next Steps (Priority Order)
 
-| # | Approach | Blocker |
-|---|---|---|
-| 1 | Write trust cache __DATA | KTRR hardware (panic confirmed) |
-| 2 | Write trust cache via physmap | KTRR juga block physmap ke physical pages yang sama |
-| 3 | Write proc_ro cs_flags | zone_require_ro hardware |
-| 4 | Patch amfid text via physmap | PPL / page table walk gagal |
-| 5 | task_for_pid(amfid) | ret=5 KERN_FAILURE |
-| 6 | Spawn patched binary | CDHash mismatch → EACCES |
-| 7 | Bind mount | bindfs/nullfs not available iOS 18 |
-| 8 | DYLD env vars | Stripped by AMFI |
-| 9 | JIT shellcode | APRR blocks unsigned execute |
-| 10 | dlopen unsigned | AMFI reject |
-| 11 | Kernel AMFI patch | KTRR blocks __TEXT_EXEC |
-| 12 | Ad-hoc signing | CDHash still not in trust cache |
-| 13 | Fork+exec | Child still subject to AMFI |
+1. **Test Exp 107** — keybagd command injection (PALING MENJANJIKAN)
+2. **Test Exp 108** — securityd command injection
+3. **Test Exp 109** — amfid XPC overflow probe
+4. **Re-test Exp 100** — sekarang pakai fire-and-forget (harusnya tidak respring)
+5. **Re-test Exp 106** — sekarang pakai launchd untuk file copy
+6. Jika 107/108 berhasil → execute binary via keybagd/securityd context
+7. Jika tidak → reverse engineer exact XPC protocol dari binary cards
 
-## 9. Status Final
+## 9. Trust Cache v2 Format (CONFIRMED)
 
-**Semi-jailbreak achieved:**
-- ✅ Root + KRW + sandbox escape + spawn system binary
-- ❌ Execute custom unsigned code (blocked by hardware: KTRR + APRR + PPL)
-
-**Jalur baru yang ditemukan (deep_tc_analysis.py + IPSW):**
-
-### Trust Cache v2 Format (CONFIRMED dari IPSW .trustcache files)
 ```
 +0x00: uint32 version = 2
-+0x04: uuid[16] (16 bytes)
-+0x14: uint32 count
-+0x18: entries[count] (24 bytes each)
-  Entry: cdhash[20] + hashType(1) + flags(1) + pad(2)
-```
-NOTE: Exp 92 pakai offset SALAH (count di +0x04, entries di +0x08).
-
-### AMFI __DATA (fileset component — mungkin di luar KTRR!)
-- Unslid VA: 0xfffffff00a330098, Size: 0x541
-- 10 boolean flags (value=1): 0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408
-
-### Cryptex Trust Caches (loaded RUNTIME → kemungkinan HEAP)
-- Cryptex1,SystemTrustCache: 91 entries (IsLoadedByiBoot: False)
-- Cryptex1,AppTrustCache: 30 entries (IsLoadedByiBoot: False)
-- __DATA zero slots yang mungkin mengarah ke heap TC: +0x3980, +0x38e0, +0x3920, +0x3930
-
-### New Experiments
-- **Exp 93**: AMFI __DATA write test (flip boolean flags)
-- **Exp 94**: Heap TC scan (baca zero slots → cari Cryptex TC di heap)
-- **Exp 95**: cs_enforcement_disable (write ke __DATA+0x45b8)
-
-## 10. Exp 93 BERHASIL — AMFI __DATA WRITABLE!
-
-**BREAKTHROUGH:** Exp 93 membuktikan bahwa AMFI.kext fileset component `__DATA` segment **TIDAK dilindungi KTRR**!
-
-- AMFI __DATA (unslid): `0xfffffff00a330098`, size `0x541`
-- 10 boolean flags ditemukan di offsets: `+0x110, +0x160, +0x1b0, +0x200, +0x250, +0x2a0, +0x2f0, +0x340, +0x398, +0x408` (semua value=1)
-- Write test: tulis 0 ke `+0x408`, baca kembali 0, restore ke 1 — **SUKSES!**
-- Screenshot proof tersedia
-
-**Implikasi:** Fileset component __DATA (AMFI, CoreTrust, dll) berada di physical pages yang BERBEDA dari main kernel __DATA, dan KTRR tidak melindunginya!
-
-## 11. Exp 93b — AMFI Flag Disable + Spawn Test (IMPLEMENTED)
-
-**Exp 93b** melakukan:
-1. Baca semua 10 flag (konfirmasi value=1)
-2. Write 0 ke SEMUA 10 flag (disable AMFI checks)
-3. Test `posix_spawn("/usr/bin/id")` dan `posix_spawn("/bin/ls")`
-4. Test `fork() + execve("/usr/bin/id")` sebagai fallback
-5. Restore semua flag ke value original
-
-**Jika berhasil:** FULL JAILBREAK — AMFI flags mengontrol code signing enforcement!
-**Jika gagal:** Flags mungkin hanya logging/telemetry, bukan enforcement control.
-
-## 12. Exp 94 Fix — Filter 0xffffff8000000000
-
-Panic di Exp 94 disebabkan oleh:
-- Slot __DATA berisi value `0xffffff8000000000` (base kernel VA space)
-- Value ini lolos `isSafeKernelKreadAddress()` tapi alamatnya unmapped
-- Fix: tambah explicit filter untuk skip value ini sebelum kread
-- Juga: `isSafeKernelKreadAddress()` sekarang exclude range `0xffffff80_00000000` sampai `0xffffff81_00000000`
-
-## 13. Next Steps
-
-1. **Run Exp 93b** — test apakah AMFI flags mengontrol enforcement
-2. Jika berhasil → binary search flag mana yang spesifik
-3. Jika gagal → combine dengan heap TC inject (Exp 94 fixed)
-4. CoreTrust __DATA (`0xfffffff00a3b1230`, size `0xe8`) juga mungkin writable — test berikutnya
-
-## 14. Exp 93b-93g Results — AMFI Flags = BUKAN Enforcement
-
-**Definitief bewezen:**
-- 10 boolean flags di AMFI __DATA BUKAN enforcement flags
-- CDHash validation menyebabkan SIGKILL terlepas dari status flag
-- `fork+execve` via RC BROKEN (child tidak pernah execve)
-- `posix_spawn` dari `/var/containers/Bundle/` = ret=0 tapi SIGKILL
-- `posix_spawn` dari `/var/tmp/` = ret=1 (EPERM, sandbox)
-- AMFI flags ON vs OFF TIDAK berpengaruh terhadap SIGKILL
-
-**Spawn path discovery:**
-- `/var/containers/Bundle/` → spawn BERHASIL (ret=0) tapi SIGKILL oleh AMFI
-- `/var/tmp/`, `/var/root/`, `/var/mobile/` → ret=1 (sandbox block)
-- `/usr/libexec/amfid` (original) → ret=0 tapi SIGKILL (conflict dengan amfid running)
-
-## 15. Analisis Kernelcache — VECTOR BARU: __DATA_CONST
-
-**Segment AMFI fileset component:**
-```
-__TEXT           vm=0xfffffff007497c30 size=0xbaf3
-__TEXT_EXEC      vm=0xfffffff008f76d10 size=0x263e4  (KTRR, kode enforcement)
-__DATA           vm=0xfffffff00a330098 size=0x541    (WRITABLE! terbukti)
-__DATA_CONST     vm=0xfffffff007b77a98 size=0x6280   (mac_policy_ops di sini!)
-__LINKEDIT       vm=0xfffffff00a450000 size=0x529a1
++0x04: uuid[16] (16 bytes)  
++0x14: uint32 count         ← FIXED (sebelumnya salah di +0x04)
++0x18: entries[count]       ← FIXED (sebelumnya salah di +0x08)
+  Entry (24 bytes): cdhash[20] + hashType(1) + flags(1) + pad(2)
 ```
 
-**INSIGHT KUNCI:** `mac_policy_ops` adalah tabel function pointer yang dipanggil setiap kali binary di-spawn. Pointer `mpo_vnode_check_exec` memutuskan apakah binary boleh jalan atau di-SIGKILL.
-
-**Exp 96:** Test write ke AMFI __DATA_CONST. Kalau writable:
-1. Cari gadget "MOV W0, #0; RET" di kernel
-2. Overwrite `mpo_vnode_check_exec` → gadget
-3. Semua binary diizinkan → FULL JAILBREAK
-
-## 16. Exp 96 PANIC — __DATA_CONST juga KTRR Protected
-
-**Hasil:** Kernel panic saat write ke AMFI __DATA_CONST.
-Konfirmasi: hanya AMFI __DATA (0x541 bytes) yang writable. Semua segment lain KTRR.
-
-## 17. Exp 97: amfid Kill + Spawn Race (IMPLEMENTED)
-
-**Strategi baru:** Kill amfid → posix_spawn binary dalam window sebelum amfid restart.
-- amfid di-restart otomatis oleh launchd (KeepAlive)
-- Tapi ada window ~100ms di mana tidak ada amfid
-- Kalau kernel default-allow tanpa amfid → binary jalan
-
-**Kemungkinan hasil:**
-- Kalau berhasil → race condition exploit, perlu timing yang tepat
-- Kalau gagal → kernel enforce CS independently (tanpa amfid)
-
-**RET-0 gadget ditemukan di kernelcache:**
-- AMFI __TEXT_EXEC: `0xfffffff008f78e70` (MOV W0,#0; RET)
-- Kernel __TEXT_EXEC: `0xfffffff007d90074` (dan 4 lainnya)
-- Tapi tidak bisa dipakai karena __DATA_CONST (tempat function pointers) KTRR protected
-
-## 18. Exp 97 Result — amfid Race GAGAL
-
-**Hasil:** posix_spawn ret=0, pid=561, tapi tetap SIGKILL.
-- amfid berhasil di-kill (PID 54)
-- Spawn immediate setelah kill → ret=0 (berhasil spawn)
-- Tapi child tetap SIGKILL (signal=9)
-- amfid belum restart saat spawn terjadi
-
-**Konfirmasi:** SIGKILL datang dari KERNEL langsung (`mac_proc_check_run_cs_invalid`), BUKAN dari amfid. Kernel enforce CDHash validation secara independen tanpa menunggu amfid response.
-
-## 19. Exp 98 — CoreTrust __DATA WRITABLE! ✅
-
-**BREAKTHROUGH #2:** CoreTrust fileset component `__DATA` juga WRITABLE!
-
-```
-CoreTrust __DATA (unslid): 0xfffffff00a3b1230
-CoreTrust __DATA size: 0xe8 (232 bytes)
-```
-
-- Write test: tulis `0xdeadbeef12345678` ke `+0x40`, baca kembali → SUKSES!
-- CoreTrust __DATA ada di VA range yang sama dengan AMFI __DATA
-- Kedua fileset component __DATA di luar KTRR protection
-
-**Non-zero slots di CoreTrust __DATA:**
-```
-+0x00: 0 (zero)
-+0x08: 0xffffffff00000001
-+0x10: "com.apple.kext.CoreTrust" (ASCII string)
-+0x50: "1.0.0d1" (version string)
-+0x90: 0xffffffff
-+0x98-0xd0: metadata/struct data
-```
-
-## 20. Exp 99 — AMFI IOKit → RESPRING
-
-Exp 99 (AMFI IOKit deep probe) menyebabkan **respring** (bukan panic).
-- Salah satu IOKit method call crash SpringBoard
-- Ini berarti method "melakukan sesuatu" yang signifikan
-- Perlu investigate method mana yang trigger crash
-
-## 21. Exp 98b — CoreTrust Patch + Spawn (IMPLEMENTED)
-
-**Strategi:** Zero-out CoreTrust __DATA + disable AMFI flags → test spawn.
-- Baseline: spawn dari `/var/containers/Bundle/` → SIGKILL (confirmed)
-- Patch: zero CoreTrust __DATA + AMFI flags → spawn lagi
-- Juga test: CT-only patch (tanpa AMFI flags)
-- Restore semua setelah test
-
-**Hipotesis:** Kalau CoreTrust globals kontrol certificate validation,
-zeroing them → validation disabled → binary accepted → NO SIGKILL.
-
-**Realitas:** Kemungkinan besar masih SIGKILL karena:
-- CDHash validation terjadi di kernel level (pmap_cs)
-- CoreTrust hanya dipanggil via amfid (userspace path)
-- Kernel SIGKILL terjadi SEBELUM CoreTrust dipanggil
-
-## 22. Status Semua Writable Memory
+## 10. Writable Memory Map
 
 | Segment | VA (unslid) | Size | Writable | Useful? |
 |---------|-------------|------|----------|---------|
-| AMFI __DATA | 0xfffffff00a330098 | 0x541 | ✅ | ❌ (bukan enforcement) |
-| CoreTrust __DATA | 0xfffffff00a3b1230 | 0xe8 | ✅ | ❓ (testing) |
+| AMFI __DATA | 0xfffffff00a330098 | 0x541 | ✅ | ❌ (logging only) |
+| CoreTrust __DATA | 0xfffffff00a3b1230 | 0xe8 | ✅ | ❌ (not enforcement) |
 | AMFI __DATA_CONST | 0xfffffff007b77a98 | 0x6280 | ❌ PANIC | - |
 | Kernel __DATA | 0xfffffff00a0e0000 | large | ❌ PANIC | - |
 | Kernel heap | zone allocator | varies | ✅ | ❌ (proc_ro RO) |
-
-## 23. Remaining Viable Approaches
-
-1. **Exp 98b** — CoreTrust __DATA patch + spawn (testing sekarang)
-2. **AMFI IOKit exploit** — find bug di method yang crash SB (Exp 99 variant)
-3. **Kernel function call** — panggil trust_cache_runtime_add dari kernel context
-4. **CoreTrust certificate craft** — reverse engineer CT validation, craft accepted cert
-
-## 24. Full Reverse Engineering — Temuan Critical
-
-**Binary yang di-extract dan di-reverse engineer:**
-amfid, trustd, securityd, launchd, dyld, xpcproxy, keybagd, mobileassetd, 
-MobileStorageMounter, cryptexd, installd, lockdownd, profiled, runningboardd, 
-containermanagerd, provisiond, adid, lsd, notifyd, OTATaskingAgent, applekeystored
-
-**TEMUAN PALING CRITICAL:**
-
-### MobileStorageMounter — BISA LOAD TRUST CACHE!
-Entitlements:
-- `com.apple.private.amfi.can-load-trust-cache`
-- `com.apple.private.pmap.load-trust-cache`
-- `com.apple.private.security.cryptex.install`
-- Working dir: `/private/var/tmp/com.apple.mobile_storage_mounter/`
-- XPC: `com.apple.mobile.storage_mounter`
-
-### mobileassetd — BISA LOAD TRUST CACHE!
-Entitlements:
-- `com.apple.private.pmap.load-trust-cache`
-- `com.apple.private.img4.nonce.cryptex1.asset`
-- Function: `loadTrustCache:bundle:bundleName:needsUnlock:`
-- Panggil `amfi_load_trust_cache()`
-
-### cryptexd — Trust Cache Manager
-- XPC: `com.apple.security.cryptexd`
-- Function: `amfi_load_trust_cache` (5 xrefs!)
-- Entitlement: `com.apple.private.security.cryptex.install`
-- `trustcache file transfer` function ditemukan
-
-### Blocker: Image4 Personalization
-Trust cache harus di-sign oleh Apple TSS server (personalized).
-Tanpa valid Image4 signature → kernel reject.
-TAPI: apakah ada unpersonalized path?
-
-## 25. Next Experiments (Exp 100+)
-
-- **Exp 100**: Trigger MobileStorageMounter trust cache load via XPC
-- **Exp 101**: Trigger mobileassetd loadTrustCache via XPC
-- **Exp 102**: Write fake TC ke `/private/var/tmp/com.apple.mobile_storage_mounter/`
-- **Exp 103**: Trigger cryptexd trust cache load via XPC
