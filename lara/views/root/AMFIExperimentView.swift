@@ -930,36 +930,6 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
-                    title: "⑤ keybagd XPC→system (Exp 107)",
-                    icon: "terminal.fill",
-                    color: .red,
-                    label: "keybagd",
-                    action: runExp107KeybagdInject,
-                    needsVerified: false,
-                    needsProbe: false
-                )
-
-                pathButton(
-                    title: "⑥ MSM TrustCache Class (Exp 108)",
-                    icon: "cpu.fill",
-                    color: .green,
-                    label: "MSM TC",
-                    action: runExp108MSMTrustCache,
-                    needsVerified: false,
-                    needsProbe: false
-                )
-
-                pathButton(
-                    title: "⑦ amfid XPC Overflow (Exp 109)",
-                    icon: "exclamationmark.shield.fill",
-                    color: .orange,
-                    label: "amfid OVF",
-                    action: runExp109AmfidOverflow,
-                    needsVerified: false,
-                    needsProbe: false
-                )
-
-                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -1814,6 +1784,50 @@ struct AMFIExperimentView: View {
     private func expDeepTCScan() -> ExperimentResult {
         // TODO: implementasi deep TC scan
         return ExperimentResult(name: "Deep TC Scan (Exp 82)", success: false, detail: "Not implemented yet", timestamp: Date())
+    }
+
+    /// Stub: expTrustCacheWrite — implementasi asli dihapus (KTRR protected)
+    /// Sekarang pakai TrustCacheInjector.m yang sudah di-fix offset-nya
+    private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool) -> ExperimentResult {
+        let result = Int32(tc_injector_write_test())
+        let log = String(cString: tc_injector_last_log())
+        let success = result == 0 // TCInject_OK
+        return ExperimentResult(name: "TC Write Test (Exp 79)", success: success, detail: log, timestamp: Date())
+    }
+
+    /// Stub: expWriteTest — delegates ke TrustCacheInjector
+    private func expWriteTest() -> ExperimentResult {
+        return expTrustCacheWrite(rc: nil, dryRun: true)
+    }
+
+    /// Stub: expInjectCDHash — delegates ke TrustCacheInjector
+    private func expInjectCDHash() -> ExperimentResult {
+        // Inject dummy CDHash untuk test
+        var dummyHash: [UInt8] = Array(repeating: 0x41, count: 20)
+        let result = Int32(tc_injector_inject_cdhash(&dummyHash, 0))
+        let log = String(cString: tc_injector_last_log())
+        let success = result == 6 // TCInject_InjectOK
+        return ExperimentResult(name: "TC CDHash Inject (Exp 79)", success: success, detail: log, timestamp: Date())
+    }
+
+    /// Stub: expRCTrustCacheAdd — via launchd RC
+    private func expRCTrustCacheAdd(rc: RemoteCall) -> ExperimentResult {
+        var detail = "Exp 80: RC Trust Cache Add\n"
+        detail += "Mencoba load trust cache via launchd dlsym...\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let tcLoad = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                        remote_alloc_str(rc, "amfi_load_trust_cache"))
+        detail += "amfi_load_trust_cache: 0x\(String(format: "%llx", tcLoad))\n"
+
+        if tcLoad == 0 {
+            detail += "❌ Tidak ditemukan di shared cache\n"
+            detail += "Fungsi ini hanya ada di mobileassetd/cryptexd binary, bukan shared cache.\n"
+            return ExperimentResult(name: "RC TC Add (Exp 80)", success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "✅ Found! Tapi butuh entitlement untuk call.\n"
+        return ExperimentResult(name: "RC TC Add (Exp 80)", success: false, detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 93b: AMFI Flag Disable + Spawn Test
@@ -3871,9 +3885,6 @@ struct AMFIExperimentView: View {
     private func runExp103InstalldDeserial() { runSBExperiment(label: "Deserial", exp: expInstalldDeserial) }
     private func runExp104LockdowndOverflow() { runSBExperiment(label: "Overflow", exp: expLockdowndOverflow) }
     private func runExp105MSMXPC() { runSBExperiment(label: "MSM XPC", exp: expMSMXPC) }
-    private func runExp107KeybagdInject() { runSBExperiment(label: "keybagd", exp: expKeybagdCommandInject) }
-    private func runExp108MSMTrustCache() { runSBExperiment(label: "MSM TC", exp: expMSMTrustCacheClass) }
-    private func runExp109AmfidOverflow() { runSBExperiment(label: "amfid OVF", exp: expAmfidXPCOverflow) }
     private func runExp106SandboxExecSpawn() {
         isRunning = true
         runningLabel = "SBX Spawn"
