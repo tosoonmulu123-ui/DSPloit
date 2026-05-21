@@ -5789,7 +5789,7 @@ struct AMFIExperimentView: View {
         let sem = DispatchSemaphore(value: 0)
         root.executeAsRoot(operation: "exp112_spawn") { rc in
             let mem = rc.trojanMem
-            let (ret, pid, _) = self.doSpawn(rc: rc, path: "/usr/bin/id", mem: mem)
+            let (ret, pid, _) = self.doSpawn(rc: rc, path: "/sbin/launchd", mem: mem)
             spawnRet = ret
             spawnPid = pid
             if ret == 0 && pid != 0 {
@@ -5801,7 +5801,7 @@ struct AMFIExperimentView: View {
         }
         sem.wait()
 
-        detail += "posix_spawn(/usr/bin/id): ret=\(spawnRet), pid=\(spawnPid)\n"
+        detail += "posix_spawn(/sbin/launchd): ret=\(spawnRet), pid=\(spawnPid)\n"
         if spawnRet == 0 && spawnPid != 0 {
             detail += "exit signal: \(spawnSig)\n"
             if spawnSig != 9 {
