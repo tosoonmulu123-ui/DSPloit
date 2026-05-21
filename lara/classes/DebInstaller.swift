@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import Compression
 
 /// .deb installer — extracts and installs packages to /var/jb
 final class DebInstaller {
@@ -188,31 +189,25 @@ final class DebInstaller {
         
         guard headerEnd < data.count else { return nil }
         
-        let compressed = data[headerEnd..<(data.count - 8)] // strip gzip footer (CRC32 + size)
+        let compressed = Data(data[headerEnd..<(data.count - 8)]) // strip gzip footer
         
-        // Use NSData's built-in decompression
-        let nsData = compressed as NSData
-        // Try zlib raw inflate
-        return compressed.withUnsafeBytes { srcPtr -> Data? in
-            guard let src = srcPtr.baseAddress else { return nil }
-            let srcSize = compressed.count
-            
-            // Allocate output buffer (estimate 10x compression ratio)
-            var dstSize = srcSize * 10
-            var dst = [UInt8](repeating: 0, count: dstSize)
-            
-            let result = compression_decode_buffer(
-                &dst, dstSize,
-                src.assumingMemoryBound(to: UInt8.self), srcSize,
-                nil,
-                COMPRESSION_ZLIB
-            )
-            
-            if result > 0 {
-                return Data(dst.prefix(result))
-            }
-            return nil
+        // Use Compression framework for raw deflate
+        let srcSize = compressed.count
+        let dstSize = srcSize * 10
+        var dst = [UInt8](repeating: 0, count: dstSize)
+        var src = [UInt8](compressed)
+        
+        let result = compression_decode_buffer(
+            &dst, dstSize,
+            &src, srcSize,
+            nil,
+            COMPRESSION_ZLIB
+        )
+        
+        if result > 0 {
+            return Data(dst.prefix(result))
         }
+        return nil
     }
     
     // MARK: - TAR Parser
