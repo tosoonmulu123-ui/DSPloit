@@ -6,6 +6,12 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
+      - name: Copy extractor binary to bundle resources
+        script: |
+          # Copy extractor arm64 Mach-O binary into the project so Xcode includes it in the app bundle
+          cp tools/extractor lara/
+          # Add to Copy Bundle Resources via build settings
+          # The binary will be accessible via Bundle.main.url(forResource: "extractor", withExtension: nil)
       - name: Build IPA
         script: |
           xcodebuild archive \
@@ -22,6 +28,10 @@ workflows:
           
           mkdir -p build/Payload
           cp -r build/lara.xcarchive/Products/Applications/lara.app build/Payload/
+          
+          # Ensure extractor binary is in the app bundle
+          cp tools/extractor build/Payload/lara.app/extractor 2>/dev/null || true
+          
           cd build && zip -r ../DSPloit.ipa Payload
     artifacts:
       - DSPloit.ipa
