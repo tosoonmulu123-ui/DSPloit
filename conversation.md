@@ -251,3 +251,24 @@ __LINKEDIT       vm=0xfffffff00a450000 size=0x529a1
 1. Cari gadget "MOV W0, #0; RET" di kernel
 2. Overwrite `mpo_vnode_check_exec` → gadget
 3. Semua binary diizinkan → FULL JAILBREAK
+
+## 16. Exp 96 PANIC — __DATA_CONST juga KTRR Protected
+
+**Hasil:** Kernel panic saat write ke AMFI __DATA_CONST.
+Konfirmasi: hanya AMFI __DATA (0x541 bytes) yang writable. Semua segment lain KTRR.
+
+## 17. Exp 97: amfid Kill + Spawn Race (IMPLEMENTED)
+
+**Strategi baru:** Kill amfid → posix_spawn binary dalam window sebelum amfid restart.
+- amfid di-restart otomatis oleh launchd (KeepAlive)
+- Tapi ada window ~100ms di mana tidak ada amfid
+- Kalau kernel default-allow tanpa amfid → binary jalan
+
+**Kemungkinan hasil:**
+- Kalau berhasil → race condition exploit, perlu timing yang tepat
+- Kalau gagal → kernel enforce CS independently (tanpa amfid)
+
+**RET-0 gadget ditemukan di kernelcache:**
+- AMFI __TEXT_EXEC: `0xfffffff008f78e70` (MOV W0,#0; RET)
+- Kernel __TEXT_EXEC: `0xfffffff007d90074` (dan 4 lainnya)
+- Tapi tidak bisa dipakai karena __DATA_CONST (tempat function pointers) KTRR protected
