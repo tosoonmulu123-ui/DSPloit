@@ -1,0 +1,32 @@
+workflows:
+  ios-build:
+    name: Build IPA
+    max_build_duration: 30
+    environment:
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Build IPA
+        script: |
+          xcodebuild archive \
+            -project lara.xcodeproj \
+            -scheme lara \
+            -configuration Debug \
+            -archivePath build/lara.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+          
+          mkdir -p build/Payload
+          cp -r build/lara.xcarchive/Products/Applications/lara.app build/Payload/
+          cd build && zip -r ../DSPloit.ipa Payload
+    artifacts:
+      - DSPloit.ipa
+      - build/lara.xcarchive
+    publishing:
+      email:
+        recipients:
+          - irsyadmr354@gmail.com
