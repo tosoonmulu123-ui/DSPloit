@@ -1,0 +1,995 @@
+severity,binary,category,title,detail,offset,chain,confidence,cvss,cve_hint,new_in_v5
+CRITICAL,DeviceTree.n841ap.im4p,Bootloader,Boot: debug-enabled (1x),Debug enabled,0x1094,,MED,0.0,,False
+CRITICAL,LLB.n841.RELEASE.im4p,Bootloader,Boot: debug-enabled (3x),Debug enabled,0xfedcb,,MED,0.0,,False
+CRITICAL,MobileStorageMounter,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Entitlement,Has: com.apple.private.amfi.can-load-trust-cache,Trust cache injection,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Entitlement,Has: com.apple.private.pmap.load-trust-cache,Kernel TC load,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,MobileStorageMounter,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,OTATaskingAgent,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,adid,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,amfid,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,amfid,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+CRITICAL,amfid,PAC Bypass,ARM64: 49 PAC strip (XPACI/XPACD),XPACI strips PAC without verify — PAC bypass primitive,,pac-strip→rop,HIGH,0.0,PAC bypass primitive from CVE-2022-48503 style exploits,False
+CRITICAL,applekeystored,Command Injection,Uses system() — 1x,system(),,,MED,0.0,,False
+CRITICAL,applekeystored,PAC Bypass,ARM64: 200 PAC strip (XPACI/XPACD),XPACI strips PAC without verify — PAC bypass primitive,,pac-strip→rop,HIGH,0.0,PAC bypass primitive from CVE-2022-48503 style exploits,False
+CRITICAL,applekeystored,Taint→Command Injection,"Taint: [mach_msg, recv...] → system",system() with tainted input,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,applekeystored,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,applekeystored,DMA,DMA: IOConnectMapMemory64 (3x),Map kernel region at 64-bit address,,,MED,0.0,,True
+CRITICAL,cryptexd,Entitlement,Has: com.apple.private.amfi.can-load-trust-cache,Trust cache injection,,,HIGH,0.0,,False
+CRITICAL,cryptexd,Entitlement,Has: com.apple.private.pmap.load-trust-cache,Kernel TC load,,,HIGH,0.0,,False
+CRITICAL,cryptexd,Trust Cache,TC/CS: amfi_load_trust_cache (1x),Inject trust cache,,,MED,0.0,,False
+CRITICAL,cryptexd,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_value...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,dyld,Mach IPC,Mach: task_for_pid (1x),Full process control,,,MED,0.0,,False
+CRITICAL,dyld,Trust Cache,TC/CS: amfi_load_trust_cache (1x),Inject trust cache,,,MED,0.0,,False
+CRITICAL,dyld,Injection,Inject: task_for_pid (1x),task_for_pid,,,MED,0.0,,False
+CRITICAL,dyld,Taint→Memory Corruption,"Taint: [mach_msg, read] → strcpy",strcpy tainted → overflow,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,dyld,Taint→Memory Corruption,"Taint: [mach_msg, read] → strcat",strcat tainted → overflow,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,dyld,Taint→Format/Overflow,"Taint: [mach_msg, read] → sprintf",sprintf tainted → overflow,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,dyld,Taint→Format/Overflow,"Taint: [mach_msg, read] → vsprintf",vsprintf tainted → overflow,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,dyld,Taint→Command Injection,"Taint: [mach_msg, read] → execve",execve() with tainted args,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,dyld,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,iBEC.n841.RELEASE.im4p,Bootloader,Boot: debug-enabled (3x),Debug enabled,0xfedcb,,MED,0.0,,False
+CRITICAL,iBSS.n841.RELEASE.im4p,Bootloader,Boot: debug-enabled (3x),Debug enabled,0xfedcb,,MED,0.0,,False
+CRITICAL,iBoot.n841.RELEASE.im4p,Bootloader,Boot: debug-enabled (3x),Debug enabled,0xfedcb,,MED,0.0,,False
+CRITICAL,installd,Entitlement,Has: com.apple.private.kernel.,Kernel private entitlement,,,HIGH,0.0,,False
+CRITICAL,installd,Taint→Deserialization,Taint: [read] → NSKeyedUnarchiver,NSKeyedUnarchiver tainted data,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,keybagd,Command Injection,Uses system() — 4x,system(),,,MED,0.0,,False
+CRITICAL,keybagd,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,keybagd,XPC→Injection,XPC input → system(),XPC data → system command injection,,xpc→command-injection,MED,0.0,XPC injection chain similar to CVE-2023-23528,False
+CRITICAL,keybagd,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+CRITICAL,keybagd,Entitlement,Has: com.apple.private.persona-mgmt,Identity spoofing,,,HIGH,0.0,,False
+CRITICAL,keybagd,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+CRITICAL,keybagd,Taint→Command Injection,"Taint: [xpc_dictionary_get_string, mach_msg...] → system",system() with tainted input,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,keybagd,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, mach_msg...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,keybagd,Taint→SQL Injection,"Taint: [xpc_dictionary_get_string, mach_msg...] → sqlite3_exec",sqlite3_exec with tainted SQL,,taint→sql,HIGH,0.0,,True
+CRITICAL,keybagd,SQL Injection,sqlite3_exec — raw SQL execution,sqlite3_exec with concatenated user input = SQL injection. Use parameterized queries: sqlite3_prepare_v2 + sqlite3_bind_*.,,taint→sql,MED,0.0,,True
+CRITICAL,launchd,XPC→Overflow,XPC input → strcpy,XPC data + strcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+CRITICAL,launchd,Entitlement,Has: com.apple.private.pmap.load-trust-cache,Kernel TC load,,,HIGH,0.0,,False
+CRITICAL,launchd,Entitlement,Has: com.apple.private.kernel.,Kernel private entitlement,,,HIGH,0.0,,False
+CRITICAL,launchd,PAC Bypass,ARM64: 3 PAC strip (XPACI/XPACD),XPACI strips PAC without verify — PAC bypass primitive,,pac-strip→rop,HIGH,0.0,PAC bypass primitive from CVE-2022-48503 style exploits,False
+CRITICAL,launchd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → strcpy",strcpy tainted → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,lockdownd,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,lockdownd,XPC→Overflow,XPC input → strcpy,XPC data + strcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+CRITICAL,lockdownd,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+CRITICAL,lockdownd,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+CRITICAL,lockdownd,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+CRITICAL,lockdownd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → strcpy",strcpy tainted → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,lockdownd,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, mach_msg...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,lockdownd,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,lsd,Entitlement,Has: com.apple.private.kernel.,Kernel private entitlement,,,HIGH,0.0,,False
+CRITICAL,misagent,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,mobileassetd,Entitlement,Has: com.apple.private.pmap.load-trust-cache,Kernel TC load,,,HIGH,0.0,,False
+CRITICAL,mobileassetd,Entitlement,Has: com.apple.private.kernel.,Kernel private entitlement,,,HIGH,0.0,,False
+CRITICAL,mobileassetd,Trust Cache,TC/CS: amfi_load_trust_cache (1x),Inject trust cache,,,MED,0.0,,False
+CRITICAL,profiled,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,profiled,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+CRITICAL,profiled,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+CRITICAL,profiled,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+CRITICAL,profiled,Entitlement,Has: com.apple.private.coreservices,CoreServices private,,,HIGH,0.0,,False
+CRITICAL,profiled,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, read...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,runningboardd,Entitlement,Has: com.apple.private.kernel.,Kernel private entitlement,,,HIGH,0.0,,False
+CRITICAL,securityd,Command Injection,Uses system() — 1x,system(),,,MED,0.0,,False
+CRITICAL,securityd,XPC→Injection,XPC input → system(),XPC data → system command injection,,xpc→command-injection,MED,0.0,XPC injection chain similar to CVE-2023-23528,False
+CRITICAL,securityd,Taint→Command Injection,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → system",system() with tainted input,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,securityd,Taint→Deserialization,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → NSKeyedUnarchiver",NSKeyedUnarchiver tainted data,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,securityd,Taint→Kernel Attack,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → IOConnectCallMethod",IOKit call with tainted input buffer,,taint→iokit,HIGH,0.0,,False
+CRITICAL,securityd,Taint→SQL Injection,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → sqlite3_exec",sqlite3_exec with tainted SQL,,taint→sql,HIGH,0.0,,True
+CRITICAL,securityd,Format String,Format %n — write primitive,%n writes integer to memory — if format controlled → arbitrary write,,,MED,0.0,,False
+CRITICAL,securityd,SQL Injection,sqlite3_exec — raw SQL execution,sqlite3_exec with concatenated user input = SQL injection. Use parameterized queries: sqlite3_prepare_v2 + sqlite3_bind_*.,,taint→sql,MED,0.0,,True
+CRITICAL,timed,Taint→Deserialization,"Taint: [xpc_dictionary_get_string, recvfrom...] → NSKeyedUnarchiver",NSKeyedUnarchiver tainted data,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+CRITICAL,trustd,Taint→SQL Injection,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → sqlite3_exec",sqlite3_exec with tainted SQL,,taint→sql,HIGH,0.0,,True
+CRITICAL,trustd,SQL Injection,sqlite3_exec — raw SQL execution,sqlite3_exec with concatenated user input = SQL injection. Use parameterized queries: sqlite3_prepare_v2 + sqlite3_bind_*.,,taint→sql,MED,0.0,,True
+CRITICAL,xpcproxy,Privilege,Uses setuid() — 2x,setuid() — UID change,,,MED,0.0,,False
+CRITICAL,xpcproxy,Privilege,Uses setgid() — 2x,setgid() — GID change,,,MED,0.0,,False
+CRITICAL,xpcproxy,XPC Auth,XPC service without audit validation,No xpc_connection_get_audit_token — any caller triggers handler,,,HIGH,0.0,,False
+CRITICAL,xpcproxy,Entitlement,Has: com.apple.private.coreservices,CoreServices private,,,HIGH,0.0,,False
+CRITICAL,xpcproxy,Privilege,Inject: _setuid  (2x),setuid(),,,MED,0.0,,False
+CRITICAL,xpcproxy,Sandbox Escape,Sandbox: sandbox_extension_issue_file (2x),File extension,,,MED,0.0,,False
+CRITICAL,xpcproxy,PAC Bypass,ARM64: 1 PAC strip (XPACI/XPACD),XPACI strips PAC without verify — PAC bypass primitive,,pac-strip→rop,HIGH,0.0,PAC bypass primitive from CVE-2022-48503 style exploits,False
+HIGH,DeviceTree.n841ap.im4p,Bootloader,Boot: nonce (3x),Nonce — downgrade protection,0xbc5,,MED,0.0,,False
+HIGH,LLB.n841.RELEASE.im4p,Bootloader,Boot: nonce (3x),Nonce — downgrade protection,0xfee95,,MED,0.0,,False
+HIGH,LLB.n841.RELEASE.im4p,Bootloader,Boot: boot-args (3x),Boot arguments,0xfd31e,,MED,0.0,,False
+HIGH,MobileStorageMounter,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,MobileStorageMounter,IOKit,IOKit: IOConnectCallMethod (3x),External method,,,MED,0.0,,False
+HIGH,MobileStorageMounter,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,MobileStorageMounter,IOKit Target,Opens IOKit: AppleAPFS,Kernel driver AppleAPFS interaction,,,MED,0.0,,False
+HIGH,MobileStorageMounter,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,MobileStorageMounter,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,MobileStorageMounter,ObjC Class,Defines/refs: TrustCache,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,MobileStorageMounter,ObjC Class,Defines/refs: AppInstallCoordinator,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,MobileStorageMounter,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,MobileStorageMounter,UAF,"Async + free pattern — UAF risk (36 frees, 40 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,OTATaskingAgent,XPC NSXPCInterface,NSXPCInterface without class allowlist,ObjC object injection via NSXPC without setClasses:,,,MED,0.0,,False
+HIGH,OTATaskingAgent,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,OTATaskingAgent,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,OTATaskingAgent,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,OTATaskingAgent,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,OTATaskingAgent,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,adc-petra-n84.im4p,Bootloader,Boot: nonce (2x),Nonce — downgrade protection,0xc4bb12,,MED,0.0,,False
+HIGH,adid,Entitlement,Has: platform-application,Platform binary,,,HIGH,0.0,,False
+HIGH,adid,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,adid,Debug,Inject: ptrace (2x),ptrace,,,MED,0.0,,False
+HIGH,adid,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,adid,Integer→Alloc,strtoul (unsigned) + malloc — unchecked multiplication risk,strtoul result passed to malloc without multiplication overflow check. n*elem_size can wrap on 32-bit values cast to size_t.,,int-overflow→heap-overflow,MED,0.0,,True
+HIGH,adid,ObjC Class,Defines/refs: SecTask,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,adid,UAF,"Async + free pattern — UAF risk (6 frees, 2 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,adid,Double-Free,Free count (6) >> alloc count (2) — potential double-free,More frees than allocations suggests missing re-init between frees. Double-free → heap corruption → controlled overwrite.,,double-free→heap-corruption,LOW,0.0,,True
+HIGH,amfid,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,amfid,XPC NSXPCInterface,NSXPCInterface without class allowlist,ObjC object injection via NSXPC without setClasses:,,,MED,0.0,,False
+HIGH,amfid,Credentials/Secrets,Found: Hardcoded password,Context: ' to set password credential with empty password\x00%s:',0x1f156,,MED,0.0,,False
+HIGH,amfid,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,amfid,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,amfid,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,amfid,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → syslog",syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,amfid,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, mach_msg...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,amfid,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,amfid,Integer→Alloc,strtoul (unsigned) + malloc — unchecked multiplication risk,strtoul result passed to malloc without multiplication overflow check. n*elem_size can wrap on 32-bit values cast to size_t.,,int-overflow→heap-overflow,MED,0.0,,True
+HIGH,amfid,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,amfid,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,amfid,ObjC Class,Defines/refs: SpringBoardServices,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,amfid,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,amfid,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,amfid,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,amfid,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,amfid,UAF,"Async + free pattern — UAF risk (32 frees, 32 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,applekeystored,Entitlement,Has: platform-application,Platform binary,,,HIGH,0.0,,False
+HIGH,applekeystored,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,applekeystored,IOKit,IOKit: IOConnectMapMemory (3x),Maps kernel memory to user,,,MED,0.0,,False
+HIGH,applekeystored,IOKit,IOKit: IODataQueueDequeue (2x),DataQueue dequeue — size critical,,,MED,0.0,,False
+HIGH,applekeystored,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,applekeystored,IOKit Target,Opens IOKit: AppleCredentialManager,Kernel driver AppleCredentialManager interaction,,,MED,0.0,,False
+HIGH,applekeystored,Taint→Memory Corruption,"Taint: [mach_msg, recv...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,applekeystored,Taint→Memory Corruption,"Taint: [mach_msg, recv...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,applekeystored,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,applekeystored,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,applekeystored,ObjC Class,Defines/refs: MobileInstallation,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,applekeystored,Heap Spray,Multiple IOKit methods (2) — kernel heap grooming,Trigger kernel allocs of controlled sizes = heap feng-shui before corruption,,iokit→kernel-heap-spray,MED,0.0,"IOKit grooming used in CVE-2022-42827, CVE-2023-38606",False
+HIGH,appprotectiond,Entitlement,Has: platform-application,Platform binary,,,HIGH,0.0,,False
+HIGH,appprotectiond,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+HIGH,appprotectiond,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,cryptexd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,cryptexd,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+HIGH,cryptexd,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+HIGH,cryptexd,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+HIGH,cryptexd,IOKit,IOKit: IOConnectCallMethod (2x),External method,,,MED,0.0,,False
+HIGH,cryptexd,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,cryptexd,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,cryptexd,IOKit Target,Opens IOKit: AppleAPFS,Kernel driver AppleAPFS interaction,,,MED,0.0,,False
+HIGH,cryptexd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_value...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,cryptexd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,cryptexd,Integer→Alloc,strtoul (unsigned) + malloc — unchecked multiplication risk,strtoul result passed to malloc without multiplication overflow check. n*elem_size can wrap on 32-bit values cast to size_t.,,int-overflow→heap-overflow,MED,0.0,,True
+HIGH,cryptexd,TOCTOU,Race/TOCTOU: _access (2x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,cryptexd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,cryptexd,Kernel Proc,KStruct: p_fd (2x),proc→p_fd — file descriptor table,0x62b87,,MED,0.0,,False
+HIGH,cryptexd,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,cryptexd,Heap Spray,Multiple IOKit methods (2) — kernel heap grooming,Trigger kernel allocs of controlled sizes = heap feng-shui before corruption,,iokit→kernel-heap-spray,MED,0.0,"IOKit grooming used in CVE-2022-42827, CVE-2023-38606",False
+HIGH,cryptexd,UAF,"Async + free pattern — UAF risk (34 frees, 48 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,cryptexd,NULL Deref,xpc_dictionary_get_value → xpc_string_get_string_ptr without type/NULL check,xpc_dictionary_get_value returns NULL for missing key. Passing NULL to xpc_string_get_string_ptr → NULL deref or type confusion.,,xpc→null-deref,HIGH,0.0,,True
+HIGH,dyld,Buffer Overflow,Uses strcpy() — 1x,strcpy() no bounds,,,MED,0.0,,False
+HIGH,dyld,Buffer Overflow,Uses strcat() — 1x,strcat() no bounds,,,MED,0.0,,False
+HIGH,dyld,Format/Overflow,Uses sprintf() — 1x,sprintf() no limit,,,MED,0.0,,False
+HIGH,dyld,Format/Overflow,Uses vsprintf() — 1x,vsprintf(),,,MED,0.0,,False
+HIGH,dyld,Code Exec,Uses execve() — 1x,execve(),,,MED,0.0,,False
+HIGH,dyld,Mach Memory,Mach: mach_vm_allocate (1x),Allocate in other process,,,MED,0.0,,False
+HIGH,dyld,Mach Memory,Mach: vm_map (2x),vm_map — map pages,,,MED,0.0,,False
+HIGH,dyld,Injection,Inject: mach_vm_allocate (1x),Allocate in other process,,,MED,0.0,,False
+HIGH,dyld,Injection,Inject: DYLD_INSERT_LIBRARIES (2x),DYLD injection,,,MED,0.0,,False
+HIGH,dyld,Taint→Memory Corruption,"Taint: [mach_msg, read] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,dyld,Taint→Memory Corruption,"Taint: [mach_msg, read] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,dyld,Taint→Format String,"Taint: [mach_msg, read] → fprintf",fprintf with tainted fmt,,taint-source→sink,MED,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,dyld,DYLD Inject,DYLD_INSERT_LIBRARIES reference,Dylib injection vector,,,MED,0.0,,False
+HIGH,dyld,Kernel Proc,KStruct: p_fd (1x),proc→p_fd — file descriptor table,0x113983,,MED,0.0,,False
+HIGH,h11_ane_fw_quin.im4p,Bootloader,Boot: boot-args (1x),Boot arguments,0x8696e,,MED,0.0,,False
+HIGH,iBEC.n841.RELEASE.im4p,Bootloader,Boot: nonce (3x),Nonce — downgrade protection,0xfee95,,MED,0.0,,False
+HIGH,iBEC.n841.RELEASE.im4p,Bootloader,Boot: boot-args (3x),Boot arguments,0xfd31e,,MED,0.0,,False
+HIGH,iBSS.n841.RELEASE.im4p,Bootloader,Boot: nonce (3x),Nonce — downgrade protection,0xfee95,,MED,0.0,,False
+HIGH,iBSS.n841.RELEASE.im4p,Bootloader,Boot: boot-args (3x),Boot arguments,0xfd31e,,MED,0.0,,False
+HIGH,iBoot.n841.RELEASE.im4p,Bootloader,Boot: nonce (3x),Nonce — downgrade protection,0xfee95,,MED,0.0,,False
+HIGH,iBoot.n841.RELEASE.im4p,Bootloader,Boot: boot-args (3x),Boot arguments,0xfd31e,,MED,0.0,,False
+HIGH,installd,Deserialization,Uses NSKeyedUnarchiver() — 2x,NSKeyedUnarchiver,,,MED,0.0,,False
+HIGH,installd,Entitlement,Has: com.apple.private.MobileInstallation,Install unsigned apps,,,HIGH,0.0,,False
+HIGH,installd,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+HIGH,installd,Entitlement,Has: com.apple.private.coreservices,CoreServices private,,,HIGH,0.0,,False
+HIGH,installd,ObjC,WebKit/ObjC: NSKeyedUnarchiver (2x),Deserialization,,,MED,0.0,,False
+HIGH,installd,Taint→Format String,Taint: [read] → syslog,syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,installd,Taint→Code Loading,Taint: [read] → dlopen,dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,installd,Taint→XPC Re-Injection,Taint: [read] → NSXPCConnection,Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,installd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,installd,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,installd,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: TrustCache,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: LSApplicationWorkspace,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: MCMContainer,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: MobileInstallation,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,installd,UAF,"Async + free pattern — UAF risk (38 frees, 50 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,keybagd,SQL Injection,Uses sqlite3_exec() — 2x,sqlite3_exec raw SQL,,,MED,0.0,,False
+HIGH,keybagd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,keybagd,XPC NSXPCInterface,NSXPCInterface without class allowlist,ObjC object injection via NSXPC without setClasses:,,,MED,0.0,,False
+HIGH,keybagd,IOKit,IOKit: IOConnectCallMethod (2x),External method,,,MED,0.0,,False
+HIGH,keybagd,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,keybagd,IOKit Target,Opens IOKit: AppleAPFS,Kernel driver AppleAPFS interaction,,,MED,0.0,,False
+HIGH,keybagd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,keybagd,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,keybagd,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, mach_msg...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,keybagd,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, mach_msg...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,keybagd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,keybagd,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,keybagd,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,keybagd,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,keybagd,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,keybagd,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,keybagd,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,keybagd,UAF,"Async + free pattern — UAF risk (28 frees, 30 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,launchd,Buffer Overflow,Uses strcpy() — 2x,strcpy() no bounds,,,MED,0.0,,False
+HIGH,launchd,Env Injection,Uses setenv() — 2x,setenv(),,,MED,0.0,,False
+HIGH,launchd,Privilege,Uses chown() — 2x,chown() — ownership change,,,MED,0.0,,False
+HIGH,launchd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,launchd,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+HIGH,launchd,Entitlement,Has: com.apple.private.persona-mgmt,Identity spoofing,,,HIGH,0.0,,False
+HIGH,launchd,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+HIGH,launchd,Mach Memory,Mach: mach_vm_remap (2x),Remap VM pages,,,MED,0.0,,False
+HIGH,launchd,Mach Memory,Mach: vm_map (2x),vm_map — map pages,,,MED,0.0,,False
+HIGH,launchd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,launchd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,launchd,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,launchd,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,launchd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,launchd,Integer→Alloc,strtoul (unsigned) + malloc — unchecked multiplication risk,strtoul result passed to malloc without multiplication overflow check. n*elem_size can wrap on 32-bit values cast to size_t.,,int-overflow→heap-overflow,MED,0.0,,True
+HIGH,launchd,TOCTOU,Race/TOCTOU: _access (2x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,launchd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,launchd,Kernel Proc,KStruct: p_fd (3x),proc→p_fd — file descriptor table,0x59de4,,MED,0.0,,False
+HIGH,launchd,UAF,"Async + free pattern — UAF risk (10 frees, 6 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,launchd,NULL Deref,xpc_dictionary_get_value → xpc_string_get_string_ptr without type/NULL check,xpc_dictionary_get_value returns NULL for missing key. Passing NULL to xpc_string_get_string_ptr → NULL deref or type confusion.,,xpc→null-deref,HIGH,0.0,,True
+HIGH,lockdownd,Buffer Overflow,Uses strcpy() — 2x,strcpy() no bounds,,,MED,0.0,,False
+HIGH,lockdownd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,lockdownd,XPC NSXPCInterface,NSXPCInterface without class allowlist,ObjC object injection via NSXPC without setClasses:,,,MED,0.0,,False
+HIGH,lockdownd,IOKit,IOKit: IOConnectCallMethod (3x),External method,,,MED,0.0,,False
+HIGH,lockdownd,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,lockdownd,IOKit Target,Opens IOKit: AppleCredentialManager,Kernel driver AppleCredentialManager interaction,,,MED,0.0,,False
+HIGH,lockdownd,IOKit Target,Opens IOKit: AppleUSB,Kernel driver AppleUSB interaction,,,MED,0.0,,False
+HIGH,lockdownd,IOKit Target,Opens IOKit: AppleSEP,Kernel driver AppleSEP interaction,,,MED,0.0,,False
+HIGH,lockdownd,IOKit Target,Opens IOKit: AppleSMC,Kernel driver AppleSMC interaction,,,MED,0.0,,False
+HIGH,lockdownd,Credentials/Secrets,Found: Embedded X.509 certificate,Context: '\x00\x00\x00\x00\x00\x18�@-----BEGIN CERTIFICATE-----\nMIIDPTCCAiWgAwIBAg',0x15d570,,MED,0.0,,False
+HIGH,lockdownd,Credentials/Secrets,Found: Hardcoded secret value,Context: 'etrieve secret from.\x00Pairing record is missing host ',0x11921e,,MED,0.0,,False
+HIGH,lockdownd,Keychain,WebKit/ObjC: kSecAttrAccessibleAlways (2x),Accessible always — even locked,,,MED,0.0,,False
+HIGH,lockdownd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → printf",printf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → syslog",syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, mach_msg...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,lockdownd,Taint→Keychain Taint,"Taint: [xpc_dictionary_get_string, mach_msg...] → SecItemAdd",SecItemAdd with tainted value,,taint→keychain,HIGH,0.0,,False
+HIGH,lockdownd,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, mach_msg...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,lockdownd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,lockdownd,TOCTOU,Race/TOCTOU: _access (3x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: TrustCache,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: LSApplicationWorkspace,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: SpringBoardServices,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: MobileInstallation,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,lockdownd,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,lockdownd,Heap Spray,Multiple IOKit methods (2) — kernel heap grooming,Trigger kernel allocs of controlled sizes = heap feng-shui before corruption,,iokit→kernel-heap-spray,MED,0.0,"IOKit grooming used in CVE-2022-42827, CVE-2023-38606",False
+HIGH,lockdownd,UAF,"Async + free pattern — UAF risk (38 frees, 57 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,lockdownd,Side Channel,Crypto HMAC/SHA + memcmp — timing oracle vulnerability,Using memcmp to compare cryptographic values leaks comparison result via timing. Attacker can enumerate valid values byte-by-byte. Fix: use timingsafe_bcmp or CCMemorySafeCompare.,,,MED,0.0,,True
+HIGH,lsd,Entitlement,Has: com.apple.private.amfi,AMFI private,,,HIGH,0.0,,False
+HIGH,lsd,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+HIGH,lsd,Entitlement,Has: com.apple.springboard.launchapplication,Launch any app,,,HIGH,0.0,,False
+HIGH,lsd,Entitlement,Has: com.apple.private.coreservices,CoreServices private,,,HIGH,0.0,,False
+HIGH,lsd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,misagent,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,misagent,UAF,"Async + free pattern — UAF risk (32 frees, 36 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,mobileassetd,Entitlement,Has: com.apple.rootless.storage.,SIP storage exception,,,HIGH,0.0,,False
+HIGH,mobileassetd,Taint→Code Loading,Taint: [read] → dlopen,dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,mobileassetd,ObjC Class,Defines/refs: TrustCache,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,notifyd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,notifyd,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+HIGH,notifyd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, mach_msg...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,notifyd,Taint→Format String,"Taint: [xpc_dictionary_get_string, mach_msg...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,notifyd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,notifyd,TOCTOU,Race/TOCTOU: _access (1x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,notifyd,UAF,"Async + free pattern — UAF risk (2 frees, 4 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,profiled,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,profiled,IOKit,IOKit: IOConnectCallMethod (2x),External method,,,MED,0.0,,False
+HIGH,profiled,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,profiled,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,profiled,IOKit Target,Opens IOKit: IOSurface,Kernel driver IOSurface interaction,,,MED,0.0,,False
+HIGH,profiled,IOKit Target,Opens IOKit: AMFI,Kernel driver AMFI interaction,,,MED,0.0,,False
+HIGH,profiled,IOKit Target,Opens IOKit: AppleCredentialManager,Kernel driver AppleCredentialManager interaction,,,MED,0.0,,False
+HIGH,profiled,Credentials/Secrets,Found: Hardcoded password,Context: 'tarting password compliance by %{public}@\x00%@ is att',0xbb559,,MED,0.0,,False
+HIGH,profiled,Credentials/Secrets,Found: Hardcoded secret value,Context: 'bagData:secret:senderBundleID:completion:]_block_invoke\x00-[MCProfileServiceServer',0xc870f,,MED,0.0,,False
+HIGH,profiled,Keychain,WebKit/ObjC: kSecAttrAccessibleAlways (2x),Accessible always — even locked,,,MED,0.0,,False
+HIGH,profiled,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, read...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,profiled,Taint→Format String,"Taint: [xpc_dictionary_get_string, read...] → printf",printf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,profiled,Taint→Format String,"Taint: [xpc_dictionary_get_string, read...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,profiled,Taint→Format String,"Taint: [xpc_dictionary_get_string, read...] → syslog",syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,profiled,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, read...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,profiled,Taint→SQL/Predicate Inject,"Taint: [xpc_dictionary_get_string, read...] → NSPredicate",NSPredicate with tainted string — injection,,taint→predicate,HIGH,0.0,,True
+HIGH,profiled,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, read...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,profiled,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,profiled,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,profiled,ObjC,ObjC: setValue:forKey: (1x),KVC private write,,,MED,0.0,,False
+HIGH,profiled,ObjC Class,Defines/refs: LSApplicationWorkspace,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,profiled,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,profiled,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,profiled,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,profiled,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,profiled,Heap Spray,Multiple IOKit methods (2) — kernel heap grooming,Trigger kernel allocs of controlled sizes = heap feng-shui before corruption,,iokit→kernel-heap-spray,MED,0.0,"IOKit grooming used in CVE-2022-42827, CVE-2023-38606",False
+HIGH,profiled,UAF,"Async + free pattern — UAF risk (36 frees, 52 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,profiled,TLS Pinning,Certificate pinning present BUT bypass pattern detected,"Binary implements cert pinning but also has patterns that can disable it. Check: allowsInvalidSSLCertificate, NSAllowsArbitraryLoads override.",,,MED,0.0,,True
+HIGH,runningboardd,Entitlement,Has: com.apple.private.xpc.launchd,Direct launchd XPC,,,HIGH,0.0,,False
+HIGH,runningboardd,Entitlement,Has: com.apple.private.coreservices,CoreServices private,,,HIGH,0.0,,False
+HIGH,securityd,Deserialization,Uses NSKeyedUnarchiver() — 2x,NSKeyedUnarchiver,,,MED,0.0,,False
+HIGH,securityd,SQL Injection,Uses sqlite3_exec() — 2x,sqlite3_exec raw SQL,,,MED,0.0,,False
+HIGH,securityd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,securityd,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+HIGH,securityd,IOKit,IOKit: IOConnectCallMethod (2x),External method,,,MED,0.0,,False
+HIGH,securityd,IOKit,IOKit: IOConnectCallStructMethod (2x),Struct method — parser bugs,,,MED,0.0,,False
+HIGH,securityd,IOKit Target,Opens IOKit: AppleKeyStore,Kernel driver AppleKeyStore interaction,,,MED,0.0,,False
+HIGH,securityd,IOKit Target,Opens IOKit: AppleCredentialManager,Kernel driver AppleCredentialManager interaction,,,MED,0.0,,False
+HIGH,securityd,Credentials/Secrets,Found: Hardcoded password,Context: 'nternet password fingerprint for mirror entry of typ',0x26ccfe,,MED,0.0,,False
+HIGH,securityd,Credentials/Secrets,Found: Hardcoded secret value,Context: 'derived secret: 0x%08x%s\n\x00%s%s:%s%s%s%s%u:%s%u:%',0x2659b2,,MED,0.0,,False
+HIGH,securityd,Keychain,WebKit/ObjC: kSecAttrAccessibleAlways (4x),Accessible always — even locked,,,MED,0.0,,False
+HIGH,securityd,ObjC,WebKit/ObjC: NSKeyedUnarchiver (2x),Deserialization,,,MED,0.0,,False
+HIGH,securityd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → printf",printf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → syslog",syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,securityd,Taint→Keychain Taint,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → SecItemAdd",SecItemAdd with tainted value,,taint→keychain,HIGH,0.0,,False
+HIGH,securityd,Taint→SQL/Predicate Inject,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → NSPredicate",NSPredicate with tainted string — injection,,taint→predicate,HIGH,0.0,,True
+HIGH,securityd,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,securityd,TOCTOU,Race/TOCTOU: _access (1x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,securityd,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,securityd,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,securityd,ObjC,ObjC: setValue:forKey: (1x),KVC private write,,,MED,0.0,,False
+HIGH,securityd,ObjC,ObjC: forwardInvocation: (1x),Message forwarding,,,MED,0.0,,False
+HIGH,securityd,ObjC Class,Defines/refs: SecTask,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,securityd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,securityd,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,securityd,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,securityd,ObjC Class,Defines/refs: NSXPCListener,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,securityd,Kernel Proc,KStruct: p_fd (2x),proc→p_fd — file descriptor table,0x366955,,MED,0.0,,False
+HIGH,securityd,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,securityd,Heap Spray,Multiple IOKit methods (2) — kernel heap grooming,Trigger kernel allocs of controlled sizes = heap feng-shui before corruption,,iokit→kernel-heap-spray,MED,0.0,"IOKit grooming used in CVE-2022-42827, CVE-2023-38606",False
+HIGH,securityd,UAF,"Async + free pattern — UAF risk (42 frees, 60 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,signpost_reporter,UAF,"Async + free pattern — UAF risk (28 frees, 34 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,timed,Deserialization,Uses NSKeyedUnarchiver() — 2x,NSKeyedUnarchiver,,,MED,0.0,,False
+HIGH,timed,Env Injection,Uses setenv() — 2x,setenv(),,,MED,0.0,,False
+HIGH,timed,ObjC,WebKit/ObjC: NSKeyedUnarchiver (3x),Deserialization,,,MED,0.0,,False
+HIGH,timed,Taint→Format String,"Taint: [xpc_dictionary_get_string, recvfrom...] → printf",printf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,timed,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,timed,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,timed,ObjC,ObjC: setValue:forKey: (1x),KVC private write,,,MED,0.0,,False
+HIGH,timed,ObjC Class,Defines/refs: SecTask,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,timed,ObjC Class,Defines/refs: LSApplicationWorkspace,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,timed,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,timed,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,timed,UAF,"Async + free pattern — UAF risk (18 frees, 14 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,trustd,SQL Injection,Uses sqlite3_exec() — 2x,sqlite3_exec raw SQL,,,MED,0.0,,False
+HIGH,trustd,Privilege,Uses chown() — 2x,chown() — ownership change,,,MED,0.0,,False
+HIGH,trustd,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,trustd,XPC NSXPCInterface,NSXPCInterface without class allowlist,ObjC object injection via NSXPC without setClasses:,,,MED,0.0,,False
+HIGH,trustd,Entitlement,Has: com.apple.private.tcc.,TCC bypass,,,HIGH,0.0,,False
+HIGH,trustd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,trustd,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memmove",memmove with tainted size,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,trustd,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → syslog",syslog with tainted format,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,trustd,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,trustd,Taint→XPC Re-Injection,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → NSXPCConnection",Tainted data re-injected via NSXPC,,taint→xpc-reinject,HIGH,0.0,,False
+HIGH,trustd,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,trustd,ObjC,ObjC: performSelector: (3x),Arbitrary dispatch,,,MED,0.0,,False
+HIGH,trustd,ObjC,ObjC: performSelector:withObject: (2x),performSelector + arg,,,MED,0.0,,False
+HIGH,trustd,ObjC Class,Defines/refs: SecTask,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,trustd,ObjC Class,Defines/refs: TCC,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,trustd,ObjC Class,Defines/refs: NSXPCConnection,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,trustd,ObjC Class,Defines/refs: NSXPCInterface,High-value ObjC class — system privilege ops,,,MED,0.0,,False
+HIGH,trustd,Format String,NSString stringWithFormat + XPC input,Format injection via XPC,,,MED,0.0,,False
+HIGH,trustd,UAF,"Async + free pattern — UAF risk (38 frees, 48 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,trustd,NULL Deref,xpc_dictionary_get_value → xpc_string_get_string_ptr without type/NULL check,xpc_dictionary_get_value returns NULL for missing key. Passing NULL to xpc_string_get_string_ptr → NULL deref or type confusion.,,xpc→null-deref,HIGH,0.0,,True
+HIGH,trustd,TLS Pinning,Certificate pinning present BUT bypass pattern detected,"Binary implements cert pinning but also has patterns that can disable it. Check: allowsInvalidSSLCertificate, NSAllowsArbitraryLoads override.",,,MED,0.0,,True
+HIGH,trustd,Side Channel,Crypto HMAC/SHA + memcmp — timing oracle vulnerability,Using memcmp to compare cryptographic values leaks comparison result via timing. Attacker can enumerate valid values byte-by-byte. Fix: use timingsafe_bcmp or CCMemorySafeCompare.,,,MED,0.0,,True
+HIGH,xpcproxy,Env Injection,Uses setenv() — 2x,setenv(),,,MED,0.0,,False
+HIGH,xpcproxy,XPC→Overflow,XPC input → memcpy,XPC data + memcpy without size validation,,xpc→overflow,MED,0.0,"Similar to CVE-2023-23529 (WebKit XPC), CVE-2023-41992 (XPC privesc)",False
+HIGH,xpcproxy,Sandbox Escape,Sandbox: sandbox_extension_issue (2x),Issues extension token,,,MED,0.0,,False
+HIGH,xpcproxy,Taint→Memory Corruption,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → memcpy",memcpy with tainted size → overflow,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,xpcproxy,Taint→Format String,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → fprintf",fprintf with tainted fmt,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,xpcproxy,Taint→Code Loading,"Taint: [xpc_dictionary_get_string, xpc_dictionary_get_data...] → dlopen",dlopen with tainted path,,taint-source→sink,HIGH,0.0,"Pattern seen in CVE-2023-32434, CVE-2023-32435 (kernel taint chain)",False
+HIGH,xpcproxy,Integer→Alloc,atoi/strtol → malloc pattern,Integer from input used as alloc size — overflow → undersized heap → overflow,,int-overflow→heap-overflow,MED,0.0,"Pattern in CVE-2023-41061, CVE-2022-46720",False
+HIGH,xpcproxy,TOCTOU,Race/TOCTOU: _access (2x),access()+open() = TOCTOU,,,MED,0.0,,False
+HIGH,xpcproxy,Kernel Proc,KStruct: p_fd (3x),proc→p_fd — file descriptor table,0x6dae,,MED,0.0,,False
+HIGH,xpcproxy,UAF,"Async + free pattern — UAF risk (2 frees, 4 allocs)","Object freed in one context, async callback may deref. Classic UAF vector for heap corruption / type confusion.",,uaf→type-confusion,MED,0.0,"UAF→type confusion chain: CVE-2023-32373, CVE-2023-38590",True
+HIGH,xpcproxy,NULL Deref,xpc_dictionary_get_value → xpc_string_get_string_ptr without type/NULL check,xpc_dictionary_get_value returns NULL for missing key. Passing NULL to xpc_string_get_string_ptr → NULL deref or type confusion.,,xpc→null-deref,HIGH,0.0,,True
+MEDIUM,MobileStorageMounter,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Info Leak,Uses getpwuid() — 2x,getpwuid() — user DB access,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,MobileStorageMounter,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,MobileStorageMounter,IOKit,IOKit: IOServiceGetMatchingService (5x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,IOKit,IOKit: IOServiceOpen (3x),Opens user client,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,IOKit BSD,IOKit: IOBSD (2x),IOKit BSD bridge,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x08\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Sandbox,Sandbox: /private/var/tmp (2x),Shared /var/tmp,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Info,Priv: getpwuid (2x),User DB lookup,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Entropy,High entropy: __TEXT.__const (7.26/8.0),size=26812 — encrypted/packed payload or obfuscated code,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,ROP Gadgets,"ARM64: 4 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,MobileStorageMounter,NULL Deref,IOServiceOpen → IOConnectCallMethod without visible NULL check,"If IOServiceOpen fails (returns 0), subsequent IOConnectCallMethod dereferences null handle → NULL deref / crash.",,,LOW,0.0,,True
+MEDIUM,OTATaskingAgent,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x08\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,Error Handling,~87% calls without return check,"175 BL, 24 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,OTATaskingAgent,UAF,"Retain/release imbalance: retain=14, release=26 (Δ=12)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,adid,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,adid,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,adid,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,adid,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,adid,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,adid,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,adid,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,adid,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,adid,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,adid,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00x\x02\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,adid,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,adid,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,adid,Entropy,High entropy: __TEXT.__const (7.86/8.0),size=381184 — encrypted/packed payload or obfuscated code,,,MED,0.0,,False
+MEDIUM,adid,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,adid,Error Handling,~100% calls without return check,"5 BL, 0 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,amfid,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,amfid,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,amfid,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,amfid,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,amfid,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,amfid,Entitlement,Has: com.apple.private.usernotifications,Notification privilege,,,HIGH,0.0,,False
+MEDIUM,amfid,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,amfid,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,amfid,IOKit,IOKit: IOConnectCallScalarMethod (2x),Scalar method,,,MED,0.0,,False
+MEDIUM,amfid,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,amfid,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00x\x07\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,amfid,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,amfid,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,amfid,ROP Gadgets,"ARM64: 49 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,amfid,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,amfid,Error Handling,~91% calls without return check,"2453 BL, 236 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,amfid,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,amfid,GOT,Large GOT: 109 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,amfid,Swift,Swift reflection metadata present,"Full Swift type reflection enables runtime introspection of all fields. Attacker can enumerate private properties, bypass access control via Mirror.",,,HIGH,0.0,,True
+MEDIUM,amfid,Swift,Swift Unsafe Pointer usage (2x),"UnsafeMutablePointer bypasses Swift memory safety. Buffer overflow, UAF, and type confusion are possible in these regions.",,,HIGH,0.0,,True
+MEDIUM,applekeystored,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,applekeystored,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,applekeystored,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,applekeystored,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,applekeystored,IOKit,IOKit: IOConnectCallScalarMethod (2x),Scalar method,,,MED,0.0,,False
+MEDIUM,applekeystored,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00x\x07\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,applekeystored,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,applekeystored,Sandbox,Sandbox: /private/var/tmp (1x),Shared /var/tmp,,,MED,0.0,,False
+MEDIUM,applekeystored,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,applekeystored,ROP Gadgets,"ARM64: 162 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,applekeystored,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,applekeystored,Error Handling,~98% calls without return check,"7710 BL, 178 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,applekeystored,GOT,Large GOT: 107 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,applekeystored,TLS Pinning,No certificate pinning detected in network binary,Binary makes HTTP requests without TrustKit or SecTrust pinning — MITM attack possible without additional transport security.,,,MED,0.0,,True
+MEDIUM,applekeystored,Swift,Swift reflection metadata present,"Full Swift type reflection enables runtime introspection of all fields. Attacker can enumerate private properties, bypass access control via Mirror.",,,HIGH,0.0,,True
+MEDIUM,applekeystored,Swift,Swift Unsafe Pointer usage (2x),"UnsafeMutablePointer bypasses Swift memory safety. Buffer overflow, UAF, and type confusion are possible in these regions.",,,HIGH,0.0,,True
+MEDIUM,appprotectiond,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,appprotectiond,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,appprotectiond,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00(\x02\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,appprotectiond,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,appprotectiond,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,containermanagerd,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,containermanagerd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x01\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,containermanagerd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,containermanagerd,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,containermanagerd,Error Handling,~100% calls without return check,"2 BL, 0 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,cryptexd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,cryptexd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,cryptexd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,cryptexd,TOCTOU,Uses access() — 2x,access(),,,MED,0.0,,False
+MEDIUM,cryptexd,Info Leak,Uses getpwuid() — 2x,getpwuid() — user DB access,,,MED,0.0,,False
+MEDIUM,cryptexd,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,cryptexd,IOKit,IOKit: IOServiceGetMatchingService (4x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,cryptexd,IOKit,IOKit: IOServiceOpen (4x),Opens user client,,,MED,0.0,,False
+MEDIUM,cryptexd,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,cryptexd,Exec,Inject: posix_spawn (3x),posix_spawn,,,MED,0.0,,False
+MEDIUM,cryptexd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00X\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,cryptexd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,cryptexd,Info,Priv: getpwuid (3x),User DB lookup,,,MED,0.0,,False
+MEDIUM,cryptexd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,cryptexd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,cryptexd,Error Handling,~87% calls without return check,"9478 BL, 1267 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,cryptexd,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,cryptexd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,cryptexd,UAF,"Retain/release imbalance: retain=44, release=32 (Δ=12)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,cryptexd,NULL Deref,IOServiceOpen → IOConnectCallMethod without visible NULL check,"If IOServiceOpen fails (returns 0), subsequent IOConnectCallMethod dereferences null handle → NULL deref / crash.",,,LOW,0.0,,True
+MEDIUM,cryptexd,Anti-Debug,AntiForensic: _NSGetEnviron (2x),Environment enumeration — DYLD check,,,MED,0.0,,True
+MEDIUM,dyld,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,dyld,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,dyld,Env Injection,Uses getenv() — 1x,getenv(),,,MED,0.0,,False
+MEDIUM,dyld,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,dyld,Code Signing,TC/CS: CDHash (5x),CDHash ref,,,MED,0.0,,False
+MEDIUM,dyld,Exec,Inject: posix_spawn (1x),posix_spawn,,,MED,0.0,,False
+MEDIUM,dyld,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x04\x00\x00\x00�\x0c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0f\x00',0x722,,MED,0.0,,False
+MEDIUM,dyld,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,dyld,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,dyld,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,dyld,Error Handling,~85% calls without return check,"45 BL, 7 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,dyld,TOCTOU,Race/TOCTOU: _stat (1x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,dyld,Anti-Tamper,AntiForensic: dladdr (3x),dladdr — symbol/hook presence check,,,MED,0.0,,True
+MEDIUM,installd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,installd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,installd,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,installd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,installd,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,installd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,installd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,installd,Sandbox,Sandbox: container-required (2x),Container requirement,,,MED,0.0,,False
+MEDIUM,installd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,installd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,installd,Error Handling,~95% calls without return check,"18545 BL, 1026 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,installd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,installd,ObjC,ObjC: initWithCoder: (7x),NSCoding deserialization,,,MED,0.0,,False
+MEDIUM,installd,GOT,Large GOT: 102 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,installd,UAF,"Retain/release imbalance: retain=46, release=32 (Δ=14)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,keybagd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,keybagd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,keybagd,Code Loading,Uses dlopen() — 4x,dlopen(),,,MED,0.0,,False
+MEDIUM,keybagd,Env Injection,Uses getenv() — 2x,getenv(),,,MED,0.0,,False
+MEDIUM,keybagd,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,keybagd,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,keybagd,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,keybagd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00X\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,keybagd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,keybagd,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,keybagd,ROP Gadgets,"ARM64: 3 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,keybagd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,keybagd,Error Handling,~85% calls without return check,"1580 BL, 245 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,keybagd,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,keybagd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,keybagd,NULL Deref,IOServiceOpen → IOConnectCallMethod without visible NULL check,"If IOServiceOpen fails (returns 0), subsequent IOConnectCallMethod dereferences null handle → NULL deref / crash.",,,LOW,0.0,,True
+MEDIUM,launchd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,launchd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,launchd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,launchd,TOCTOU,Uses access() — 2x,access(),,,MED,0.0,,False
+MEDIUM,launchd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,launchd,Env Injection,Uses getenv() — 2x,getenv(),,,MED,0.0,,False
+MEDIUM,launchd,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,launchd,Exec,Inject: posix_spawn (104x),posix_spawn,,,MED,0.0,,False
+MEDIUM,launchd,Credentials/Secrets,Found: Possible 32-byte hex key,Context: '{?=II}**b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1',0x564d0,,MED,0.0,,False
+MEDIUM,launchd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,launchd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,launchd,Sandbox,Sandbox: /private/var/tmp (1x),Shared /var/tmp,,,MED,0.0,,False
+MEDIUM,launchd,Info,Priv: getpwuid (2x),User DB lookup,,,MED,0.0,,False
+MEDIUM,launchd,Network,Net: bind( (1x),Listening service,,,MED,0.0,,False
+MEDIUM,launchd,Network,Net: accept( (1x),Accepts connections,,,MED,0.0,,False
+MEDIUM,launchd,Network,Net: http:// (4x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,launchd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,launchd,Error Handling,~86% calls without return check,"3517 BL, 507 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,launchd,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,launchd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,launchd,Anti-Debug,AntiForensic: _NSGetEnviron (2x),Environment enumeration — DYLD check,,,MED,0.0,,True
+MEDIUM,launchd,Anti-Tamper,AntiForensic: dladdr (2x),dladdr — symbol/hook presence check,,,MED,0.0,,True
+MEDIUM,lockdownd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,lockdownd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,lockdownd,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,lockdownd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,lockdownd,TOCTOU,Uses access() — 3x,access(),,,MED,0.0,,False
+MEDIUM,lockdownd,Integer,Uses atoi() — 2x,atoi(),,,MED,0.0,,False
+MEDIUM,lockdownd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,lockdownd,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,lockdownd,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,lockdownd,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,lockdownd,IOKit,IOKit: IOServiceGetMatchingService (5x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,lockdownd,IOKit,IOKit: IOServiceOpen (3x),Opens user client,,,MED,0.0,,False
+MEDIUM,lockdownd,IOKit,IOKit: IOConnectCallScalarMethod (2x),Scalar method,,,MED,0.0,,False
+MEDIUM,lockdownd,IOKit,IOKit: IOObjectRelease (3x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,lockdownd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,lockdownd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,lockdownd,Network,Net: http:// (5x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,lockdownd,Entropy,High entropy: __TEXT.__const (7.86/8.0),size=90352 — encrypted/packed payload or obfuscated code,,,MED,0.0,,False
+MEDIUM,lockdownd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,lockdownd,Error Handling,~83% calls without return check,"6348 BL, 1118 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,lockdownd,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,lockdownd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,lockdownd,ObjC,ObjC: valueForKeyPath: (1x),KVC read,,,MED,0.0,,False
+MEDIUM,lockdownd,ObjC,ObjC: initWithCoder: (1x),NSCoding deserialization,,,MED,0.0,,False
+MEDIUM,lockdownd,GOT,Large GOT: 211 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,lockdownd,UAF,"Retain/release imbalance: retain=47, release=33 (Δ=14)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,lockdownd,Anti-Debug,AntiForensic: getppid (2x),Parent PID check — debugger detection,,,MED,0.0,,True
+MEDIUM,lsd,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,lsd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x01\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,lsd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,lsd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,misagent,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,misagent,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,misagent,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,misagent,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x08\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,misagent,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,misagent,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,misagent,Error Handling,~93% calls without return check,"1552 BL, 122 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,mobileassetd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,mobileassetd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,mobileassetd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,mobileassetd,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,mobileassetd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x08\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,mobileassetd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,mobileassetd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,mobileassetd,ROP Gadgets,ARM64: 13 LDP;RET gadgets,Strong ROP primitive,,,MED,0.0,,False
+MEDIUM,mobileassetd,Error Handling,~96% calls without return check,"1125 BL, 50 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,notifyd,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,notifyd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,notifyd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,notifyd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,notifyd,Integer,Uses atoi() — 2x,atoi(),,,MED,0.0,,False
+MEDIUM,notifyd,Info Leak,Uses getpwuid() — 2x,getpwuid() — user DB access,,,MED,0.0,,False
+MEDIUM,notifyd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x01\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,notifyd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,notifyd,Info,Priv: getpwuid (2x),User DB lookup,,,MED,0.0,,False
+MEDIUM,notifyd,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,notifyd,Error Handling,~82% calls without return check,"874 BL, 158 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,notifyd,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,notifyd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,profiled,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,profiled,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,profiled,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,profiled,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,profiled,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,profiled,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,profiled,IOKit,IOKit: IOConnectCallScalarMethod (2x),Scalar method,,,MED,0.0,,False
+MEDIUM,profiled,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,profiled,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00X\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,profiled,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,profiled,Network,Net: http:// (3x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,profiled,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,profiled,Error Handling,~93% calls without return check,"37394 BL, 2635 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,profiled,GOT,Large GOT: 882 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,profiled,UAF,"Retain/release imbalance: retain=48, release=34 (Δ=14)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,profiled,NULL Deref,IOServiceOpen → IOConnectCallMethod without visible NULL check,"If IOServiceOpen fails (returns 0), subsequent IOConnectCallMethod dereferences null handle → NULL deref / crash.",,,LOW,0.0,,True
+MEDIUM,runningboardd,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,runningboardd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00(\x02\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,runningboardd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,runningboardd,Privilege,Priv: setpriority (2x),Set process priority,,,MED,0.0,,False
+MEDIUM,runningboardd,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,runningboardd,Error Handling,~100% calls without return check,"4 BL, 0 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,securityd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,securityd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,securityd,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,securityd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,securityd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,securityd,Env Injection,Uses getenv() — 2x,getenv(),,,MED,0.0,,False
+MEDIUM,securityd,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,securityd,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,securityd,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,securityd,IOKit,IOKit: IOServiceGetMatchingService (2x),Opens IOKit service,,,MED,0.0,,False
+MEDIUM,securityd,IOKit,IOKit: IOServiceOpen (2x),Opens user client,,,MED,0.0,,False
+MEDIUM,securityd,IOKit,IOKit: IOConnectCallScalarMethod (2x),Scalar method,,,MED,0.0,,False
+MEDIUM,securityd,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,securityd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,securityd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,securityd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,securityd,ROP Gadgets,"ARM64: 10 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,securityd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,securityd,Error Handling,~93% calls without return check,"60568 BL, 4481 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,securityd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,securityd,ObjC,ObjC: initWithCoder: (1x),NSCoding deserialization,,,MED,0.0,,False
+MEDIUM,securityd,GOT,Large GOT: 520 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,securityd,Format String,74 positional args (%N$),Locale bypass / arg reorder attacks,,,MED,0.0,,False
+MEDIUM,securityd,UAF,"Retain/release imbalance: retain=52, release=36 (Δ=16)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,securityd,NULL Deref,IOServiceOpen → IOConnectCallMethod without visible NULL check,"If IOServiceOpen fails (returns 0), subsequent IOConnectCallMethod dereferences null handle → NULL deref / crash.",,,LOW,0.0,,True
+MEDIUM,signpost_reporter,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,signpost_reporter,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,signpost_reporter,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00\x08\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,signpost_reporter,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,signpost_reporter,Network,Net: http:// (1x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,signpost_reporter,Error Handling,~94% calls without return check,"1930 BL, 133 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,signpost_reporter,UAF,"Retain/release imbalance: retain=34, release=28 (Δ=6)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,timed,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,timed,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,timed,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,timed,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,timed,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,timed,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,timed,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,timed,Error Handling,~87% calls without return check,"3008 BL, 417 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,timed,ObjC,ObjC: initWithCoder: (1x),NSCoding deserialization,,,MED,0.0,,False
+MEDIUM,trustd,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,trustd,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,trustd,Format String,Uses syslog() — 2x,syslog(),,,MED,0.0,,False
+MEDIUM,trustd,Memory,Uses realloc() — 2x,realloc(),,,MED,0.0,,False
+MEDIUM,trustd,Integer,Uses atol() — 2x,atol(),,,MED,0.0,,False
+MEDIUM,trustd,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,trustd,Env Injection,Uses getenv() — 2x,getenv(),,,MED,0.0,,False
+MEDIUM,trustd,File Ops,Uses chmod() — 2x,chmod() — permission change,,,MED,0.0,,False
+MEDIUM,trustd,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,trustd,Entitlement,Has: com.apple.security.exception.mach-lookup,Mach service exception,,,HIGH,0.0,,False
+MEDIUM,trustd,IOKit,IOKit: IOObjectRelease (2x),Release — double-release/UAF,,,MED,0.0,,False
+MEDIUM,trustd,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x04\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,trustd,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,trustd,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,trustd,ROP Gadgets,"ARM64: 5 stack pivots (MOV SP, Xn)",Key ROP primitive,,,MED,0.0,,False
+MEDIUM,trustd,BTI,No BTI landing pads,Indirect branches → any instruction — JOP unrestricted,,,MED,0.0,,False
+MEDIUM,trustd,Error Handling,~85% calls without return check,"12180 BL, 1868 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,trustd,TOCTOU,Race/TOCTOU: _stat (2x),stat() before op — TOCTOU window,,,MED,0.0,,False
+MEDIUM,trustd,GOT,Large GOT: 225 pointers,Overwrite GOT entry to redirect any imported function call,,,MED,0.0,,False
+MEDIUM,trustd,UAF,"Retain/release imbalance: retain=44, release=32 (Δ=12)",Significant retain/release delta — double-free or UAF likely in error paths.,,,LOW,0.0,,True
+MEDIUM,xpcproxy,Protection,No ARC,Manual retain/release — UAF/double-free prone,,,MED,0.0,,False
+MEDIUM,xpcproxy,Protection,No BTI,Indirect branches can target any instruction — unrestricted JOP,,,MED,0.0,,False
+MEDIUM,xpcproxy,Protection,No PAC-RET,Return addresses unsigned — ROP without PAC bypass needed,,,MED,0.0,,False
+MEDIUM,xpcproxy,TOCTOU,Uses access() — 2x,access(),,,MED,0.0,,False
+MEDIUM,xpcproxy,Code Loading,Uses dlopen() — 2x,dlopen(),,,MED,0.0,,False
+MEDIUM,xpcproxy,Info Leak,Uses getpwuid() — 2x,getpwuid() — user DB access,,,MED,0.0,,False
+MEDIUM,xpcproxy,XPC Error,XPC event handler without XPC_TYPE_ERROR check,Unhandled XPC errors may leave connection in invalid state — logic bypass,,,MED,0.0,,True
+MEDIUM,xpcproxy,Exec,Inject: posix_spawn (66x),posix_spawn,,,MED,0.0,,False
+MEDIUM,xpcproxy,Credentials/Secrets,Found: 32 null bytes — null AES key,Context: '\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x19\x00\x00\x00�\x02\x00\x00__TEXT\x00\x00\x00\x00\x00\x00\x00',0x45,,MED,0.0,,False
+MEDIUM,xpcproxy,Crypto,16-byte null IV,All-zero IV in CBC mode is a cryptographic weakness,,,MED,0.0,,False
+MEDIUM,xpcproxy,Info,Priv: getpwuid (3x),User DB lookup,,,MED,0.0,,False
+MEDIUM,xpcproxy,Network,Net: http:// (2x),HTTP cleartext URL,,,MED,0.0,,False
+MEDIUM,xpcproxy,Error Handling,~82% calls without return check,"593 BL, 109 CBZ/CBNZ after BL",,,MED,0.0,,False
+MEDIUM,xpcproxy,Integer→Memory,strtol (signed) + memcpy — sign extension,Negative strtol → memcpy size underflow → huge alloc or write,,,MED,0.0,,False
+MEDIUM,xpcproxy,Anti-Debug,AntiForensic: getppid (2x),Parent PID check — debugger detection,,,MED,0.0,,True
+LOW,MobileStorageMounter,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,MobileStorageMounter,Anti-Debug,AntiForensic: sysctl (8x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,MobileStorageMounter,Memory,AntiForensic: mmap (3x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,OTATaskingAgent,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,OTATaskingAgent,Weak Crypto,Uses SHA1() — 2x,SHA1,,,MED,0.0,,False
+LOW,adid,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,adid,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,adid,Memory,AntiForensic: mmap (2x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,amfid,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,amfid,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,amfid,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,amfid,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,applekeystored,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,applekeystored,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,applekeystored,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,applekeystored,ROP Gadgets,ARM64: 187 ROP gadgets,First: 0x1000089f4,,,MED,0.0,,False
+LOW,applekeystored,JOP Gadgets,ARM64: 95 JOP (BLR/BR Xn),First: 0x10000546c,,,MED,0.0,,False
+LOW,appprotectiond,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,containermanagerd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,cryptexd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,cryptexd,Directory,Uses readdir() — 2x,readdir() — filesystem enum,,,MED,0.0,,False
+LOW,cryptexd,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,cryptexd,ROP Gadgets,ARM64: 76 ROP gadgets,First: 0x100003044,,,MED,0.0,,False
+LOW,cryptexd,Concurrency,Race/TOCTOU: dispatch_async (4x),dispatch_async — shared state?,,,MED,0.0,,False
+LOW,cryptexd,Anti-Debug,AntiForensic: sysctl (4x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,cryptexd,Memory,AntiForensic: mmap (3x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,dyld,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,dyld,Format String,Uses fprintf() — 1x,fprintf(),,,MED,0.0,,False
+LOW,dyld,Memory,Uses memcpy() — 1x,memcpy(),,,MED,0.0,,False
+LOW,dyld,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,dyld,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,dyld,Memory,AntiForensic: mmap (12x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,installd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,installd,Directory,Uses readdir() — 2x,readdir() — filesystem enum,,,MED,0.0,,False
+LOW,installd,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,installd,ROP Gadgets,ARM64: 161 ROP gadgets,First: 0x100005fa0,,,MED,0.0,,False
+LOW,installd,Memory,AntiForensic: mmap (2x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,keybagd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,keybagd,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,keybagd,Info Leak,Uses NSLog() — 2x,NSLog(),,,MED,0.0,,False
+LOW,keybagd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,keybagd,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,launchd,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,launchd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,launchd,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,launchd,ROP Gadgets,ARM64: 51 ROP gadgets,First: 0x100002e18,,,MED,0.0,,False
+LOW,launchd,Concurrency,Race/TOCTOU: dispatch_async (6x),dispatch_async — shared state?,,,MED,0.0,,False
+LOW,launchd,Anti-Debug,AntiForensic: sysctl (13x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,launchd,Anti-Debug,AntiForensic: isatty (2x),TTY check — debugger indicator,,,MED,0.0,,True
+LOW,lockdownd,Format String,Uses printf() — 2x,printf(),,,MED,0.0,,False
+LOW,lockdownd,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,lockdownd,Info Leak,Uses NSLog() — 2x,NSLog(),,,MED,0.0,,False
+LOW,lockdownd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,lockdownd,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,lockdownd,Weak Crypto,Uses SHA1() — 2x,SHA1,,,MED,0.0,,False
+LOW,lockdownd,Directory,Uses readdir() — 2x,readdir() — filesystem enum,,,MED,0.0,,False
+LOW,lockdownd,Entitlement,Has: keychain-access-groups,Keychain group access,,,HIGH,0.0,,False
+LOW,lockdownd,ROP Gadgets,ARM64: 44 ROP gadgets,First: 0x100003068,,,MED,0.0,,False
+LOW,lockdownd,Anti-Debug,AntiForensic: sysctl (7x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,lockdownd,Memory,AntiForensic: mmap (5x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,lsd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,lsd,Entitlement,Has: keychain-access-groups,Keychain group access,,,HIGH,0.0,,False
+LOW,misagent,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,misagent,Directory,Uses readdir() — 2x,readdir() — filesystem enum,,,MED,0.0,,False
+LOW,mobileassetd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,mobileassetd,Info Leak,Uses NSLog() — 2x,NSLog(),,,MED,0.0,,False
+LOW,mobileassetd,Entitlement,Has: keychain-access-groups,Keychain group access,,,HIGH,0.0,,False
+LOW,mobileassetd,ROP Gadgets,ARM64: 37 ROP gadgets,First: 0x1000047a8,,,MED,0.0,,False
+LOW,mobileassetd,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,notifyd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,notifyd,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,notifyd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,notifyd,Memory,AntiForensic: mmap (2x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,profiled,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,profiled,Format String,Uses printf() — 2x,printf(),,,MED,0.0,,False
+LOW,profiled,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,profiled,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,profiled,Entitlement,Has: keychain-access-groups,Keychain group access,,,HIGH,0.0,,False
+LOW,profiled,ROP Gadgets,ARM64: 81 ROP gadgets,First: 0x100013c88,,,MED,0.0,,False
+LOW,profiled,Concurrency,Race/TOCTOU: dispatch_async (4x),dispatch_async — shared state?,,,MED,0.0,,False
+LOW,runningboardd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,securityd,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,securityd,Format String,Uses printf() — 2x,printf(),,,MED,0.0,,False
+LOW,securityd,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,securityd,Info Leak,Uses NSLog() — 2x,NSLog(),,,MED,0.0,,False
+LOW,securityd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,securityd,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,securityd,Weak Crypto,Uses SHA1() — 2x,SHA1,,,MED,0.0,,False
+LOW,securityd,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,securityd,ROP Gadgets,ARM64: 333 ROP gadgets,First: 0x10000544c,,,MED,0.0,,False
+LOW,securityd,JOP Gadgets,ARM64: 20 JOP (BLR/BR Xn),First: 0x100004c68,,,MED,0.0,,False
+LOW,securityd,Anti-Debug,AntiForensic: sysctl (2x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,securityd,Memory,AntiForensic: mmap (2x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,signpost_reporter,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,signpost_reporter,ROP Gadgets,ARM64: 40 ROP gadgets,First: 0x10000235c,,,MED,0.0,,False
+LOW,timed,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,timed,Format String,Uses printf() — 2x,printf(),,,MED,0.0,,False
+LOW,timed,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,timed,ROP Gadgets,ARM64: 51 ROP gadgets,First: 0x100004140,,,MED,0.0,,False
+LOW,timed,Concurrency,Race/TOCTOU: dispatch_async (4x),dispatch_async — shared state?,,,MED,0.0,,False
+LOW,timed,Anti-Debug,AntiForensic: sysctl (6x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,timed,Memory,AntiForensic: mmap (4x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,trustd,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+LOW,trustd,Memory,Uses memmove() — 2x,memmove(),,,MED,0.0,,False
+LOW,trustd,Weak Crypto,Uses SHA1() — 2x,SHA1,,,MED,0.0,,False
+LOW,trustd,XPC Auth,XPC service with auth check (review logic),Verify not bypassable via race or NULL token,,,MED,0.0,,False
+LOW,trustd,ROP Gadgets,ARM64: 40 ROP gadgets,First: 0x10000d130,,,MED,0.0,,False
+LOW,trustd,JOP Gadgets,ARM64: 11 JOP (BLR/BR Xn),First: 0x100011244,,,MED,0.0,,False
+LOW,trustd,Anti-Debug,AntiForensic: sysctl (4x),sysctl — P_TRACED check,,,MED,0.0,,True
+LOW,trustd,Memory,AntiForensic: mmap (2x),mmap — anonymous mapping,,,MED,0.0,,True
+LOW,xpcproxy,Protection,No FORTIFY_SOURCE,Compile-time buffer overflow checks absent,,,MED,0.0,,False
+LOW,xpcproxy,Format String,Uses fprintf() — 2x,fprintf(),,,MED,0.0,,False
+LOW,xpcproxy,Memory,Uses memcpy() — 2x,memcpy(),,,MED,0.0,,False
+INFO,AppleAVE2FW_H11.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,DeviceTree.n841ap.im4p,Firmware,"IM4P: type=, compress=LZFSE",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,ICE18-7.01.01.Release.bbfw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,LLB.n841.RELEASE.im4p,Firmware,"IM4P: type=, compress=LZFSE",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,MobileStorageMounter,Binary Info,Source version: 331.0.0,Build version metadata,,,MED,0.0,,True
+INFO,MobileStorageMounter,Security Checks,ARM64: 195 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,MobileStorageMounter,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,N841_CallanFirmware.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,N841_HapticAssets.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,N841_Multitouch.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,OTATaskingAgent,Binary Info,Source version: 727.60.31,Build version metadata,,,MED,0.0,,True
+INFO,OTATaskingAgent,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,OTATaskingAgent,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,Savage.B0-Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.B0-Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.B2-Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.B2-Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BA-Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BA-Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BE-Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BE-Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BF-Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Savage.BF-Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,SmartIOFirmware_ASCv2.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Stockholm5.RELEASE.sefw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,WirelessPower.iphone11b.im4p,Firmware,"IM4P: type=ftab, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Yonkers.1A01_2A01_2201_3201_Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Yonkers.1A01_2A01_2201_3201_Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Yonkers.EA01_F201_Dev.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,Yonkers.EA01_F201_Prod.fw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,adc-petra-n84.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,adid,Binary Info,Source version: 19.3.2,Build version metadata,,,MED,0.0,,True
+INFO,adid,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,amfid,Binary Info,Source version: 938.60.9,Build version metadata,,,MED,0.0,,True
+INFO,amfid,PAC,"PAC: 505 signs, 126 auths",PAC in use,,,MED,0.0,,False
+INFO,amfid,Security Checks,ARM64: 163 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,amfid,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,amfid,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,aopfw-iphone11baop.RELEASE.im4p,Firmware,"IM4P: type=aopf, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,applekeystored,Binary Info,Source version: 1827.60.44,Build version metadata,,,MED,0.0,,True
+INFO,applekeystored,PAC,"PAC: 2688 signs, 522 auths",PAC in use,,,MED,0.0,,False
+INFO,applekeystored,Security Checks,ARM64: 537 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,applekeystored,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,applelogo@1792~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,appprotectiond,Binary Info,Source version: 35.2.3,Build version metadata,,,MED,0.0,,True
+INFO,appprotectiond,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,armfw_g11p.im4p,Firmware,"IM4P: type=ftab, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,batterycharging0@1792~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,batterycharging1@1792~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,batteryfull@2x~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,batterylow0@2x~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,batterylow1@2x~iphone.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,containermanagerd,Binary Info,Source version: 689.0.0,Build version metadata,,,MED,0.0,,True
+INFO,containermanagerd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,cryptexd,Binary Info,Source version: 475.60.5,Build version metadata,,,MED,0.0,,True
+INFO,cryptexd,Security Checks,ARM64: 315 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,cryptexd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,cryptexd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,dyld,Binary Info,Source version: 1241.17.0,Build version metadata,,,MED,0.0,,True
+INFO,dyld,Sandbox,Sandbox: sandbox_check (2x),Runtime sandbox check,,,MED,0.0,,False
+INFO,dyld,PAC,"PAC: 40 signs, 1 auths",PAC in use,,,MED,0.0,,False
+INFO,dyld,Concurrency,Race/TOCTOU: os_unfair_lock (16x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,dyld,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,dyld,Anti-Forensics,AntiForensic: memset_s (1x),memset_s — secure key wipe,,,MED,0.0,,True
+INFO,glyphplugin@1792~iphone-lightning.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,h11_ane_fw_quin.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,iBEC.n841.RELEASE.im4p,Firmware,"IM4P: type=ibec, compress=LZFSE",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,iBSS.n841.RELEASE.im4p,Firmware,"IM4P: type=ibss, compress=LZFSE",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,iBoot.n841.RELEASE.im4p,Firmware,"IM4P: type=ibot, compress=LZFSE",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,installd,Binary Info,Source version: 1378.60.22,Build version metadata,,,MED,0.0,,True
+INFO,installd,Security Checks,ARM64: 854 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,installd,Concurrency,Race/TOCTOU: os_unfair_lock (4x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,installd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,installd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,kernelcache.release.iphone11b,Error,"KC scan error: too many values to unpack (expected 3, got 4)",,,,MED,0.0,,False
+INFO,keybagd,Binary Info,Source version: 640.60.3,Build version metadata,,,MED,0.0,,True
+INFO,keybagd,Security Checks,ARM64: 123 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,keybagd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,keybagd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,keybagd,Anti-Forensics,AntiForensic: memset_s (2x),memset_s — secure key wipe,,,MED,0.0,,True
+INFO,keybagd,Side Channel,Crypto operation present — audit for cache/timing side channels,Asymmetric crypto (RSA/ECC) susceptible to Spectre-style cache timing if not using constant-time implementations. Verify with corecrypto audit.,,,LOW,0.0,,True
+INFO,launchd,Binary Info,Source version: 2866.60.21,Build version metadata,,,MED,0.0,,True
+INFO,launchd,Sandbox,Sandbox: sandbox_check (4x),Runtime sandbox check,,,MED,0.0,,False
+INFO,launchd,Security Checks,ARM64: 449 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,launchd,Concurrency,Race/TOCTOU: os_unfair_lock (8x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,launchd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,lockdownd,Binary Info,Source version: 1319.60.1,Build version metadata,,,MED,0.0,,True
+INFO,lockdownd,Security Checks,ARM64: 424 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,lockdownd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,lockdownd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,lockdownd,Anti-Forensics,AntiForensic: memset_s (2x),memset_s — secure key wipe,,,MED,0.0,,True
+INFO,lowpowermode@1792~iphone-lightning.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,lsd,Binary Info,Source version: 1367.7.0,Build version metadata,,,MED,0.0,,True
+INFO,lsd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,misagent,Binary Info,Source version: 436.40.5,Build version metadata,,,MED,0.0,,True
+INFO,misagent,Security Checks,ARM64: 72 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,misagent,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,misagent,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,mobileassetd,Binary Info,Source version: 1329.62.1,Build version metadata,,,MED,0.0,,True
+INFO,mobileassetd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,mobileassetd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,notifyd,Binary Info,Source version: 327.60.1,Build version metadata,,,MED,0.0,,True
+INFO,notifyd,Sandbox,Sandbox: sandbox_check (2x),Runtime sandbox check,,,MED,0.0,,False
+INFO,notifyd,Security Checks,ARM64: 290 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,notifyd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,profiled,Binary Info,Source version: 2381.2.7,Build version metadata,,,MED,0.0,,True
+INFO,profiled,Security Checks,ARM64: 1342 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,profiled,Concurrency,Race/TOCTOU: os_unfair_lock (9x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,profiled,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,profiled,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,profiled,Anti-Forensics,AntiForensic: memset_s (2x),memset_s — secure key wipe,,,MED,0.0,,True
+INFO,recoverymode@1792~iphone-lightning.im4p,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,runningboardd,Binary Info,Source version: 945.60.6,Build version metadata,,,MED,0.0,,True
+INFO,runningboardd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,securityd,Binary Info,Source version: 61439.62.1,Build version metadata,,,MED,0.0,,True
+INFO,securityd,Security Checks,ARM64: 1936 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,securityd,Concurrency,Race/TOCTOU: os_unfair_lock (6x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,securityd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,securityd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,securityd,Anti-Forensics,AntiForensic: memset_s (2x),memset_s — secure key wipe,,,MED,0.0,,True
+INFO,securityd,Timing Safe,AntiForensic: timingsafe_bcmp (2x),Timing-safe bcmp (good),,,MED,0.0,,True
+INFO,securityd,Side Channel,Crypto operation present — audit for cache/timing side channels,Asymmetric crypto (RSA/ECC) susceptible to Spectre-style cache timing if not using constant-time implementations. Verify with corecrypto audit.,,,LOW,0.0,,True
+INFO,sep-firmware.n841.RELEASE.im4p,Firmware,"IM4P: type=sepi, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,signpost_reporter,Binary Info,Source version: 146.2.0,Build version metadata,,,MED,0.0,,True
+INFO,signpost_reporter,Security Checks,ARM64: 76 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,signpost_reporter,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,signpost_reporter,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,timed,Binary Info,Source version: 334.0.2,Build version metadata,,,MED,0.0,,True
+INFO,timed,Security Checks,ARM64: 113 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,timed,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,timed,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,trustd,Binary Info,Source version: 61439.62.1,Build version metadata,,,MED,0.0,,True
+INFO,trustd,Security Checks,ARM64: 724 TBZ/TBNZ (bit-test branches),Bit-test branches common in security flag checks — audit each for bypass,,,MED,0.0,,True
+INFO,trustd,Concurrency,Race/TOCTOU: os_unfair_lock (12x),os_unfair_lock — modern,,,MED,0.0,,False
+INFO,trustd,ObjC,ObjC: objc_msgSend (4x),Direct msgSend,,,MED,0.0,,False
+INFO,trustd,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
+INFO,vinyl_05.vnlfw,Firmware,"IM4P: type=, compress=?",Non-Mach-O firmware blob,,,MED,0.0,,False
+INFO,xpcproxy,Binary Info,Source version: 2866.60.21,Build version metadata,,,MED,0.0,,True
+INFO,xpcproxy,DYLD Fixups,LC_DYLD_CHAINED_FIXUPS — modern binding,"Chained fixups: more rebasing security, harder GOT pre-launch patch",,,MED,0.0,,False
