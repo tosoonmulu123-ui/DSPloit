@@ -918,8 +918,6 @@ struct AMFIExperimentView: View {
                 Text("② Probe pakai offset kernelcache + XPF. ③ KTRR Analysis: info saja, tidak write. ③b RC TC Add: inject CDHash via launchd RemoteCall (PPL-safe). ③e CS Flags: write cs_flags via physmap ke proc_ro binary target (bypass KTRR). ③f amfid Patch: patch amfid text via physmap untuk skip signature check.")
                     .font(.system(size: 9))
             }
-
-            }
             
             // Results
             if !results.isEmpty {
@@ -1753,6 +1751,7 @@ struct AMFIExperimentView: View {
                 self.runningLabel = ""
             }
         }
+    }
     
     private func expDeepTCScan() -> ExperimentResult {
         // TODO: implementasi deep TC scan
