@@ -139,11 +139,13 @@ final class DebInstaller {
         let file = files[index]
         let fullPath = "/var/jb/\(file.path)"
         
-        // Skip files larger than 500KB for now (too risky for single launchd call)
-        if file.data.count > 512 * 1024 {
-            emit("[deb] ⚠️ Skipping large file: \(file.path) (\(file.data.count) bytes)")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.writeFilesSequentially(files: files, index: index + 1, installed: installed, completion: completion)
+        // Large files (>2MB): split into multiple launchd calls
+        if file.data.count > 2 * 1024 * 1024 {
+            emit("[deb] Large file: \(file.path) (\(file.data.count / 1024)KB) — splitting...")
+            writeLargeFile(path: fullPath, data: file.data, mode: file.mode) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, completion: completion)
+                }
             }
             return
         }
@@ -186,12 +188,96 @@ final class DebInstaller {
             emit("[deb] Progress: \(index + 1)/\(files.count)")
         }
         
-        // 2s delay between files — safe from watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        // 1.5s delay between files — safe from watchdog with queue guard
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, completion: completion)
         }
         #else
         completion(false, 0)
+        #endif
+    }
+    
+    // MARK: - Large File Writer (split into 2MB launchd calls)
+    
+    /// Write a large file (>2MB) by splitting into multiple launchd calls
+    /// Each call writes up to 2MB (safe: ~0.5s per call)
+    private func writeLargeFile(path: String, data: Data, mode: UInt16, completion: @escaping () -> Void) {
+        #if !DISABLE_REMOTECALL
+        let chunkLimit = 2 * 1024 * 1024
+        let totalSize = data.count
+        var totalWritten = 0
+        var callIndex = 0
+        let totalCalls = (totalSize + chunkLimit - 1) / chunkLimit
+        
+        func writeNextChunk() {
+            guard totalWritten < totalSize else {
+                // Done — chmod the file
+                root.executeAsRoot(operation: "chmod_large") { rc in
+                    let pathAddr = remote_alloc_str(rc, path)
+                    RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(mode))
+                    RootExecutor.rcall(rc, "free", pathAddr)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { completion() }
+                    return (true, "chmod \(path)", 0)
+                }
+                return
+            }
+            
+            let offset = totalWritten
+            let thisChunkSize = min(chunkLimit, totalSize - offset)
+            let chunkData = data[offset..<offset + thisChunkSize]
+            let isFirst = (offset == 0)
+            callIndex += 1
+            
+            root.executeAsRoot(operation: "lf_\(callIndex)") { rc in
+                // First: ensure parent + open TRUNC. After: open APPEND
+                if isFirst {
+                    let parent = (path as NSString).deletingLastPathComponent
+                    let parentAddr = remote_alloc_str(rc, parent)
+                    RootExecutor.rcall(rc, "mkdir", parentAddr, 0o755)
+                    RootExecutor.rcall(rc, "free", parentAddr)
+                }
+                
+                let pathAddr = remote_alloc_str(rc, path)
+                let flags: UInt64 = isFirst
+                    ? UInt64(O_WRONLY | O_CREAT | O_TRUNC)
+                    : UInt64(O_WRONLY | O_APPEND)
+                let fd = RootExecutor.rcall(rc, "open", pathAddr, flags, UInt64(mode))
+                
+                guard fd != UInt64(bitPattern: -1) else {
+                    RootExecutor.rcall(rc, "free", pathAddr)
+                    DispatchQueue.main.async { completion() }
+                    return (false, "open failed", 0)
+                }
+                
+                let writeAddr = rc.trojanMem + 0x800
+                var written = 0
+                Data(chunkData).withUnsafeBytes { buffer in
+                    while written < thisChunkSize {
+                        let subChunk = min(thisChunkSize - written, 0x1000)
+                        rc.remote_write(writeAddr,
+                            from: buffer.baseAddress!.advanced(by: written),
+                            size: UInt64(subChunk))
+                        let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(subChunk))
+                        if n == 0 || n == UInt64(bitPattern: -1) { break }
+                        written += Int(n)
+                    }
+                }
+                
+                RootExecutor.rcall(rc, "close", fd)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                totalWritten += written
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.emit("[deb] Large file chunk \(callIndex)/\(totalCalls) (\(totalWritten)/\(totalSize))")
+                    writeNextChunk()
+                }
+                return (true, "lf chunk \(callIndex)", UInt64(totalWritten))
+            }
+        }
+        
+        writeNextChunk()
+        #else
+        completion()
         #endif
     }
     
