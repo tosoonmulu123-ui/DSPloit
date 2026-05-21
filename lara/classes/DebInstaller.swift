@@ -193,7 +193,7 @@ final class DebInstaller {
                 RootExecutor.rcall(rc, "free", pathAddr)
                 totalWritten += written
                 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     self.emit("[deb] Chunk \(callIndex)/\(totalCalls) (\(totalWritten)/\(totalSize))")
                     writeNext()
                 }
