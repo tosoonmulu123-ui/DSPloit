@@ -120,67 +120,90 @@ final class DebInstaller {
         }
     }
     
-    // MARK: - Write tar to disk (via SpringBoard — NO watchdog risk)
+    // MARK: - Write tar to disk (via launchd split — max 2MB per call)
+    //
+    // SpringBoard CANNOT write to /var/jb (sandbox blocks it).
+    // Launchd CAN write anywhere (uid=0, no sandbox).
+    // Split into 2MB chunks = ~500 write ops per call = ~0.5s per call (safe).
+    //
     
     private func writeTarToDisk(data: Data, path: String, completion: @escaping (Bool) -> Void) {
         #if !DISABLE_REMOTECALL
-        guard let sb = mgr.sbProc else {
-            emit("[deb] ❌ SpringBoard RC not available for tar write")
-            completion(false)
-            return
-        }
+        let chunkLimit = 2 * 1024 * 1024 // 2MB per launchd call (safe: ~0.5s)
+        let totalSize = data.count
+        var totalWritten = 0
+        var callIndex = 0
+        let totalCalls = (totalSize + chunkLimit - 1) / chunkLimit
         
-        // Use SpringBoard to write — no watchdog, no time limit
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            // mkdir -p /var/jb/tmp
-            let tmpDir = remote_alloc_str(sb, "/var/jb/tmp")
-            RootExecutor.rcall(sb, "mkdir", tmpDir, 0o755)
-            RootExecutor.rcall(sb, "free", tmpDir)
-            
-            // Write tar file via SpringBoard
-            let pathAddr = remote_alloc_str(sb, path)
-            let fd = RootExecutor.rcall(sb, "open", pathAddr,
-                UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
-            
-            guard fd != UInt64(bitPattern: -1) else {
-                RootExecutor.rcall(sb, "free", pathAddr)
-                DispatchQueue.main.async {
-                    self.emit("[deb] ❌ Failed to open \(path) for writing")
-                    completion(false)
-                }
+        emit("[deb] Writing \(totalSize) bytes in \(totalCalls) launchd calls (2MB each)...")
+        
+        func writeNextChunk() {
+            guard totalWritten < totalSize else {
+                DispatchQueue.main.async { completion(true) }
                 return
             }
             
-            // Write in 4KB chunks — SpringBoard has no time limit
-            let writeAddr = sb.trojanMem + 0x800
-            var written = 0
-            let totalSize = data.count
+            let offset = totalWritten
+            let thisChunkSize = min(chunkLimit, totalSize - offset)
+            let chunkData = data[offset..<offset + thisChunkSize]
+            let isFirst = (offset == 0)
+            callIndex += 1
             
-            data.withUnsafeBytes { buffer in
-                while written < totalSize {
-                    let chunk = min(totalSize - written, 0x1000)
-                    sb.remote_write(writeAddr,
-                        from: buffer.baseAddress!.advanced(by: written),
-                        size: UInt64(chunk))
-                    let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
-                    if n == 0 || n == UInt64(bitPattern: -1) { break }
-                    written += Int(n)
+            root.executeAsRoot(operation: "tar_write_\(callIndex)") { rc in
+                // First call: mkdir + open with TRUNC
+                // Subsequent calls: open with APPEND
+                if isFirst {
+                    let tmpDir = remote_alloc_str(rc, "/var/jb/tmp")
+                    RootExecutor.rcall(rc, "mkdir", tmpDir, 0o755)
+                    RootExecutor.rcall(rc, "free", tmpDir)
                 }
+                
+                let pathAddr = remote_alloc_str(rc, path)
+                let flags: UInt64 = isFirst
+                    ? UInt64(O_WRONLY | O_CREAT | O_TRUNC)
+                    : UInt64(O_WRONLY | O_APPEND)
+                let fd = RootExecutor.rcall(rc, "open", pathAddr, flags, 0o644)
+                
+                guard fd != UInt64(bitPattern: -1) else {
+                    RootExecutor.rcall(rc, "free", pathAddr)
+                    DispatchQueue.main.async {
+                        self.emit("[deb] ❌ open failed at chunk \(callIndex)")
+                        completion(false)
+                    }
+                    return (false, "open failed", 0)
+                }
+                
+                // Write this chunk in 4KB sub-chunks
+                let writeAddr = rc.trojanMem + 0x800
+                var written = 0
+                
+                Data(chunkData).withUnsafeBytes { buffer in
+                    while written < thisChunkSize {
+                        let subChunk = min(thisChunkSize - written, 0x1000)
+                        rc.remote_write(writeAddr,
+                            from: buffer.baseAddress!.advanced(by: written),
+                            size: UInt64(subChunk))
+                        let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(subChunk))
+                        if n == 0 || n == UInt64(bitPattern: -1) { break }
+                        written += Int(n)
+                    }
+                }
+                
+                RootExecutor.rcall(rc, "close", fd)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                totalWritten += written
+                
+                return (true, "chunk \(callIndex): \(written) bytes", UInt64(totalWritten))
             }
             
-            RootExecutor.rcall(sb, "close", fd)
-            RootExecutor.rcall(sb, "free", pathAddr)
-            
-            let success = written == totalSize
-            DispatchQueue.main.async {
-                if success {
-                    self.emit("[deb] ✅ Wrote \(written) bytes to disk via SpringBoard")
-                } else {
-                    self.emit("[deb] ❌ Partial write: \(written)/\(totalSize)")
-                }
-                completion(success)
+            // 1s delay between chunks — launchd fully released between calls
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.emit("[deb] Chunk \(callIndex)/\(totalCalls) done (\(totalWritten)/\(totalSize))")
+                writeNextChunk()
             }
         }
+        
+        writeNextChunk()
         #else
         completion(false)
         #endif
@@ -254,16 +277,10 @@ final class DebInstaller {
         #endif
     }
     
-    // MARK: - Fallback: Manual extraction via SpringBoard RC
+    // MARK: - Fallback: Manual extraction via launchd (split per file)
     
     private func fallbackManualExtract(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
-        emit("[deb] Fallback: decompressing and extracting manually via SpringBoard...")
-        
-        guard let sb = mgr.sbProc else {
-            emit("[deb] ❌ SpringBoard RC not available")
-            completion(false, 0)
-            return
-        }
+        emit("[deb] Fallback: decompressing and extracting manually...")
         
         // Decompress on background thread
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -292,72 +309,72 @@ final class DebInstaller {
             }
             
             DispatchQueue.main.async {
-                self.emit("[deb] Fallback: \(files.count) files via SpringBoard...")
+                self.emit("[deb] Fallback: \(files.count) files, writing via launchd (1 file per call)...")
+                self.fallbackWriteFiles(files: files, index: 0, installed: 0, completion: completion)
             }
-            
-            var installed = 0
-            let prefix = "/var/jb"
-            
-            // Create directories
-            let directories = files.filter { $0.isDirectory }
-            for dir in directories {
-                let fullPath = "\(prefix)/\(dir.path)"
-                let pathAddr = remote_alloc_str(sb, fullPath)
-                RootExecutor.rcall(sb, "mkdir", pathAddr, 0o755)
-                RootExecutor.rcall(sb, "free", pathAddr)
-                installed += 1
-            }
-            
-            // Write files via SpringBoard (no time limit)
-            let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
-            for (i, file) in regularFiles.enumerated() {
-                let fullPath = "\(prefix)/\(file.path)"
+        }
+    }
+    
+    private func fallbackWriteFiles(files: [TarFile], index: Int, installed: Int, completion: @escaping (Bool, Int) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard index < files.count else {
+            emit("[deb] ✅ Fallback installed \(installed) items")
+            runUicache { completion(true, installed) }
+            return
+        }
+        
+        let file = files[index]
+        let fullPath = "/var/jb/\(file.path)"
+        
+        root.executeAsRoot(operation: "fb_\(index)") { rc in
+            if file.isDirectory {
+                let pathAddr = remote_alloc_str(rc, fullPath)
+                RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+                RootExecutor.rcall(rc, "free", pathAddr)
+            } else if !file.data.isEmpty {
+                // Ensure parent
+                let parent = (fullPath as NSString).deletingLastPathComponent
+                let parentAddr = remote_alloc_str(rc, parent)
+                RootExecutor.rcall(rc, "mkdir", parentAddr, 0o755)
+                RootExecutor.rcall(rc, "free", parentAddr)
                 
-                // Ensure parent dir exists
-                let parentPath = (fullPath as NSString).deletingLastPathComponent
-                let parentAddr = remote_alloc_str(sb, parentPath)
-                RootExecutor.rcall(sb, "mkdir", parentAddr, 0o755)
-                RootExecutor.rcall(sb, "free", parentAddr)
-                
-                // Write file
-                let pathAddr = remote_alloc_str(sb, fullPath)
-                let fd = RootExecutor.rcall(sb, "open", pathAddr,
+                let pathAddr = remote_alloc_str(rc, fullPath)
+                let fd = RootExecutor.rcall(rc, "open", pathAddr,
                     UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
-                
                 if fd != UInt64(bitPattern: -1) {
-                    let writeAddr = sb.trojanMem + 0x800
+                    let writeAddr = rc.trojanMem + 0x800
                     var written = 0
                     file.data.withUnsafeBytes { buffer in
                         while written < file.data.count {
                             let chunk = min(file.data.count - written, 0x1000)
-                            sb.remote_write(writeAddr,
+                            rc.remote_write(writeAddr,
                                 from: buffer.baseAddress!.advanced(by: written),
                                 size: UInt64(chunk))
-                            let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
+                            let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
                             if n == 0 || n == UInt64(bitPattern: -1) { break }
                             written += Int(n)
                         }
                     }
-                    RootExecutor.rcall(sb, "close", fd)
-                    RootExecutor.rcall(sb, "chmod", pathAddr, UInt64(file.mode))
-                    installed += 1
+                    RootExecutor.rcall(rc, "close", fd)
+                    RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
                 }
-                RootExecutor.rcall(sb, "free", pathAddr)
-                
-                if (i + 1) % 50 == 0 {
-                    DispatchQueue.main.async {
-                        self.emit("[deb] Progress: \(i + 1)/\(regularFiles.count)")
-                    }
-                }
+                RootExecutor.rcall(rc, "free", pathAddr)
             }
-            
-            DispatchQueue.main.async {
-                self.emit("[deb] ✅ Fallback installed \(installed) items")
-                self.runUicache {
-                    completion(true, installed)
-                }
-            }
+            return (true, "file \(index)", 0)
         }
+        
+        let newInstalled = installed + 1
+        if (index + 1) % 50 == 0 {
+            emit("[deb] Fallback: \(index + 1)/\(files.count)")
+        }
+        
+        // 0.3s delay — each file is small, launchd call is fast
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.fallbackWriteFiles(files: files, index: index + 1, installed: newInstalled, completion: completion)
+        }
+        #else
+        completion(false, 0)
+        #endif
     }
     
     // MARK: - AR Archive Parser

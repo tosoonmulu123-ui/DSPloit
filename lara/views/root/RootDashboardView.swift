@@ -2,7 +2,7 @@
 //  RootDashboardView.swift
 //  DSPloit
 //
-//  Root tools dashboard — modern card-based layout
+//  Root tools — clean native list style
 //
 
 import SwiftUI
@@ -19,38 +19,33 @@ struct RootDashboardView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    SystemStatusStrip(mgr: mgr)
-                        .padding(.horizontal, 4)
-
-                    if rootReady {
-                        essentialsSection
-                    } else {
-                        EmptyStateView(
-                            icon: "lock.fill",
-                            title: "Root not active",
-                            message: "Run Jailbreak in Main tab until RemoteCall and Root turn green.",
-                            buttonTitle: "Open Guide",
-                            action: { showGuide = true }
-                        )
+            List {
+                if rootReady {
+                    Section("Tools") {
+                        toolRow("folder.fill", "File Manager", "Browse and edit files", .blue, RootFileManagerView())
+                        toolRow("shippingbox.fill", "Packages", "Install apps and tweaks", .purple, PackageManagerView())
+                        toolRow("building.columns.fill", "Banking", "Hide jailbreak detection", .green, MobileBankingView())
+                        toolRow("gearshape.2.fill", "Daemons", "Manage system services", .orange, DaemonDisableView())
                     }
-
-                    VStack(spacing: 4) {
-                        Text("DSPloit")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        Text("iOS 16–18.2 • A11–A18 • Full Jailbreak")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                } else {
+                    Section {
+                        VStack(spacing: 12) {
+                            Image(systemName: "lock.fill")
+                                .font(.largeTitle)
+                                .foregroundStyle(.secondary)
+                            Text("Root Not Active")
+                                .font(.headline)
+                            Text("Run Jailbreak from the Main tab first.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 32)
                     }
-                    .padding(.top, 8)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
             }
             .navigationTitle("Root")
-            .background(Color(.systemGroupedBackground))
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
@@ -69,38 +64,22 @@ struct RootDashboardView: View {
         }
     }
 
-    // MARK: - Sections
-
-    private var essentialsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Jailbreak Tools", icon: "star.fill")
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                navTool("folder.fill", "File Manager", "Root file browser", .blue, RootFileManagerView())
-                navTool("shippingbox.fill", "Packages", "Install tweaks & debs", .purple, PackageManagerView())
-                navTool("building.columns.fill", "Banking", "Hide jailbreak", .green, MobileBankingView())
-                navTool("gearshape.2.fill", "Daemons", "Disable services", .red, DaemonDisableView())
-            }
-        }
-    }
-
-    private func sectionHeader(_ title: String, icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .font(.subheadline.bold())
-            .foregroundStyle(.secondary)
-            .padding(.leading, 4)
-    }
-
-    private func navTool<D: View>(
-        _ icon: String,
-        _ title: String,
-        _ subtitle: String,
-        _ color: Color,
-        _ dest: D,
-        badge: FeatureBadge? = nil
-    ) -> some View {
+    private func toolRow<D: View>(_ icon: String, _ title: String, _ subtitle: String, _ color: Color, _ dest: D) -> some View {
         NavigationLink(destination: dest) {
-            ToolCard(icon: icon, title: title, subtitle: subtitle, color: color, badge: badge)
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .foregroundStyle(color)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
         }
-        .buttonStyle(.plain)
     }
 }

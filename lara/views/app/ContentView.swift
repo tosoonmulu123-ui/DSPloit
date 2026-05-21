@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  DSPloit
 //
-//  Main tab — One-Tap Jailbreak + modern UI with progress ring & status cards
+//  Main tab — user-friendly, clean iOS native style
 //
 
 import SwiftUI
@@ -14,57 +14,98 @@ struct ContentView: View {
     
     @State private var showSettings = false
     @State private var showGuide = false
-    @State private var ringRotation: Double = 0
 
     init() { globallogger.capture() }
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    Spacer().frame(height: 12)
-                    
-                    // Hero progress ring
-                    heroRing
-                    
-                    // Status cards row
-                    statusCardsRow
-                    
-                    // Step indicators
-                    stepsCard
-                    
-                    // Jailbreak button
-                    jailbreakButton
-                    
-                    // Quick actions
-                    if mgr.dsready {
-                        quickActionsCard
-                    }
-                    
-                    // Device info card
-                    if mgr.dsready {
-                        deviceInfoCard
-                    }
-                    
-                    // Help card
-                    if !mgr.dsready && !jb.isRunning {
-                        helpCard
-                    }
-                    
-                    // Footer
-                    footerBrand
-                    
-                    Spacer().frame(height: 20)
+            List {
+                // Main status
+                Section {
+                    mainStatusRow
                 }
-                .padding(.horizontal, 20)
+                
+                // Jailbreak button
+                Section {
+                    jailbreakButton
+                } footer: {
+                    if !isJailbroken && !jb.isRunning {
+                        Text("Tap to unlock full device access. This may take 30–60 seconds.")
+                    }
+                }
+                
+                // Progress (only while running)
+                if jb.isRunning {
+                    Section("Progress") {
+                        ProgressView(value: jb.progress)
+                            .tint(.blue)
+                        Text(jb.state.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                
+                // Actions (after jailbreak)
+                if isJailbroken {
+                    Section("Quick Actions") {
+                        Button(action: safeRespring) {
+                            Label("Respring", systemImage: "arrow.clockwise")
+                        }
+                        #if !DISABLE_REMOTECALL
+                        Button {
+                            mgr.rcfailed = false
+                            mgr.rcLastError = nil
+                            mgr.rcinit(process: "SpringBoard", migbypass: false) { _ in }
+                        } label: {
+                            Label("Reconnect", systemImage: "wifi.exclamationmark")
+                        }
+                        #endif
+                    }
+                }
+                
+                // Error
+                if let error = jb.errorMessage {
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(error)
+                                .font(.subheadline)
+                        }
+                        
+                        Button("Try Again") {
+                            jb.runFullChain()
+                        }
+                        .font(.subheadline.bold())
+                    } header: {
+                        Text("Error")
+                    }
+                }
+                
+                // Info (after jailbreak, collapsed)
+                if isJailbroken {
+                    Section("Info") {
+                        LabeledContent("Status") {
+                            Text("Active until reboot")
+                                .font(.subheadline)
+                                .foregroundStyle(.green)
+                        }
+                        LabeledContent("Access Level") {
+                            Text("Full Root")
+                                .font(.subheadline)
+                        }
+                    }
+                }
+                
+                // Help (before jailbreak)
+                if !isJailbroken && !jb.isRunning && jb.state != .failed {
+                    Section {
+                        Button { showGuide = true } label: {
+                            Label("How does this work?", systemImage: "questionmark.circle")
+                        }
+                    }
+                }
             }
-            .background(
-                LinearGradient(
-                    colors: [Color(.systemBackground), Color(.systemGroupedBackground)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
             .navigationTitle("DSPloit")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -77,194 +118,41 @@ struct ContentView: View {
                         Button { mgr.showLogs.toggle() } label: {
                             Image(systemName: "terminal")
                         }
-                        Button(action: { showSettings.toggle() }) {
+                        Button { showSettings = true } label: {
                             Image(systemName: "gear")
                         }
                     }
                 }
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-            }
-            .sheet(isPresented: $showGuide) {
-                GuideView()
-            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showGuide) { GuideView() }
         }
     }
     
-    // MARK: - Hero Ring
+    // MARK: - Main Status
     
-    private var heroRing: some View {
-        ZStack {
-            // Outer glow
-            if isJailbroken {
+    private var mainStatusRow: some View {
+        HStack(spacing: 14) {
+            ZStack {
                 Circle()
-                    .fill(Color.green.opacity(0.08))
-                    .frame(width: 200, height: 200)
-                    .blur(radius: 20)
-            }
-            
-            // Background track
-            Circle()
-                .stroke(Color.secondary.opacity(0.1), lineWidth: 8)
-                .frame(width: 160, height: 160)
-            
-            // Animated gradient ring
-            if jb.isRunning {
-                Circle()
-                    .trim(from: 0, to: jb.progress)
-                    .stroke(
-                        AngularGradient(
-                            colors: [.blue, .cyan, .blue],
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                    )
-                    .frame(width: 160, height: 160)
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeInOut(duration: 0.5), value: jb.progress)
-                
-                // Spinning indicator
-                Circle()
-                    .trim(from: 0, to: 0.3)
-                    .stroke(Color.cyan.opacity(0.3), lineWidth: 3)
-                    .frame(width: 175, height: 175)
-                    .rotationEffect(.degrees(ringRotation))
-                    .onAppear {
-                        withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
-                            ringRotation = 360
-                        }
-                    }
-            } else if isJailbroken {
-                Circle()
-                    .trim(from: 0, to: 1)
-                    .stroke(
-                        LinearGradient(colors: [.green, .mint], startPoint: .topLeading, endPoint: .bottomTrailing),
-                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                    )
-                    .frame(width: 160, height: 160)
-            }
-            
-            // Center content
-            VStack(spacing: 8) {
+                    .fill(statusBgColor.opacity(0.12))
+                    .frame(width: 48, height: 48)
                 Image(systemName: statusIcon)
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(statusGradient)
-                
-                Text(statusText)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                
-                if jb.isRunning {
-                    Text("\(Int(jb.progress * 100))%")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
+                    .font(.title3)
+                    .foregroundStyle(statusBgColor)
             }
-        }
-        .frame(height: 200)
-    }
-    
-    // MARK: - Status Cards Row
-    
-    private var statusCardsRow: some View {
-        HStack(spacing: 10) {
-            MiniStatusCard(
-                icon: "cpu",
-                label: "Kernel",
-                active: mgr.dsready,
-                color: .orange
-            )
-            MiniStatusCard(
-                icon: "lock.open",
-                label: "Sandbox",
-                active: mgr.sbxready,
-                color: .purple
-            )
-            MiniStatusCard(
-                icon: "antenna.radiowaves.left.and.right",
-                label: "RC",
-                active: mgr.rcready,
-                color: .blue
-            )
-            MiniStatusCard(
-                icon: "person.badge.key",
-                label: "Root",
-                active: root.rootConfirmed || jb.isJailbroken,
-                color: .green
-            )
-        }
-    }
-    
-    // MARK: - Steps Card
-    
-    private var stepsCard: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                HStack(spacing: 14) {
-                    // Step indicator
-                    ZStack {
-                        Circle()
-                            .fill(step.done ? step.color.opacity(0.15) : Color.secondary.opacity(0.08))
-                            .frame(width: 36, height: 36)
-                        
-                        if step.done {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(step.color)
-                        } else if step.active {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .tint(step.color)
-                        } else {
-                            Text("\(index + 1)")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    
-                    // Label
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(step.label)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(step.done ? .primary : (step.active ? step.color : .secondary))
-                        Text(step.subtitle)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                    
-                    Spacer()
-                    
-                    // Status badge
-                    if step.done {
-                        Text("Done")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(step.color)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(step.color.opacity(0.12)))
-                    }
-                }
-                .padding(.vertical, 10)
-                
-                if index < steps.count - 1 {
-                    // Connector line
-                    HStack {
-                        Rectangle()
-                            .fill(steps[index].done ? steps[index].color.opacity(0.3) : Color.secondary.opacity(0.1))
-                            .frame(width: 2, height: 16)
-                            .padding(.leading, 17)
-                        Spacer()
-                    }
-                }
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text(statusTitle)
+                    .font(.headline)
+                Text(statusSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            
+            Spacer()
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
-        )
+        .padding(.vertical, 4)
     }
     
     // MARK: - Jailbreak Button
@@ -273,203 +161,36 @@ struct ContentView: View {
     private var jailbreakButton: some View {
         #if !DISABLE_REMOTECALL
         Button(action: {
-            if !jb.isRunning && !isJailbroken {
-                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-                jb.runFullChain()
-            }
+            guard !jb.isRunning && !isJailbroken else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            jb.runFullChain()
         }) {
-            HStack(spacing: 12) {
-                if jb.isRunning {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(0.9)
-                } else {
-                    Image(systemName: isJailbroken ? "checkmark.shield.fill" : "bolt.shield.fill")
-                        .font(.system(size: 18))
-                }
-                Text(isJailbroken ? "Jailbroken" : (jb.isRunning ? jb.state.rawValue : "Jailbreak"))
-                    .font(.system(size: 17, weight: .bold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
-            .background(
+            HStack {
+                Spacer()
                 Group {
-                    if isJailbroken {
-                        LinearGradient(colors: [.green, .mint], startPoint: .leading, endPoint: .trailing)
-                    } else if jb.isRunning {
-                        LinearGradient(colors: [.blue, .cyan], startPoint: .leading, endPoint: .trailing)
+                    if jb.isRunning {
+                        ProgressView().tint(.white)
                     } else {
-                        LinearGradient(colors: [.red, .orange], startPoint: .leading, endPoint: .trailing)
+                        Image(systemName: isJailbroken ? "checkmark" : "bolt.fill")
                     }
                 }
-            )
+                Text(isJailbroken ? "Done" : (jb.isRunning ? "Working..." : "Jailbreak"))
+                    .fontWeight(.semibold)
+                Spacer()
+            }
             .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(color: (isJailbroken ? Color.green : (jb.isRunning ? Color.blue : Color.red)).opacity(0.3), radius: 12, y: 6)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isJailbroken ? Color.green : (jb.isRunning ? Color.blue : Color.accentColor))
+            )
         }
         .disabled(jb.isRunning || isJailbroken)
-        .scaleEffect(jb.isRunning ? 0.98 : 1.0)
-        .animation(.easeInOut(duration: 0.2), value: jb.isRunning)
-        
-        // Error message
-        if let error = jb.errorMessage {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                Text(error)
-                    .font(.caption)
-            }
-            .foregroundStyle(.red)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.08)))
-        }
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
         #else
         EmptyView()
         #endif
-    }
-    
-    // MARK: - Quick Actions
-    
-    private var quickActionsCard: some View {
-        VStack(spacing: 0) {
-            quickAction(icon: "arrow.clockwise", label: "Safe Respring", color: .blue) {
-                safeRespring()
-            }
-            Divider().padding(.leading, 52)
-            #if !DISABLE_REMOTECALL
-            quickAction(icon: "arrow.counterclockwise", label: "Re-init RemoteCall", color: .orange) {
-                mgr.rcfailed = false
-                mgr.rcLastError = nil
-                mgr.rcinit(process: "SpringBoard", migbypass: false) { _ in }
-            }
-            #endif
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
-        )
-    }
-    
-    private func quickAction(icon: String, label: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(color.opacity(0.12))
-                        .frame(width: 32, height: 32)
-                    Image(systemName: icon)
-                        .font(.system(size: 13))
-                        .foregroundStyle(color)
-                }
-                Text(label)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .buttonStyle(.plain)
-    }
-    
-    // MARK: - Device Info Card
-    
-    private var deviceInfoCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "info.circle.fill")
-                    .foregroundStyle(.blue)
-                Text("Device Info")
-                    .font(.subheadline.bold())
-                Spacer()
-            }
-            
-            HStack {
-                infoRow("Kernel Base", String(format: "0x%llx", mgr.kernbase), .orange)
-                Spacer()
-                infoRow("KASLR Slide", String(format: "0x%llx", mgr.kernslide), .purple)
-            }
-            
-            if let error = mgr.rcLastError {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.red)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.04), radius: 8, y: 4)
-        )
-    }
-    
-    private func infoRow(_ label: String, _ value: String, _ color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(color)
-        }
-    }
-    
-    // MARK: - Help Card
-    
-    private var helpCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "hand.point.up.left.fill")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Start here")
-                        .font(.subheadline.bold())
-                    Text("Tap Jailbreak to begin. Once done, open Root tab for tools.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            
-            Button("Open Guide") { showGuide = true }
-                .font(.caption.bold())
-                .foregroundStyle(.blue)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.blue.opacity(0.06))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.blue.opacity(0.15), lineWidth: 1)
-                )
-        )
-    }
-    
-    // MARK: - Footer
-    
-    private var footerBrand: some View {
-        VStack(spacing: 4) {
-            Text("DSPloit")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-            Text("iOS 16–18.2 • A11–A18 • Full Jailbreak")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        }
     }
     
     // MARK: - Safe Respring
@@ -503,82 +224,29 @@ struct ContentView: View {
     
     private var statusIcon: String {
         if isJailbroken { return "lock.open.fill" }
-        if jb.isRunning { return "bolt.circle.fill" }
+        if jb.isRunning { return "hourglass" }
         if jb.state == .failed { return "xmark.circle.fill" }
         return "lock.fill"
     }
     
-    private var statusColor: Color {
+    private var statusBgColor: Color {
         if isJailbroken { return .green }
         if jb.isRunning { return .blue }
         if jb.state == .failed { return .red }
         return .secondary
     }
     
-    private var statusGradient: LinearGradient {
-        if isJailbroken { return LinearGradient(colors: [.green, .mint], startPoint: .top, endPoint: .bottom) }
-        if jb.isRunning { return LinearGradient(colors: [.blue, .cyan], startPoint: .top, endPoint: .bottom) }
-        if jb.state == .failed { return LinearGradient(colors: [.red, .orange], startPoint: .top, endPoint: .bottom) }
-        return LinearGradient(colors: [.secondary, .secondary], startPoint: .top, endPoint: .bottom)
-    }
-    
-    private var statusText: String {
+    private var statusTitle: String {
         if isJailbroken { return "Jailbroken" }
-        if jb.isRunning { return jb.state.rawValue }
+        if jb.isRunning { return "In Progress" }
         if jb.state == .failed { return "Failed" }
         return "Locked"
     }
     
-    private struct StepInfo {
-        let label: String
-        let subtitle: String
-        let done: Bool
-        let active: Bool
-        let color: Color
-    }
-    
-    private var steps: [StepInfo] {
-        [
-            StepInfo(label: "Kernel Exploit", subtitle: "darksword socket KRW", done: mgr.dsready, active: jb.state == .exploiting, color: .orange),
-            StepInfo(label: "System Init", subtitle: "VFS + sandbox escape", done: mgr.vfsready && mgr.sbxready, active: jb.state == .initializing, color: .purple),
-            StepInfo(label: "RemoteCall", subtitle: "SpringBoard connection", done: mgr.rcready, active: jb.state == .connectingRC, color: .blue),
-            StepInfo(label: "Root Access", subtitle: "launchd uid=0 verify", done: root.rootConfirmed, active: jb.state == .verifyingRoot, color: .green),
-            StepInfo(label: "Trust Cache", subtitle: "MSM inject via XPC", done: jb.isJailbroken, active: jb.state == .bootstrapping || jb.state == .injectingTC, color: .cyan),
-        ]
-    }
-}
-
-// MARK: - Mini Status Card
-
-struct MiniStatusCard: View {
-    let icon: String
-    let label: String
-    let active: Bool
-    let color: Color
-    
-    var body: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .fill(active ? color.opacity(0.15) : Color.secondary.opacity(0.06))
-                    .frame(width: 36, height: 36)
-                Image(systemName: icon)
-                    .font(.system(size: 14))
-                    .foregroundStyle(active ? color : .secondary)
-            }
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(active ? .primary : .secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(active ? color.opacity(0.04) : Color(.tertiarySystemGroupedBackground))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(active ? color.opacity(0.2) : Color.clear, lineWidth: 1)
-                )
-        )
+    private var statusSubtitle: String {
+        if isJailbroken { return "Full root access active" }
+        if jb.isRunning { return "\(Int(jb.progress * 100))% complete" }
+        if jb.state == .failed { return "Something went wrong" }
+        return "Tap Jailbreak to get started"
     }
 }
