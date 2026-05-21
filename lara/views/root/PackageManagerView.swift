@@ -146,7 +146,7 @@ struct PackageManagerView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Bootstrap")
                             .font(.subheadline.bold())
-                        Text(bootstrapReady ? "/var/jb ready" : "Not set up — tap Setup Bootstrap")
+                        Text(bootstrapReady ? "Ready" : "Required before installing packages")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -154,71 +154,74 @@ struct PackageManagerView: View {
                     if !bootstrapReady {
                         Button("Setup") { setupBootstrap() }
                             .font(.caption.bold())
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.borderedProminent)
                     }
+                }
+            } footer: {
+                if !bootstrapReady {
+                    Text("Tap Setup to create /var/jb directory structure. This is needed once.")
                 }
             }
             
-            // Repos
-            Section("Repositories") {
-                ForEach(repos) { repo in
-                    HStack(spacing: 12) {
-                        Image(systemName: repo.icon)
-                            .font(.title3)
-                            .foregroundStyle(.blue)
-                            .frame(width: 30)
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(repo.name)
-                                .font(.subheadline.bold())
-                            Text(repo.url)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+            // Only show repos and quick install after bootstrap
+            if bootstrapReady {
+                // Repos
+                Section("Repositories") {
+                    ForEach(repos) { repo in
+                        HStack(spacing: 12) {
+                            Image(systemName: repo.icon)
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                                .frame(width: 30)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(repo.name)
+                                    .font(.subheadline.bold())
+                                Text(repo.url)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            
+                            Spacer()
+                            
+                            if repo.isRefreshing {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            } else if repo.packageCount > 0 {
+                                Text("\(repo.packageCount)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        
-                        Spacer()
-                        
-                        if repo.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        } else if repo.packageCount > 0 {
-                            Text("\(repo.packageCount)")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                repos.removeAll { $0.id == repo.id }
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
                         }
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            repos.removeAll { $0.id == repo.id }
-                        } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
-                    }
-                }
-            }
-            
-            // Quick install section
-            Section("Quick Install") {
-                quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
-                    installFromURL(name: "Filza", url: "https://tigisoftware.com/cydia/com.tigisoftware.filza_4.0.1-2_iphoneos-arm.deb")
-                }
-                quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
-                    installFromURL(name: "Sileo", url: "https://repo.getsileo.app/pool/org.coolstar.sileo_2.5.1_iphoneos-arm.deb")
-                }
-                quickInstallRow("TrollStore", "Install IPAs permanently", "app.badge.checkmark", .cyan) {
-                    installFromURL(name: "TrollStore", url: "https://havoc.app/api/download/package/66d4ee514ce732df1fd8b283/com.opa334.trollstorehelper_2.1_iphoneos-arm.deb")
-                }
-                quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
-                    installFromURL(name: "Ellekit", url: "https://apt.autotouch.net/debs/iphoneos-arm/ellekit_1.1.3_iphoneos-arm.deb")
-                }
-                quickInstallRow("Frida", "Dynamic instrumentation", "ant.fill", .orange) {
-                    installFromURL(name: "Frida", url: "https://build.frida.re/pool/main/r/re.frida.server/re.frida.server_17.9.10_iphoneos-arm.deb")
                 }
                 
-                Text("If download fails, add the repo in Sources tab and install from there.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                // Quick install
+                Section("Quick Install") {
+                    quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
+                        installFromURL(name: "Filza", url: "https://tigisoftware.com/cydia/com.tigisoftware.filza_4.0.1-2_iphoneos-arm.deb")
+                    }
+                    quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
+                        installFromURL(name: "Sileo", url: "https://repo.getsileo.app/pool/org.coolstar.sileo_2.5.1_iphoneos-arm.deb")
+                    }
+                    quickInstallRow("TrollStore", "Install IPAs permanently", "app.badge.checkmark", .cyan) {
+                        installFromURL(name: "TrollStore", url: "https://havoc.app/api/download/package/66d4ee514ce732df1fd8b283/com.opa334.trollstorehelper_2.1_iphoneos-arm.deb")
+                    }
+                    quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
+                        installFromURL(name: "Ellekit", url: "https://apt.autotouch.net/debs/iphoneos-arm/ellekit_1.1.3_iphoneos-arm.deb")
+                    }
+                    quickInstallRow("Frida", "Dynamic instrumentation", "ant.fill", .orange) {
+                        installFromURL(name: "Frida", url: "https://build.frida.re/pool/main/r/re.frida.server/re.frida.server_17.9.10_iphoneos-arm.deb")
+                    }
+                }
             }
         }
     }
