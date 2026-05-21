@@ -2,7 +2,7 @@
 //  RootDashboardView.swift
 //  DSPloit
 //
-//  Root tools dashboard
+//  Root tools dashboard — modern card-based layout
 //
 
 import SwiftUI
@@ -26,6 +26,7 @@ struct RootDashboardView: View {
 
                     if rootReady {
                         essentialsSection
+                        toolsSection
                         advancedSection
                     } else {
                         EmptyStateView(
@@ -74,17 +75,38 @@ struct RootDashboardView: View {
 
     private var essentialsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Jailbreak Tools", icon: "star.fill")
+            sectionHeader("Jailbreak Essentials", icon: "star.fill")
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                navTool("folder.fill", "Filza", "File manager", .blue, RootFileManagerView())
-                navTool("shippingbox.fill", "Sileo", "Package manager", .purple, BootstrapView())
+                navTool("folder.fill", "File Manager", "Root file browser", .blue, RootFileManagerView())
+                navTool("shippingbox.fill", "Packages", "Install tweaks & debs", .purple, PackageManagerView())
                 navTool("building.columns.fill", "Banking", "Hide jailbreak", .green, MobileBankingView())
+                navTool("cpu", "Compatibility", "Device support", .orange, DeviceCompatibilityView())
+            }
+        }
+    }
+
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("System Tools", icon: "wrench.and.screwdriver.fill")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                navTool("terminal.fill", "Shell", "Root terminal", .cyan, RootShellView())
+                navTool("gearshape.2.fill", "Processes", "Running processes", .indigo, RootProcessView())
+                navTool("slider.horizontal.3", "Prefs Editor", "Edit system plists", .pink, PrefsEditorView())
+                navTool("network", "Network", "Network tools", .teal, NetworkToolsView())
             }
         }
     }
 
     private var advancedSection: some View {
-        EmptyView()
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Advanced", icon: "bolt.shield.fill")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                navTool("shippingbox.circle.fill", "Bootstrap", "Setup /var/jb", .orange, BootstrapView())
+                navTool("flask.fill", "AMFI Lab", "Experiments", .red, AMFIExperimentView(), badge: .advanced)
+                navTool("arrow.clockwise.circle.fill", "Persistence", "Survive reboot", .mint, RootPersistenceView())
+                navTool("ladybug.fill", "Daemons", "LaunchDaemons", .brown, DaemonManagerView())
+            }
+        }
     }
 
     private func sectionHeader(_ title: String, icon: String) -> some View {
