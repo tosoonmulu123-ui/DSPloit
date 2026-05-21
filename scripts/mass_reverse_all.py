@@ -669,6 +669,17 @@ def scan_kernelcache(kc_path):
 
     name = os.path.basename(kc_path)
 
+    # Check if it's an IM4P container — scan payload inside
+    if data[:4] == b"IM4P":
+        # IM4P: magic(4) + type(4) + desc_len(4) + desc + data_len(4) + data
+        # Skip header, find Mach-O or raw payload
+        mach_idx = data.find(b"\xCF\xFA\xED\xFE")  # MH_MAGIC_64
+        if mach_idx != -1:
+            data = data[mach_idx:]
+        else:
+            # Scan raw payload for patterns
+            pass
+
     # Check for known vulnerable patterns
     vuln_patterns = [
         (b"copyin", MEDIUM, "Kernel", "copyin — user→kernel copy, validate size"),
@@ -703,8 +714,64 @@ def scan_kernelcache(kc_path):
                    f"Kernel: {panic_count} panic references",
                    "Panic paths — some may be triggerable from userspace")
 
+def scan_bootloader_firmware(binary):
+    """Scan iBoot/iBEC/iBSS/LLB for bootloader-specific vulnerabilities"""
+    boot_patterns = [
+        (b"debug-uarts", HIGH, "Bootloader", "Debug UART — serial console access"),
+        (b"debug-enabled", CRITICAL, "Bootloader", "Debug enabled flag — full debug access"),
+        (b"production-fused", MEDIUM, "Bootloader", "Production fuse check"),
+        (b"development-fused", HIGH, "Bootloader", "Development fuse reference"),
+        (b"boot-command", MEDIUM, "Bootloader", "Boot command string"),
+        (b"upgrade", MEDIUM, "Bootloader", "Upgrade path"),
+        (b"fsboot", MEDIUM, "Bootloader", "Filesystem boot"),
+        (b"diags", HIGH, "Bootloader", "Diagnostics mode — special boot"),
+        (b"restore", MEDIUM, "Bootloader", "Restore mode"),
+        (b"usb-", MEDIUM, "Bootloader", "USB interface reference"),
+        (b"serial-number", LOW, "Bootloader", "Serial number"),
+        (b"nonce", HIGH, "Bootloader", "Nonce — anti-replay, downgrade protection"),
+        (b"ticket", HIGH, "Bootloader", "APTicket — SHSH blob validation"),
+        (b"img4", HIGH, "Bootloader", "IMG4 validation — boot chain trust"),
+        (b"manifest", MEDIUM, "Bootloader", "Manifest validation"),
+        (b"BNCH", HIGH, "Bootloader", "Boot nonce hash — downgrade vector"),
+        (b"ECID", MEDIUM, "Bootloader", "ECID — device unique ID"),
+        (b"CHIP", LOW, "Bootloader", "Chip ID reference"),
+        (b"BORD", LOW, "Bootloader", "Board ID reference"),
+        (b"SEPO", HIGH, "Bootloader", "SEP OS version — SEP downgrade?"),
+        (b"krnl", HIGH, "Bootloader", "Kernel reference in bootloader"),
+        (b"trst", HIGH, "Bootloader", "Trust reference — trust chain"),
+        (b"AMNM", MEDIUM, "Bootloader", "AMFI/AMNM reference"),
+        (b"cert", MEDIUM, "Bootloader", "Certificate reference"),
+        (b"sha2", LOW, "Bootloader", "SHA256 reference"),
+        (b"aes", MEDIUM, "Bootloader", "AES encryption reference"),
+        (b"gid", HIGH, "Bootloader", "GID key reference — device group key"),
+        (b"uid", HIGH, "Bootloader", "UID key reference — device unique key"),
+        (b"demotion", CRITICAL, "Bootloader", "Demotion — security downgrade!"),
+        (b"demote", CRITICAL, "Bootloader", "Demote reference — security level change"),
+        (b"allow-mix-and-match", CRITICAL, "Bootloader", "Mix-and-match — component version bypass"),
+        (b"skip-fcs-check", CRITICAL, "Bootloader", "Skip FCS check — bypass validation"),
+        (b"force-dfu", HIGH, "Bootloader", "Force DFU — recovery mode trigger"),
+        (b"nvram", MEDIUM, "Bootloader", "NVRAM access — persistent storage"),
+        (b"boot-args", HIGH, "Bootloader", "Boot arguments — kernel boot params"),
+        (b"cs_enforcement_disable", CRITICAL, "Bootloader", "Code signing disable flag!"),
+        (b"amfi_get_out_of_my_way", CRITICAL, "Bootloader", "AMFI disable boot-arg!"),
+        (b"PE_i_can_has_debugger", HIGH, "Bootloader", "Debugger enable check"),
+    ]
+
+    for pattern, severity, category, detail in boot_patterns:
+        if pattern in binary.data:
+            count = binary.data.count(pattern)
+            add_finding(binary.name, severity, category,
+                       f"Boot: {pattern.decode('ascii', errors='replace')[:30]} ({count}x)", detail)
+
+
 def scan_interesting_strings(binary):
     """Find interesting strings that reveal attack surface"""
+
+    # Special handling for firmware files (iBoot, iBEC, etc)
+    name_lower = binary.name.lower()
+    if any(x in name_lower for x in ['iboot', 'ibec', 'ibss', 'llb', 'sep']):
+        scan_bootloader_firmware(binary)
+
     interesting = [
         (b"AAAA", MEDIUM, "Fuzzing", "Potential test/debug pattern left in"),
         (b"TODO", LOW, "Code Quality", "TODO comment — incomplete implementation"),
@@ -881,10 +948,52 @@ def analyze_trust_caches():
 # MAIN EXECUTION
 # ============================================================
 
+def try_decompress_im4p(data):
+    """Try to decompress LZFSE payload from IM4P container"""
+    try:
+        from imagecodecs import lzfse_decode
+    except ImportError:
+        return None
+
+    # Find LZFSE magic (bvx2)
+    bvx2_idx = data.find(b'bvx2')
+    if bvx2_idx == -1:
+        return None
+
+    compressed = data[bvx2_idx:]
+    try:
+        decompressed = lzfse_decode(compressed)
+        if len(decompressed) > 100:
+            return decompressed
+    except Exception:
+        pass
+    return None
+
+
 def analyze_binary(path):
     """Full analysis of a single binary"""
     binary = MachOBinary(path)
     if not binary.parse():
+        # Not Mach-O — but might be firmware (IM4P, raw ARM, etc)
+        name_lower = binary.name.lower()
+        is_firmware = any(x in name_lower for x in [
+            'iboot', 'ibec', 'ibss', 'llb', 'sep', 'savage', 'yonkers',
+            'stockholm', 'aop', 'ane', 'ave', 'agx', 'callan', 'multitouch',
+            'smartio', 'wirelesspower', 'vinyl', 'bbfw', 'adc-petra'
+        ]) or name_lower.endswith(('.im4p', '.fw', '.sefw', '.bbfw', '.vnlfw'))
+
+        if is_firmware and len(binary.data) > 100:
+            print(f"  Firmware scan: {binary.name} ({len(binary.data)} bytes)")
+            # Try LZFSE decompression for IM4P files
+            decompressed = try_decompress_im4p(binary.data)
+            if decompressed and len(decompressed) > len(binary.data):
+                print(f"    Decompressed: {len(decompressed)} bytes")
+                # Replace data with decompressed for scanning
+                binary.data = decompressed
+            scan_bootloader_firmware(binary)
+            scan_crypto_issues(binary)
+            return
+
         add_finding(os.path.basename(path), INFO, "Parse",
                    "Not a valid Mach-O binary", f"Path: {path}")
         return
@@ -942,11 +1051,14 @@ def main():
         print("[2/4] Adding kernelcache...")
         binaries.append(str(kc_path))
 
-    # 3. iBoot
-    iboot_path = IPSW_DIR / "Firmware" / "all_flash" / "iBoot.n841.RELEASE.im4p"
-    if iboot_path.exists():
-        print("[3/4] Adding iBoot...")
-        binaries.append(str(iboot_path))
+    # 3. ALL firmware files (iBoot, iBEC, iBSS, LLB, SEP, AGX, ANE, AVE, AOP, etc)
+    print("[3/4] Adding ALL firmware files...")
+    fw_dir = IPSW_DIR / "Firmware"
+    if fw_dir.exists():
+        for root_dir, dirs, files in os.walk(fw_dir):
+            for f in files:
+                if f.endswith(('.im4p', '.fw', '.sefw', '.bbfw', '.vnlfw')):
+                    binaries.append(os.path.join(root_dir, f))
 
     # 4. Trust caches
     print("[4/4] Analyzing trust caches...")

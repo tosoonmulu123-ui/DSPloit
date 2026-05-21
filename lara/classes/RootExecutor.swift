@@ -69,17 +69,26 @@ final class RootExecutor: ObservableObject {
     ///
     /// fnAddr: runtime VA dari fungsi kernel (kernel_base + offset dari kernelcache symtab)
     /// args: argumen fungsi (max 8, sesuai ARM64 ABI x0-x7)
+    ///
+    /// CATATAN: Untuk fungsi shared cache (xpc_*, sandbox_*, dll), GUNAKAN rcall() bukan rcallAddr().
+    /// rcall() resolve via dlsym yang benar di remote process.
+    /// rcallAddr() hanya untuk fungsi yang TIDAK ada di shared cache.
     @discardableResult
     static func rcallAddr(_ rc: RemoteCall, _ fnAddr: UInt64, _ args: UInt64...) -> UInt64 {
-        guard fnAddr != 0 else { return 0xDEAD }
-        // Konversi kernel VA ke UnsafeMutableRawPointer untuk doStable
-        // RemoteCall.doStable menerima functionPointer sebagai UnsafeMutableRawPointer?
-        // Kita cast langsung dari UInt64 — ini valid karena kita memanggil di remote process
+        guard fnAddr != 0 && fnAddr != UInt64(bitPattern: -1) else { return 0xDEAD }
+        // Safety: reject obviously invalid addresses
+        // Valid userspace: 0x100000000...0x800000000 (shared cache + app)
+        // Valid kernel: 0xfffffff000000000+ (kernel VA)
+        let isUserspace = fnAddr >= 0x100000000 && fnAddr < 0x800000000
+        let isKernel = fnAddr >= 0xfffffff000000000
+        guard isUserspace || isKernel else {
+            globallogger.log("(rcallAddr) REJECTED invalid addr: 0x\(String(format: "%llx", fnAddr))")
+            return 0xDEAD
+        }
         let ptr = UnsafeMutableRawPointer(bitPattern: UInt(fnAddr))
         var argsCopy = args.isEmpty ? [UInt64(0)] : Array(args)
         let argCount = UInt(args.count)
-        // Gunakan placeholder name untuk logging saja — tidak dipakai untuk lookup
-        let placeholder = "kernel_fn_\(String(format: "%llx", fnAddr))"
+        let placeholder = "fn_\(String(format: "%llx", fnAddr))"
         return placeholder.withCString { cName -> UInt64 in
             UInt64(argsCopy.withUnsafeMutableBufferPointer { buffer in
                 rc.doStable(

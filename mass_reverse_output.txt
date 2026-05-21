@@ -1,22 +1,30 @@
 ================================================================================
 MASS REVERSE ENGINEERING REPORT
-iPhone11,8 — iOS 18.2 (22C152) — 26 binaries analyzed
+iPhone11,8 — iOS 18.2 (22C152) — 71 binaries analyzed
 Date: 2026-05-21
 ================================================================================
 
 SUMMARY
 ----------------------------------------
-  CRITICAL: 19
-  HIGH:     81
-  MEDIUM:   279
-  LOW:      131
-  INFO:     12
-  TOTAL:    522
+  CRITICAL: 24
+  HIGH:     129
+  MEDIUM:   331
+  LOW:      142
+  INFO:     15
+  TOTAL:    641
 
 
 ================================================================================
-[CRITICAL] — 19 findings
+[CRITICAL] — 24 findings
 ================================================================================
+
+--- DeviceTree.n841ap.im4p ---
+  [Bootloader] Boot: debug-enabled (1x)
+    → Debug enabled flag — full debug access
+
+--- LLB.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-enabled (3x)
+    → Debug enabled flag — full debug access
 
 --- MobileStorageMounter ---
   [Entitlement] Has: com.apple.private.amfi.can-load-trust-cache
@@ -43,6 +51,18 @@ SUMMARY
     → amfi_load_trust_cache — can load TC
   [Trust Cache] TC/CS: load_trust_cache (2x)
     → Trust cache load function
+
+--- iBEC.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-enabled (3x)
+    → Debug enabled flag — full debug access
+
+--- iBSS.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-enabled (3x)
+    → Debug enabled flag — full debug access
+
+--- iBoot.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-enabled (3x)
+    → Debug enabled flag — full debug access
 
 --- installd ---
   [Entitlement] Has: com.apple.private.kernel.
@@ -74,8 +94,44 @@ SUMMARY
 
 
 ================================================================================
-[HIGH] — 81 findings
+[HIGH] — 129 findings
 ================================================================================
+
+--- AppleAVE2FW_H11.im4p ---
+  [Bootloader] Boot: uid (2x)
+    → UID key reference — device unique key
+
+--- DeviceTree.n841ap.im4p ---
+  [Bootloader] Boot: nonce (3x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: gid (2x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (15x)
+    → UID key reference — device unique key
+
+--- ICE18-7.01.01.Release.bbfw ---
+  [Bootloader] Boot: gid (2x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (3x)
+    → UID key reference — device unique key
+
+--- LLB.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-uarts (3x)
+    → Debug UART — serial console access
+  [Bootloader] Boot: diags (1x)
+    → Diagnostics mode — special boot
+  [Bootloader] Boot: nonce (3x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: ticket (2x)
+    → APTicket — SHSH blob validation
+  [Bootloader] Boot: img4 (11x)
+    → IMG4 validation — boot chain trust
+  [Bootloader] Boot: gid (1x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (4x)
+    → UID key reference — device unique key
+  [Bootloader] Boot: boot-args (3x)
+    → Boot arguments — kernel boot params
 
 --- MobileStorageMounter ---
   [XPC Auth] XPC service tanpa entitlement check
@@ -93,6 +149,24 @@ SUMMARY
   [Privilege] Priv: seteuid (2x)
     → seteuid — effective UID change
 
+--- SmartIOFirmware_ASCv2.im4p ---
+  [Bootloader] Boot: uid (2x)
+    → UID key reference — device unique key
+
+--- Stockholm5.RELEASE.sefw ---
+  [Bootloader] Boot: gid (2x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (1x)
+    → UID key reference — device unique key
+
+--- adc-petra-n84.im4p ---
+  [Bootloader] Boot: nonce (2x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: trst (1x)
+    → Trust reference — trust chain
+  [Bootloader] Boot: gid (1x)
+    → GID key reference — device group key
+
 --- adid ---
   [Entitlement] Has: platform-application
     → Platform binary — elevated privileges
@@ -107,6 +181,10 @@ SUMMARY
   [Entitlement] Has: com.apple.private.amfi
     → AMFI private entitlement
 
+--- aopfw-iphone11baop.RELEASE.im4p ---
+  [Bootloader] Boot: uid (2x)
+    → UID key reference — device unique key
+
 --- applekeystored ---
   [Entitlement] Has: platform-application
     → Platform binary — elevated privileges
@@ -120,6 +198,10 @@ SUMMARY
     → Platform binary — elevated privileges
   [Entitlement] Has: com.apple.private.tcc.
     → TCC bypass — privacy access without prompt
+
+--- armfw_g11p.im4p ---
+  [Bootloader] Boot: uid (2x)
+    → UID key reference — device unique key
 
 --- cryptexd ---
   [Entitlement] Has: com.apple.private.xpc.launchd
@@ -154,6 +236,66 @@ SUMMARY
     → Trust cache reference
   [DYLD] DYLD: DYLD_ (52x)
     → DYLD environment variable reference
+
+--- h11_ane_fw_quin.im4p ---
+  [Bootloader] Boot: uid (2x)
+    → UID key reference — device unique key
+  [Bootloader] Boot: boot-args (1x)
+    → Boot arguments — kernel boot params
+
+--- iBEC.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-uarts (3x)
+    → Debug UART — serial console access
+  [Bootloader] Boot: diags (1x)
+    → Diagnostics mode — special boot
+  [Bootloader] Boot: nonce (3x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: ticket (2x)
+    → APTicket — SHSH blob validation
+  [Bootloader] Boot: img4 (11x)
+    → IMG4 validation — boot chain trust
+  [Bootloader] Boot: gid (1x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (4x)
+    → UID key reference — device unique key
+  [Bootloader] Boot: boot-args (3x)
+    → Boot arguments — kernel boot params
+
+--- iBSS.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-uarts (3x)
+    → Debug UART — serial console access
+  [Bootloader] Boot: diags (1x)
+    → Diagnostics mode — special boot
+  [Bootloader] Boot: nonce (3x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: ticket (2x)
+    → APTicket — SHSH blob validation
+  [Bootloader] Boot: img4 (11x)
+    → IMG4 validation — boot chain trust
+  [Bootloader] Boot: gid (1x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (4x)
+    → UID key reference — device unique key
+  [Bootloader] Boot: boot-args (3x)
+    → Boot arguments — kernel boot params
+
+--- iBoot.n841.RELEASE.im4p ---
+  [Bootloader] Boot: debug-uarts (3x)
+    → Debug UART — serial console access
+  [Bootloader] Boot: diags (1x)
+    → Diagnostics mode — special boot
+  [Bootloader] Boot: nonce (3x)
+    → Nonce — anti-replay, downgrade protection
+  [Bootloader] Boot: ticket (2x)
+    → APTicket — SHSH blob validation
+  [Bootloader] Boot: img4 (11x)
+    → IMG4 validation — boot chain trust
+  [Bootloader] Boot: gid (1x)
+    → GID key reference — device group key
+  [Bootloader] Boot: uid (4x)
+    → UID key reference — device unique key
+  [Bootloader] Boot: boot-args (3x)
+    → Boot arguments — kernel boot params
 
 --- installd ---
   [Entitlement] Has: com.apple.private.MobileInstallation
@@ -285,8 +427,52 @@ SUMMARY
 
 
 ================================================================================
-[MEDIUM] — 279 findings
+[MEDIUM] — 331 findings
 ================================================================================
+
+--- AppleAVE2FW_H11.im4p ---
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+
+--- DeviceTree.n841ap.im4p ---
+  [Bootloader] Boot: restore (4x)
+    → Restore mode
+  [Bootloader] Boot: usb- (24x)
+    → USB interface reference
+  [Bootloader] Boot: manifest (5x)
+    → Manifest validation
+  [Bootloader] Boot: cert (5x)
+    → Certificate reference
+  [Bootloader] Boot: aes (8x)
+    → AES encryption reference
+  [Bootloader] Boot: nvram (4x)
+    → NVRAM access — persistent storage
+
+--- ICE18-7.01.01.Release.bbfw ---
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+
+--- LLB.n841.RELEASE.im4p ---
+  [Bootloader] Boot: boot-command (6x)
+    → Boot command string
+  [Bootloader] Boot: upgrade (12x)
+    → Upgrade path
+  [Bootloader] Boot: fsboot (2x)
+    → Filesystem boot
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+  [Bootloader] Boot: usb- (5x)
+    → USB interface reference
+  [Bootloader] Boot: manifest (7x)
+    → Manifest validation
+  [Bootloader] Boot: ECID (1x)
+    → ECID — device unique ID
+  [Bootloader] Boot: cert (4x)
+    → Certificate reference
+  [Bootloader] Boot: aes (3x)
+    → AES encryption reference
+  [Bootloader] Boot: nvram (8x)
+    → NVRAM access — persistent storage
 
 --- MobileStorageMounter ---
   [XPC Input] XPC: xpc_dictionary_get_string
@@ -316,6 +502,10 @@ SUMMARY
   [Gadgets] ARM64: 4 stack pivot gadgets (MOV SP, Xn)
     → Stack pivot — useful for ROP chains
 
+--- N841_CallanFirmware.im4p ---
+  [Bootloader] Boot: aes (1x)
+    → AES encryption reference
+
 --- OTATaskingAgent ---
   [IOKit] IOKit: IOServiceGetMatchingService (2x)
     → Opens IOKit service
@@ -327,6 +517,16 @@ SUMMARY
     → Private API usage
   [Privilege] Priv: persona (2x)
     → Persona — identity manipulation
+
+--- SmartIOFirmware_ASCv2.im4p ---
+  [Bootloader] Boot: restore (1x)
+    → Restore mode
+
+--- adc-petra-n84.im4p ---
+  [Bootloader] Boot: restore (1x)
+    → Restore mode
+  [Bootloader] Boot: cert (1x)
+    → Certificate reference
 
 --- adid ---
   [XPC Input] XPC: xpc_dictionary_get_data
@@ -483,6 +683,72 @@ SUMMARY
     → Loader path — hijacking if writable
   [DYLD] DYLD: LC_RPATH (4x)
     → RPATH in binary — check if writable dirs
+
+--- iBEC.n841.RELEASE.im4p ---
+  [Bootloader] Boot: boot-command (6x)
+    → Boot command string
+  [Bootloader] Boot: upgrade (12x)
+    → Upgrade path
+  [Bootloader] Boot: fsboot (2x)
+    → Filesystem boot
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+  [Bootloader] Boot: usb- (5x)
+    → USB interface reference
+  [Bootloader] Boot: manifest (7x)
+    → Manifest validation
+  [Bootloader] Boot: ECID (1x)
+    → ECID — device unique ID
+  [Bootloader] Boot: cert (4x)
+    → Certificate reference
+  [Bootloader] Boot: aes (3x)
+    → AES encryption reference
+  [Bootloader] Boot: nvram (8x)
+    → NVRAM access — persistent storage
+
+--- iBSS.n841.RELEASE.im4p ---
+  [Bootloader] Boot: boot-command (6x)
+    → Boot command string
+  [Bootloader] Boot: upgrade (12x)
+    → Upgrade path
+  [Bootloader] Boot: fsboot (2x)
+    → Filesystem boot
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+  [Bootloader] Boot: usb- (5x)
+    → USB interface reference
+  [Bootloader] Boot: manifest (7x)
+    → Manifest validation
+  [Bootloader] Boot: ECID (1x)
+    → ECID — device unique ID
+  [Bootloader] Boot: cert (4x)
+    → Certificate reference
+  [Bootloader] Boot: aes (3x)
+    → AES encryption reference
+  [Bootloader] Boot: nvram (8x)
+    → NVRAM access — persistent storage
+
+--- iBoot.n841.RELEASE.im4p ---
+  [Bootloader] Boot: boot-command (6x)
+    → Boot command string
+  [Bootloader] Boot: upgrade (12x)
+    → Upgrade path
+  [Bootloader] Boot: fsboot (2x)
+    → Filesystem boot
+  [Bootloader] Boot: restore (2x)
+    → Restore mode
+  [Bootloader] Boot: usb- (5x)
+    → USB interface reference
+  [Bootloader] Boot: manifest (7x)
+    → Manifest validation
+  [Bootloader] Boot: ECID (1x)
+    → ECID — device unique ID
+  [Bootloader] Boot: cert (4x)
+    → Certificate reference
+  [Bootloader] Boot: aes (3x)
+    → AES encryption reference
+  [Bootloader] Boot: nvram (8x)
+    → NVRAM access — persistent storage
 
 --- installd ---
   [Format String] Uses syslog() (2 refs)
@@ -896,8 +1162,18 @@ SUMMARY
 
 
 ================================================================================
-[LOW] — 131 findings
+[LOW] — 142 findings
 ================================================================================
+
+--- DeviceTree.n841ap.im4p ---
+  [Bootloader] Boot: serial-number (2x)
+    → Serial number
+  [Bootloader] Boot: sha2 (1x)
+    → SHA256 reference
+
+--- LLB.n841.RELEASE.im4p ---
+  [Bootloader] Boot: serial-number (2x)
+    → Serial number
 
 --- MobileStorageMounter ---
   [Memory] Uses memcpy() (2 refs)
@@ -910,6 +1186,19 @@ SUMMARY
 --- OTATaskingAgent ---
   [Weak Crypto] Uses SHA1() (2 refs)
     → SHA1 — deprecated for signatures
+
+--- adc-petra-n84.im4p ---
+  [Bootloader] Boot: CHIP (1x)
+    → Chip ID reference
+  [Crypto/Secrets] Found: password
+    → Password string reference — context:    0x%02X
+      otp_password        0x%02X
+ %s: %d cameraPow
+  [Crypto/Secrets] Found: secret
+    → Secret string reference — context: 3A/CAEAFEIR.cpp %s: secret probe capture count incorrect: %u
+  [Crypto/Secrets] Found: token
+    → Token reference — context: nTarget ChManHost   token semaphore = %#08x
+   UART base add
 
 --- adid ---
   [Crypto/Secrets] Found: token
@@ -983,6 +1272,23 @@ SUMMARY
     → Changes permissions
   [Info] Inject: sysctl (2x)
     → sysctl — system info query
+
+--- h11_ane_fw_quin.im4p ---
+  [Crypto/Secrets] Found: token
+    → Token reference — context: nTarget ChManHost   token semaphore = %#08x
+ ChMan RealChann
+
+--- iBEC.n841.RELEASE.im4p ---
+  [Bootloader] Boot: serial-number (2x)
+    → Serial number
+
+--- iBSS.n841.RELEASE.im4p ---
+  [Bootloader] Boot: serial-number (2x)
+    → Serial number
+
+--- iBoot.n841.RELEASE.im4p ---
+  [Bootloader] Boot: serial-number (2x)
+    → Serial number
 
 --- installd ---
   [Crypto/Secrets] Found: token
@@ -1213,8 +1519,24 @@ SUMMARY
 
 
 ================================================================================
-[INFO] — 12 findings
+[INFO] — 15 findings
 ================================================================================
+
+--- Savage.B0-Dev.vt.fw ---
+  [Parse] Not a valid Mach-O binary
+    → Path: d:\Backup\Personal\Hp\iPhone\DSPloit\iPhone11,8_18.2_22C152_Restore\Firmware\Savage\Savage.B0-Dev.vt.fw
+
+--- Savage.B0-Prod.vt.fw ---
+  [Parse] Not a valid Mach-O binary
+    → Path: d:\Backup\Personal\Hp\iPhone\DSPloit\iPhone11,8_18.2_22C152_Restore\Firmware\Savage\Savage.B0-Prod.vt.fw
+
+--- Savage.B2-Dev.vt.fw ---
+  [Parse] Not a valid Mach-O binary
+    → Path: d:\Backup\Personal\Hp\iPhone\DSPloit\iPhone11,8_18.2_22C152_Restore\Firmware\Savage\Savage.B2-Dev.vt.fw
+
+--- Savage.B2-Prod.vt.fw ---
+  [Parse] Not a valid Mach-O binary
+    → Path: d:\Backup\Personal\Hp\iPhone\DSPloit\iPhone11,8_18.2_22C152_Restore\Firmware\Savage\Savage.B2-Prod.vt.fw
 
 --- amfid ---
   [Mach IPC] Mach: mach_msg (4x)
@@ -1231,10 +1553,6 @@ SUMMARY
     → Binary tanpa entitlements
   [Mach IPC] Mach: mach_msg (8x)
     → Uses Mach messaging
-
---- iBoot.n841.RELEASE.im4p ---
-  [Parse] Not a valid Mach-O binary
-    → Path: d:\Backup\Personal\Hp\iPhone\DSPloit\iPhone11,8_18.2_22C152_Restore\Firmware\all_flash\iBoot.n841.RELEASE.im4p
 
 --- keybagd ---
   [Mach IPC] Mach: mach_msg (3x)
@@ -1262,6 +1580,10 @@ EXPLOITATION RECOMMENDATIONS
 ================================================================================
 
 Most promising targets (CRITICAL findings):
+  • DeviceTree.n841ap.im4p: 1 critical issues
+    - Boot: debug-enabled (1x)
+  • LLB.n841.RELEASE.im4p: 1 critical issues
+    - Boot: debug-enabled (3x)
   • MobileStorageMounter: 2 critical issues
     - Has: com.apple.private.amfi.can-load-trust-cache
     - Has: com.apple.private.pmap.load-trust-cache
@@ -1275,6 +1597,12 @@ Most promising targets (CRITICAL findings):
     - Inject: task_for_pid (1x)
     - TC/CS: amfi_load_trust_cache (1x)
     - TC/CS: load_trust_cache (2x)
+  • iBEC.n841.RELEASE.im4p: 1 critical issues
+    - Boot: debug-enabled (3x)
+  • iBSS.n841.RELEASE.im4p: 1 critical issues
+    - Boot: debug-enabled (3x)
+  • iBoot.n841.RELEASE.im4p: 1 critical issues
+    - Boot: debug-enabled (3x)
   • installd: 1 critical issues
     - Has: com.apple.private.kernel.
   • launchd: 2 critical issues
@@ -1291,12 +1619,34 @@ Most promising targets (CRITICAL findings):
     - Has: com.apple.private.kernel.
 
 High-value targets (HIGH findings):
+  • AppleAVE2FW_H11.im4p: 1 high issues
+    - Boot: uid (2x)
+  • DeviceTree.n841ap.im4p: 3 high issues
+    - Boot: nonce (3x)
+    - Boot: gid (2x)
+    - Boot: uid (15x)
+  • ICE18-7.01.01.Release.bbfw: 2 high issues
+    - Boot: gid (2x)
+    - Boot: uid (3x)
+  • LLB.n841.RELEASE.im4p: 8 high issues
+    - Boot: debug-uarts (3x)
+    - Boot: diags (1x)
+    - Boot: nonce (3x)
   • MobileStorageMounter: 5 high issues
     - XPC service tanpa entitlement check
     - Has: com.apple.rootless.storage.
     - Has: com.apple.private.xpc.launchd
   • OTATaskingAgent: 1 high issues
     - Priv: seteuid (2x)
+  • SmartIOFirmware_ASCv2.im4p: 1 high issues
+    - Boot: uid (2x)
+  • Stockholm5.RELEASE.sefw: 2 high issues
+    - Boot: gid (2x)
+    - Boot: uid (1x)
+  • adc-petra-n84.im4p: 3 high issues
+    - Boot: nonce (2x)
+    - Boot: trst (1x)
+    - Boot: gid (1x)
   • adid: 3 high issues
     - Has: platform-application
     - IOKit: IOConnectCallStructMethod (2x)
@@ -1304,6 +1654,8 @@ High-value targets (HIGH findings):
   • amfid: 2 high issues
     - XPC service tanpa entitlement check
     - Has: com.apple.private.amfi
+  • aopfw-iphone11baop.RELEASE.im4p: 1 high issues
+    - Boot: uid (2x)
   • applekeystored: 3 high issues
     - Has: platform-application
     - IOKit: IOConnectCallStructMethod (2x)
@@ -1311,6 +1663,8 @@ High-value targets (HIGH findings):
   • appprotectiond: 2 high issues
     - Has: platform-application
     - Has: com.apple.private.tcc.
+  • armfw_g11p.im4p: 1 high issues
+    - Boot: uid (2x)
   • cryptexd: 7 high issues
     - Has: com.apple.private.xpc.launchd
     - Has: com.apple.private.amfi
@@ -1319,6 +1673,21 @@ High-value targets (HIGH findings):
     - Uses strcpy() (1 refs)
     - Uses strcat() (1 refs)
     - Uses sprintf() (2 refs)
+  • h11_ane_fw_quin.im4p: 2 high issues
+    - Boot: uid (2x)
+    - Boot: boot-args (1x)
+  • iBEC.n841.RELEASE.im4p: 8 high issues
+    - Boot: debug-uarts (3x)
+    - Boot: diags (1x)
+    - Boot: nonce (3x)
+  • iBSS.n841.RELEASE.im4p: 8 high issues
+    - Boot: debug-uarts (3x)
+    - Boot: diags (1x)
+    - Boot: nonce (3x)
+  • iBoot.n841.RELEASE.im4p: 8 high issues
+    - Boot: debug-uarts (3x)
+    - Boot: diags (1x)
+    - Boot: nonce (3x)
   • installd: 3 high issues
     - Has: com.apple.private.MobileInstallation
     - Has: com.apple.private.amfi

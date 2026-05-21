@@ -1,0 +1,1176 @@
+================================================================================
+DEEP REVERSE ENGINEERING REPORT v2
+iPhone11,8 — iOS 18.2 (22C152)
+Includes: kernelcache decompress, iBoot disasm, XPC cross-ref
+================================================================================
+
+======================================================================
+KERNELCACHE DEEP ANALYSIS
+======================================================================
+Kernelcache: LZFSE decompressed 18090841 → 55197696 bytes
+
+--- String extraction (55197696 bytes) ---
+Total strings: 188398
+
+──────────────────────────────────────────────────
+[USB] — 3505 strings
+──────────────────────────────────────────────────
+  0x00001248: com.apple.driver.AppleEmbeddedUSB
+  0x00001290: com.apple.driver.AppleEmbeddedUSBHost
+  0x00001f88: com.apple.driver.AppleS5L8960XUSB
+  0x00002540: com.apple.driver.AppleUSBCardReader
+  0x00002588: com.apple.driver.AppleUSBMassStorageInterfaceNub
+  0x00002628: com.apple.driver.AppleT8011USB
+  0x00002880: com.apple.driver.AppleT8020USB
+  0x00002958: com.apple.driver.AppleUSBTopCaseDriver
+  0x000029e0: com.apple.driver.AppleUSBAudio
+  0x00002a20: com.apple.driver.usb.cdc
+  0x00002a60: com.apple.driver.usb.AppleUSBCommon
+  0x00002aa8: com.apple.driver.AppleUSBDeviceAudioController
+  0x00002af8: com.apple.driver.AppleUSBDeviceMux
+  0x00002b40: com.apple.driver.AppleUSBDeviceNCM
+  0x00002b88: com.apple.driver.usb.cdc.ecm
+  0x00002bc8: com.apple.driver.usb.ethernet.asix
+  0x00002c10: com.apple.driver.AppleUSBEthernetDevice
+  0x00002c58: com.apple.driver.AppleUSBEthernetHost
+  0x00002ca0: com.apple.driver.AppleUSBHSIC
+  0x00002ce0: com.apple.driver.usb.AppleUSBHostT8020
+  0x00002d28: com.apple.driver.AppleUSBMike
+  0x00002d68: com.apple.driver.usb.cdc.ncm
+  0x00002da8: com.apple.driver.usb.networking
+  0x000030a0: com.apple.iokit.IOAccessoryPortUSB
+  0x00003a78: com.apple.iokit.IOUSBDeviceFamily
+  0x00003b08: com.apple.iokit.IOUSBHostFamily
+  0x00003b48: com.apple.driver.usb.AppleUSBEHCI
+  0x00003b90: com.apple.driver.usb.AppleUSBHostCompositeDevice
+  0x00003be8: com.apple.driver.AppleUSBHostMergeProperties
+  0x00003c38: com.apple.driver.usb.AppleUSBHostPacketFilter
+  ... and 3475 more
+
+──────────────────────────────────────────────────
+[IOKit Drivers] — 2617 strings
+──────────────────────────────────────────────────
+  0x000039a8: com.apple.iokit.IOSurface
+  0x0009902d: Kext %s has IOService subclass %s; enabling autounload.
+  0x0009959c: Terminate IOServices
+  0x0009be4c: OSAction_IOUserClient_KernelCompletion
+  0x0009be73: site.OSAction_IOUserClient_KernelCompletion
+  0x0009bf5d: IOServiceNotificationDispatchSource
+  0x0009bf81: site.IOServiceNotificationDispatchSource
+  0x0009bfaa: IOServiceStateNotificationDispatchSource
+  0x0009bfd3: site.IOServiceStateNotificationDispatchSource
+  0x0009c2f9: Failed to start IOService matching @%s:%d
+  0x0009c7e1: IOService
+  0x0009c7eb: site.IOService
+  0x0009c7fa: _IOServiceNotifier
+  0x0009c80d: site._IOServiceNotifier
+  0x0009c833: _IOServiceNullNotifier
+  0x0009c84a: site._IOServiceNullNotifier
+  0x0009c866: _IOServiceInterestNotifier
+  0x0009c881: site._IOServiceInterestNotifier
+  0x0009c8d1: _IOServiceJob
+  0x0009c8df: site._IOServiceJob
+  0x0009c991: _IOServiceStateNotification
+  0x0009c9ad: site._IOServiceStateNotification
+  0x0009c9e9: IOServiceCompatibility
+  0x0009ca00: site.IOServiceCompatibility
+  0x0009cb0c: IOUserClientClass
+  0x0009ccc1: IOServicePublish
+  0x0009ccd2: IOServiceFirstPublish
+  0x0009cce8: IOServiceMatched
+  0x0009ccf9: IOServiceFirstMatch
+  0x0009cd0d: IOServiceTerminate
+  ... and 2587 more
+
+──────────────────────────────────────────────────
+[Boot/Debug] — 1146 strings
+──────────────────────────────────────────────────
+  0x0003f696: register_additional_panic_data_buffer called with buffer already registered @%s:
+  0x0003f6e9: register_additional_panic_data_buffer called with invalid producer_name @%s:%d
+  0x0003f738: register_additional_panic_data_buffer called with invalid buffer pointer @%s:%d
+  0x0003f788: register_additional_panic_data_buffer called with invalid length @%s:%d
+  0x0003f832: /var/log/panic.trace
+  0x0003f9c2: Nested panic detected - entry count: %d panic_caller: 0x%016lx
+  0x0003fa02: Nested panic count exceeds limit %d, machine will reset or spin
+  0x0003fa44: Nested panic stall. Stage 1 bailout. Please go to https://panic.apple.com to rep
+  0x0003faa5: In Nested panic stall. Stage 2 bailout. Please go to https://panic.apple.com to 
+  0x0003fb08: panic(cpu %u caller 0x%lx): 
+  0x0003fb26: Please go to https://panic.apple.com to report this panic
+  0x0003fbe6: -panic_on_exception_triage
+  0x000418a7: panic: rw lock exclusive check done outside of kernel debugger @%s:%d
+  0x00041962: panic: ticket lock acquired check done outside of kernel debugger @%s:%d
+  0x00042cb5: sched_debug
+  0x000437b0: -no_slto_panic
+  0x00045a8c: turnstile_is_send_turnstile() called outside of kernel debugger context @%s:%d
+  0x00047da2: C_KDP passed to decompress page from outside of debugger context @%s:%d
+  0x0004873b: kdp_lightweight_fault called from outside of debugger context @%s:%d
+  0x000496e2: %s:%d WindowServer VM Debugging panic: dst_addr 0x%llx copy %p head_addr 0x%llx 
+  0x0004b4e0: panic: kdp_vm_page_lookup done outside of kernel debugger @%s:%d
+  0x0004c78f: serial_keyboard_init @%s:%d
+  0x0004c7ab: serial_general.c
+  0x0004c7bc: serial_keyboard_poll: Shouldn't never ever get here... @%s:%d
+  0x0004c83b: serial_console.c
+  0x0004d24a: pmap_panic_dev_wimg_on_managed
+  0x00050969: com.apple.private.cs.debugger
+  0x00053abb: drain_uart_sync
+  0x00054172: panic: spinlock acquired check done outside of kernel debugger @%s:%d
+  0x00054445: Unexpected debugger trap while SP1 selected
+  ... and 1116 more
+
+──────────────────────────────────────────────────
+[Process/Task] — 1035 strings
+──────────────────────────────────────────────────
+  0x000081a8: __thread_starts
+  0x0000c591: proc_name
+  0x0000c72d: thread_proc
+  0x0000c9b8: com.apple.xnu.thread_set_state
+  0x0000cd94: process_uuid
+  0x0000de7c: com.apple.xnu.pac_thread_state_exception_event
+  0x0000dec2: com.apple.xnu.pac_thread_state_sigreturn_event
+  0x0000e09f: faulting_uuid
+  0x00022941: com.apple.xnu.memorystatus_proc_notification
+  0x0003f2c3: Attempt to call task_coalition_role_for_type with invalid coalition_type: %d
+  0x0003f487: %s: coalition %p id:%llu type:%s task_count(%llu) < dead_task_count(%llu) @%s:%d
+  0x0004034d: mach_task_self() name changed @%s:%d
+  0x00040372: site.struct thread_init_exc_actions
+  0x0004043a: com.apple.private.task_policy
+  0x0004277b: thread_deallocate_daemon_init: creating daemon failed (%d) @%s:%d
+  0x00042a9f: recount_thread_plan
+  0x00042ab3: recount_task_plan
+  0x00042ac5: recount_task_terminated_plan
+  0x00042de3: thread_wakeup_prim
+  0x00042df6: thread_wakeup_thread
+  0x00042ecc: idle_thread_create failed: %d @%s:%d
+  0x0004307a: thread_invoke: preemption_level %d, possible cause: %s @%s:%d
+  0x00043818: thread_machine_init_template
+  0x00043840: thread_group_init
+  0x00043874: task_init
+  0x0004387e: thread_init
+  0x000438f5: kernel_thread_create
+  0x000439be: thread_call
+  0x000439d5: idle_thread_create
+  0x000439f6: thread_daemon_init
+  ... and 1005 more
+
+──────────────────────────────────────────────────
+[Network] — 919 strings
+──────────────────────────────────────────────────
+  0x0001bce6: com.apple.ipsec
+  0x0001bd26: com.apple.nexus.ipsec.kpipe
+  0x0005d3c9: bridge_mac_nat_udp_output
+  0x0005d521: bridge_get_tcp_header
+  0x0005d537: gso_ip_tcp
+  0x0005e853: ((intptr_t)base + dlif_tcpstat_size) <= ((intptr_t)buf + dlif_tcpstat_bufsize)
+  0x0005e8a2: ((intptr_t)base + dlif_udpstat_size) <= ((intptr_t)buf + dlif_udpstat_bufsize)
+  0x0005e8f1: IS_P2ALIGNED(ifp->if_tcp_stat, sizeof(u_int64_t)) && IS_P2ALIGNED(ifp->if_udp_st
+  0x0005e958: site.struct if_tcp_ecn_stat
+  0x0005eaab: ifnet_tcpstat
+  0x0005eab9: ifnet_udpstat
+  0x000628b8: Number of allowed multicast addresses per NRDV socket
+  0x000628ee: Number of NRDV sockets
+  0x00063830: SOCK_PROTO(inp->inp_socket) == IPPROTO_UDP
+  0x00063964: nstat_tcp_copy_descriptor
+  0x00063994: nstat_udp_copy_descriptor
+  0x00063c66: tcp_progress_probe_enable_for_interface
+  0x00064937: site.struct ipsec_pcb
+  0x00064997: com.apple.net.ipsec_control
+  0x000649b3: ipsec_inject_inbound_packet
+  0x000649eb: /Library/Caches/com.apple.xbs/Sources/xnu/bsd/net/if_ipsec.c
+  0x00064a28: ipsec_register_nexus
+  0x00064a45: ipsecid%d
+  0x00064a4f: ipsec_ctl_connect
+  0x00064a6d: pcb->ipsec_kpipe_count
+  0x00064a84: !ipsec_flag_isset(pcb, IPSEC_FLAGS_KPIPE_ALLOCATED)
+  0x00064ab8: ipsec_enable_channel
+  0x00064acd: ipsec_ncd
+  0x00064b11: ipsec_register_kernel_pipe_nexus
+  0x00064b3e: pcb->ipsec_kpipe_count != 0
+  ... and 889 more
+
+──────────────────────────────────────────────────
+[Memory/VM] — 889 strings
+──────────────────────────────────────────────────
+  0x000083d0: __kalloc_type
+  0x00008420: __kalloc_var
+  0x0000cebf: vmtc_copyin_fail
+  0x0003e7da: Inconsistent OOL/copyout size on %p: expected %d, got %lld @%p @%s:%d
+  0x0003e925: ipc_object_copyin_from_kernel: strange rights @%s:%d
+  0x0003e9c0: ipc_object_copyout_dest: strange rights @%s:%d
+  0x0003ec0f: ipc_right_copyin_check: strange rights @%s:%d
+  0x0003ec3d: ipc_right_copyout: Copyout kobject/kolabel as receive right @%s:%d
+  0x0003ecd1: ipc_right_copyout: strange rights @%s:%d
+  0x00040169: ipc_kobject_label_check: attempted receive right copyout for labeled kobject @%s
+  0x0004051a: shared.kalloc
+  0x00040528: data.kalloc
+  0x00040534: kalloc.type.var
+  0x0004055f: kalloc_type_view(%s) from kext(%s) hasn't been rebuilt with required xnu headers
+  0x000405b7: kalloc.c
+  0x000405c0: kalloc_type_view_copy: Insufficient space in scratch buffer @%s:%d
+  0x00040625: kalloc_type_view_parse: couldn't find kext @ offset:%lx @%s:%d
+  0x00040664: kalloc_type_view_parse: No support for non-split seg KCs @%s:%d
+  0x000406a4: kalloc.type%u.%zu
+  0x000406b6: kalloc.%zu
+  0x000406e7: kalloc_heap_startup_init: invalid KHEAP_ID: %d @%s:%d
+  0x00040758: trying to kalloc(Z_NOFAIL) with a large size (%zd) @%s:%d
+  0x00040792: kalloc_data_require failed: address %p in [%s%s] @%s:%d
+  0x000407ca: kalloc_data_require failed: address %p in [%s%s], size too large %zd > %zd @%s:%
+  0x0004081c: kalloc_data_require failed: address %p not in zone native map @%s:%d
+  0x00040861: kfree: addr %p trying to free with nonsensical size %zd @%s:%d
+  0x000408a0: kfree: addr %p, size %zd (offs:%zd) found in zone '%s%s' with elem_size %zd @%s:
+  0x000408f3: kfree: addr %p, size %zd (offs:%zd) not found in any zone @%s:%d
+  0x00040934: kfree: addr %p found in kalloc type zone '%s'but being freed to %s heap @%s:%d
+  0x00040983: kfree: addr %p, size %zd found in regular zone '%s%s' @%s:%d
+  ... and 859 more
+
+──────────────────────────────────────────────────
+[Panic/Error] — 827 strings
+──────────────────────────────────────────────────
+  0x00044302: com.apple.security.fatal-exceptions
+  0x0004bdca: upl_abort_range: kernel_object being DUMPED @%s:%d
+  0x0004c93d: cc_abort.c
+  0x0005452b: Kernel instruction fetch abort
+  0x00054aa8: User abort from non-interruptible context
+  0x00054b38: Unaligned kernel data abort.
+  0x00054b55: Kernel data abort.
+  0x00067260: necp_client_remove_assertion
+  0x000672a3: site.struct necp_client_assertion
+  0x000725ec: Certain ICMP unreachable messages may abort connections in SYN_SENT
+  0x000741b0: udp_abort
+  0x00077492: assertion failed for AH_MAXSUMSIZE @%s:%d
+  0x0007e138: udp6_abort
+  0x0007fbc4: Guard page fault
+  0x000858df: non-fatal
+  0x000866ce: Caught sending pid %d a critical warning for a fatal limit. @%s:%d
+  0x0008a263: assertion failed: %s, file: %s, line: %d @%s:%d
+  0x0008d0eb: fault_resilient_media_abort1
+  0x0008d108: fault_resilient_media_abort2
+  0x0009d10f: %s: Failed to acquire power assertion for matching @%s:%d
+  0x0009defe: operation was aborted
+  0x000a6933: accelerate _aotWakeTime for assertion
+  0x000a7c51: CPU assertions %d
+  0x000a7c64: PMRD: PreventIdleSleep driver assertion raised
+  0x000a7c94: PMRD: PreventIdleSleep driver assertion dropped
+  0x000a8006: Over-release of driverkit matching assertion @%s:%d
+  0x000a81f1: PMRD: cpu assertion held for %llu ms by 0x%llx
+  0x000a824f: PMRD: assertionsUser 0x%llx->0x%llx
+  0x000a8abc: assertions
+  0x000a9627: %s: MAC hook returned no error, but status is claimed to be fatal? path: '%s', f
+  ... and 797 more
+
+──────────────────────────────────────────────────
+[Entitlements] — 608 strings
+──────────────────────────────────────────────────
+  0x000017c8: com.apple.security.AppleImage4
+  0x0002249f: com.apple.private.internal-jetsam-range
+  0x0003fd94: com.apple.private.xpc.launchd.event-monitor
+  0x0003fdf6: com.apple.private.set-atm-diagnostic-flag
+  0x000404bc: com.apple.private.set-exception-port
+  0x000404e1: com.apple.security.only-one-exception-port
+  0x000442bd: com.apple.private.skip.pac.exception
+  0x000442e2: com.apple.private.pac.exception
+  0x00044ff8: com.apple.private.thread-set-state
+  0x00046e42: com.apple.private.memoryinfo
+  0x00047525: com.apple.private.persona.modify
+  0x00047546: com.apple.private.personas.no.propagate
+  0x00049f0e: com.apple.private.memory.ownership_transfer
+  0x0005055f: get-task-allow
+  0x000508db: com.apple.private.oop-jit.loader
+  0x00050948: com.apple.private.oop-jit.runner
+  0x00051bd7: com.apple.private.enable-swift-playgrounds-validation
+  0x000552b9: com.apple.private.custom-x18-abi
+  0x000552da: com.apple.private.uexc
+  0x0005ab27: com.apple.private.vfs.graftdmg
+  0x0005ab7a: com.apple.private.vfs.role-account-unmount
+  0x0005ae9b: com.apple.private.vfs.dataless-manipulation
+  0x0005aec7: com.apple.private.vfs.dataless-resolver
+  0x0005af91: com.apple.private.vfs.snapshot.user
+  0x0005b0bb: com.apple.private.vfs.open-by-id
+  0x0005b470: com.apple.private.kernel.set-package-extensions
+  0x0005b4a6: com.apple.private.vfs.filesec-access
+  0x0005b4cb: com.apple.private.vfs.snapshot
+  0x0005b50b: com.apple.private.apfs.arv.limited.snapshot
+  0x0005bfa4: com.apple.private.vfs.fsevents-activity-watcher
+  ... and 578 more
+
+──────────────────────────────────────────────────
+[Crypto Keys] — 450 strings
+──────────────────────────────────────────────────
+  0x00001fd0: com.apple.driver.AppleS8000AES
+  0x0004788f: mremap_encrypted
+  0x00054ea3: Invalidate HMAC function already set @%s:%d
+  0x0005946c: encrypted blocks will hit UBC! @%s:%d
+  0x0007676e: hmac-sha1
+  0x00076b6e: esp_cbc_des_encrypt_data
+  0x00076c09: esp_cbc_des_decrypt_data
+  0x00076c56: esp_cbc_3des_encrypt_data
+  0x00076ce0: esp_cbc_3des_decrypt_data
+  0x00076d6a: internal error: no decrypt function @%s:%d
+  0x00076f6a: e_algo->decrypt_pkt
+  0x00077336: esp kpipe output: missing algo encrypt pkt @%s:%d
+  0x00077368: %s:%d esp encrypt failed %d, SPI=%x
+  0x0007738d: %s:%d esp finalize encrypt failed %d, SPI=%x
+  0x00077467: internal error: no encrypt function @%s:%d
+  0x00077544: esp_aes_cbc_encrypt_data
+  0x0007756c: out_ivlen == AES_BLOCKLEN
+  0x00077586: %s:%d payload length %zu must be multiple of AES_BLOCKLEN, SPI 0x%08x
+  0x000775f0: %s:%d encrypt failed %d, SPI 0x%08x
+  0x00077614: esp_aes_cbc_decrypt_data
+  0x0007762d: %s:%d ivlen(%zu) != AES_BLOCKLEN, SPI 0x%08x
+  0x0007765a: %s:%d decrypt failed %d, SPI 0x%08x
+  0x000776d9: esp_gcm_encrypt_aes
+  0x000776ed: esp_gcm_decrypt_aes
+  0x00077701: esp_aes_gcm_encrypt_data
+  0x00077811: %s:%d Packet encryption IV AAD failure %d, SPI 0x%08x
+  0x0007786e: %s:%d encrypt failure %d, SPI 0x%08x
+  0x00077894: esp_aes_gcm_decrypt_data
+  0x0007790c: %s:%d decrypt failure %d, SPI 0x%08x
+  0x00077bf9: esp_chachapoly_encrypt_finalize
+  ... and 420 more
+
+──────────────────────────────────────────────────
+[AMFI/Trust Cache] — 393 strings
+──────────────────────────────────────────────────
+  0x00001b70: com.apple.driver.AppleMobileFileIntegrity
+  0x00043862: code_signing_init
+  0x00043ab2: trust_cache_init
+  0x00050540: pmap_cs_allow_invalid_internal
+  0x0005109e: com.apple.private.amfi.can-execute-cdhash
+  0x00051158: pmap_cs_associate_internal_options
+  0x00051490: pmap_cs_lookup_internal
+  0x000514a8: pmap_cs_check_overlap_internal
+  0x00051b14: com.apple.private.amfi.can-load-cdhash
+  0x00051b3b: PMAP_CS: attempted to load compilation service CDHash but process isn't entitled
+  0x00080ff1: CoreEntitlements: missing AMFI bridge
+  0x00081aac: log cdhashes for all platform binary executions
+  0x00081fad: executable_cdhash=
+  0x00087255: kern_trustcache.c
+  0x00087267: amfi interface not available @%s:%d
+  0x0008728b: amfi interface is stale: %u @%s:%d
+  0x00087804: code_signing_allocate
+  0x00087851: code_signing_deallocate
+  0x0008866b: cs_blob zone
+  0x000887ab: cs_blob_count
+  0x000887e0: cs_blob_size
+  0x00088816: cs_blob_count_peak
+  0x0008884d: cs_blob_size_peak
+  0x00088881: cs_blob_size_max
+  0x0008892a: cs_blob vnode backref mismatch: blob=%p, vp=%p, blob->csb_vnode=%p @%s:%d
+  0x000889b1: validated cs_blob has no code directory @%s:%d
+  0x0009bcf0: AppleMobileFileIntegrity interface already set @%s:%d
+  0x000bfc08: (%u): failed to append the cdhash: %d
+  0x000bfc2f: (%u): failed to get the cdhash
+  0x000cc072: CS Platform Exec Logging: Executing platform signed binary '%s' with cdhash %s
+  ... and 363 more
+
+──────────────────────────────────────────────────
+[Code Signing] — 367 strings
+──────────────────────────────────────────────────
+  0x00002ec0: com.apple.kext.CoreTrust
+  0x00022b18: com.apple.xnu.stackshot_entitlement_report
+  0x00022b7a: sshot_have_entitlement
+  0x0003e738: IPC kmsg header signature mismatch: kmsg=%p, hdr=%p, id=%d, sig=0x%08x (expected
+  0x00043a98: provisioning_profile_init
+  0x0004fc79: dynamic-codesigning
+  0x0004ff05: %s: iommu register address 0x%llx (pa 0x%llx) signature mismatch: expected 0x%x,
+  0x000508fc: PMAP_CS: attempted to load OOP-JIT signature without entitlement: %u @%s:%d
+  0x000509be: PMAP_CS: code signature has no agility hashes and first code directory isn't the
+  0x00050bdb: PMAP_CS: code directory doesn't span the code signature: %p through %p | %lu @%s
+  0x00050d44: PMAP_CS: unable to free accelerated entitlements: %p | %s @%s:%d
+  0x00050dda: PMAP_CS: attempted to verify a code directory which has unlocked unneeded code s
+  0x00050e7b: PMAP_CS: attempted to unlock a code directory which has already unlocked unneede
+  0x00050ee9: PMAP_CS: anomaly, code signature blobs count higher after unlocking code signatu
+  0x00050f43: PMAP_CS: anomaly, required code signature size extends past previous after unloc
+  0x00050f9f: PMAP_CS: anomaly, last blob extends past the locked code signature length @%s:%d
+  0x0005168d: attempted to load trust cache without entitlement: %u @%s:%d
+  0x000517aa: PMAP_CS: profile does not validate through CoreTrust: %d @%s:%d
+  0x00051872: PMAP_CS: fatal error while setting up profile entitlements: %d @%s:%d
+  0x000519de: PMAP_CS: attempted to associate NULL kernel entitlements: %p @%s:%d
+  0x00051a22: pmap_resolve_kernel_entitlements_internal
+  0x00051a4c: PMAP_CS: unable to gauge index size for entitlements acceleration: %p | %s @%s:%
+  0x00051a9e: PMAP_CS: unable to accelerate entitlements: %p | %s @%s:%d
+  0x00051ad9: PMAP_CS: entitlements not marked as accelerated: %p @%s:%d
+  0x0005219b: PMAP_CS: attempted to query kernel_pmap for entitlements @%s:%d
+  0x000521db: check_entitlement_pmap
+  0x00052255: PMAP_CS: failed to validate serialized local signing entitlements constraint: %s
+  0x000522ad: PMAP_CS: failed acquiring unmanaged context for local signing entitlements: %s @
+  0x00052303: PMAP_CS: AppleInternalProfile field not a boolean type in provisioning profile @
+  0x000613ae: ifvlan_release: bad signature @%s:%d
+  ... and 337 more
+
+──────────────────────────────────────────────────
+[Sandbox] — 353 strings
+──────────────────────────────────────────────────
+  0x00003f60: com.apple.security.sandbox
+  0x000437e6: mac_policy_init
+  0x00043a61: mac_policy_initmach
+  0x00069e24: site.struct pf_reass_tag_container
+  0x0006b7e3: site.struct cflil_tag_container
+  0x0006c715: site.struct aqm_tag_container
+  0x00070264: site.struct dummynet_tag_container
+  0x00074375: site.struct encaptab_tag_container
+  0x000744f8: site.struct ipfilt_tag_container
+  0x00078f38: site.struct ipsec_tag_container
+  0x0007a190: site.struct inet6_tag_container
+  0x0008d372: container-dmg
+  0x000a198f: IOUC %s failed sandbox in process %s
+  0x000a1d92: containers kalloc() 0x%08lx
+  0x000a96b2: mac_proc_check_launch_constraints
+  0x000a96d4: mac_process.c
+  0x003b842a: Unable to find coefficients container
+  0x003c8c3a: panic: unsupported container for posting
+  0x003cbcf1: p->p_container
+  0x003cc050: panic: unsupported container for posting: %u
+  0x003cc0b3: failed to decode property: container = %s, type = %x, p = %s: %d
+  0x003cc1f0: panic: bogus property container input: actual = %u, expected < %u
+  0x00498e17: %s: mac_policy_register failed: %d
+  0x0050b20f: SOCD container control key may not exist on this platform. SMCResult = (%s)
+  0x0050b296: SOCD container data key may not exist on this platform. SMCResult = (%s)
+  0x0050bf3e: AppleSMCFamily::%s ERROR: no result container
+  0x0051acae: SOCD: Failed to read socd container
+  0x00542c44: container != nullptr && is_aligned<16>(container)
+  0x00542c76: container != nullptr
+  0x00698d02: %s@%s: %s::%s: failed to create containerID property
+  ... and 323 more
+
+══════════════════════════════════════════════════════════════════════
+AMFI/TRUST CACHE KERNEL ANALYSIS
+══════════════════════════════════════════════════════════════════════
+  [CRITICAL] cs_enforcement_disable (2x) @ 0x498d5d
+         → Kernel CS disable variable
+  [HIGH] cs_debug (8x) @ 0x80f7b
+         → CS debug mode variable
+  [HIGH] cs_system_enforcement (1x) @ 0x3434e98
+         → System-wide CS enforcement toggle
+  [HIGH] cs_process_enforcement (1x) @ 0x3434e2b
+         → Per-process CS enforcement
+  [HIGH] pmap_cs_allow_invalid (1x) @ 0x50540
+         → pmap_cs allow invalid pages
+  [HIGH] PE_i_can_has_debugger (1x) @ 0x342d8b6
+         → Debugger check function
+  [MEDIUM] proc_enforce (1x) @ 0xa929c
+         → Process enforcement variable
+  [MEDIUM] vnode_enforce (1x) @ 0xa9433
+         → Vnode enforcement variable
+  [MEDIUM] cs_require_lv (1x) @ 0x3434e6e
+         → Library validation requirement
+  [HIGH] trust_cache_runtime (1x) @ 0x343469a
+         → Runtime trust cache operations
+  [HIGH] pmap_lookup_in_loaded_trust_caches (1x) @ 0x343a25b
+         → TC lookup function
+  [HIGH] pmap_lookup_in_static_trust_cache (1x) @ 0x343a286
+         → Static TC lookup
+  [MEDIUM] kext_request (1x) @ 0x885065
+         → Kext loading request
+  [MEDIUM] OSKext (30x) @ 0x43ac3
+         → Kext management
+
+--- Trust Cache Functions ---
+  _pmap_cs_configuration
+  _pmap_cs_runtime_alloc
+  _pmap_cs_runtime_alloc_type
+  _pmap_cs_runtime_dealloc
+  _pmap_cs_runtime_dealloc_type
+  _pmap_cs_runtime_get_identifier_bool
+  _pmap_cs_runtime_get_identifier_cstr
+  _pmap_cs_runtime_get_identifier_digest
+  _pmap_cs_runtime_get_identifier_uint32
+  _pmap_cs_runtime_get_identifier_uint64
+  _trust_cache_capabilities
+  _trust_cache_for_rem
+  _trust_cache_runtime_for_uuid
+  _trust_cache_with_type
+  _amfi_interface_register
+  _load_trust_cache
+  _load_trust_cache_with_type
+  _query_trust_cache
+  _query_trust_cache_for_rem
+  _check_trust_cache_runtime_for_uuid
+
+--- NVRAM / Boot-args ---
+  boot-args (52x) @ 0xa0419 — Boot arguments variable
+  nvram (62x) @ 0xa0383 — NVRAM access
+  IODTNVRAMVariables (3x) @ 0xa0342 — NVRAM variable list
+  IONVRAM (41x) @ 0xa03ec — NVRAM IOKit class
+  kern.bootargs (1x) @ 0x782d93 — Kernel boot args sysctl
+
+======================================================================
+iBOOT DEEP ANALYSIS
+======================================================================
+iBoot decompressed: 2162552 bytes
+Strings: 13283
+
+--- Security-Critical Strings ---
+Security strings: 120
+  0x0b2000: uuid
+  0x0fc7e3: trusted-darwinos
+  0x0fc80f: diags-path
+  0x0fc8f5: diagnostics
+  0x0fc908: roothash-path
+  0x0fc94e: disable-boot-wdt
+  0x0fc990: debug-uarts
+  0x0fcb10: nvram-migrate
+  0x0fcb2f: upgrade-retry
+  0x0fcb54: upgrade
+  0x0fcea3: M = 0x4: restore mode image
+  0x0fcf8c: /usr/standalone/firmware/devicetree.img4
+  0x0fcfb5: /usr/standalone/firmware/root_hash.img4
+  0x0fcfdd: /usr/standalone/firmware/sep-firmware.img4
+  0x0fd008: /usr/standalone/firmware/sep-patches.img4
+  0x0fd032: /usr/standalone/firmware/FUD/StaticTrustCache.img4
+  0x0fd065: failed to execute upgrade command from iBoot
+  0x0fd09c: mount upgrade partition
+  0x0fd0bf: load upgrade iBEC
+  0x0fd0d1: upgrade-fallback-boot-command
+  0x0fd0ef: failed to execute upgrade command from new iBEC
+  0x0fd136: verify boot manifest hash
+  0x0fd24a: /boot/apticket.der
+  0x0fd286: /boot/boot/apticket.der
+  0x0fd315: recovery-boot-args
+  0x0fe0f0: Invalid low (%u) and high (%u) mode_to_fuse_data for type %u mode %u
+  0x0fe5a1: tunablerp-is-production-mode
+  0x0fe9e1: pmgr %s %x ps should be enabled
+  0x0fea1e: nvram
+  0x0fec0b: target_pass_boot_manifest() used without target_init_boot_manifest()
+  0x0fec50: chosen/manifest-properties
+  0x0fec6b: chosen/manifest-object-properties
+  0x0fece4: fuse-revision
+  0x0fed29: boot-ios-diagnostics
+  0x0fedcb: debug-enabled
+  0x0fedd9: development-cert
+  0x0fedea: production-cert
+  0x0fedfa: gid-aes-key
+  0x0fee06: uid-aes-key
+  0x0fee12: secure-boot
+  0x0fee1e: certificate-production-status
+  0x0fee3c: certificate-security-mode
+  0x0fee56: effective-production-status-ap
+  0x0fee90: boot-nonce
+  0x0fef08: system-trusted
+  0x0fef78: boot-manifest-hash
+  0x0fef8b: trusted-boot-policy-measurement
+  0x0ff099: <dict><key>IOProviderClass</key><string>IOMedia</string><key>IOPropertyMatch</key><dict><key>Partiti
+  0x0ff188: Ethernet disabled
+  0x0ff19b: arm-io/usb-complex/usb-device
+  0x0ff2d4: debug-wait-start
+  0x0ff426: force-usb-power
+  0x0ff4ce:  -restore
+  0x0ff4f9: debug=
+  0x0ff57a: SDOM:%02X CPID:%04X CPRV:%02X CPFM:%02X SCEP:%02X BDID:%02X ECID:%016llX IBFL:%02X
+  0x0ff609: boot-args
+  0x0ff729: debug-soc
+  0x0ff828: usbphy-frequency
+  0x100398: ======== End of %s serial output. ========
+  0x100439: dev-unset-debug-enabled
+  0x100451: security-mode-change-enable
+  0x1004e2: rosaline-serial-num
+  0x100508: rcam0-ansel-svdd-enable
+  0x100608: invalid AES key size
+  0x10063c: usb_dispatch_task
+  0x100658: usb vbus
+  0x100661: usb-hi-current
+  0x100670: usb-no-current
+  0x100683: usb req
+  0x1006d6: battery-force-boot=1
+  0x1008a2: ambient-light-sensor-serial-num
+  0x100b9d: usb_serial
+  0x100e8b: boot-object-manifests
+  0x100ea1: secure-boot-hashes
+  0x100ec2: nvram-bank-size
+  0x100ed2: nvram-bank-count
+  0x100ee3: nvram-current-bank
+  0x100ef6: nvram-proxy-data
+  0x10104b: syscfg-keybag-ids
+  0x10105d: syscfg-keybag-ids-providers
+
+--- ARM64 Function Analysis ---
+  Code region starts at: 0x0
+  BL (function calls): 1
+  SVC (syscalls): 0
+  CBZ/CBNZ after BL (return checks): 0
+  ADRP/ADR (string/data refs): 2
+  Unchecked returns: ~100% (potential error handling bugs)
+
+--- Boot-Args Handling ---
+  'boot-args' string at 0xfd31e
+  'debug-enabled' at 0xfedcb
+  'production-cert' at 0xfedea
+  'development-cert' at 0xfedd9
+  'certificate-production-status' at 0xfee1e
+  'secure-boot' at 0xfee12
+
+======================================================================
+CROSS-REFERENCE ANALYSIS: XPC Input → Dangerous Functions
+======================================================================
+
+  [launchd] XPC Input → Dangerous Functions:
+    _strcpy (2x) — strcpy — buffer overflow
+    _memcpy (4x) — memcpy — size not validated?
+    _memmove (2x) — memmove — size not validated?
+    _system (6x) — system() — command injection
+    _dlopen (2x) — dlopen — code loading
+    🔴 CRITICAL: XPC string → strcpy path exists!
+
+  [adid] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+    _system (2x) — system() — command injection
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+
+  [amfid] XPC Input → Dangerous Functions:
+    _memcpy (4x) — memcpy — size not validated?
+    _memmove (2x) — memmove — size not validated?
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+  [applekeystored] IOKit target: AppleKeyStore
+  [applekeystored] IOKit target: com.apple.AppleCredentialManagerDaemon
+  [applekeystored] IOKit target: AppleKeyStoreUserClient0&
+  [applekeystored] IOKit target: /System/Library/PrivateFrameworks/AppleKeyStore.framework/Ap
+  [applekeystored] IOKit target: <string>AppleKeyStoreUserClient</string>
+
+  [cryptexd] XPC Input → Dangerous Functions:
+    _strcat (2x) — strcat — buffer overflow
+    _memcpy (4x) — memcpy — size not validated?
+    _sscanf (2x) — sscanf — format parsing
+    _xpc_connection_create (4x) — creates XPC connection (outbound)
+  [cryptexd] IOKit target: /System/Library/PrivateFrameworks/AppleKeyStore.framework/Ap
+  🔴 [installd] CRITICAL: No sandbox + XPC accessible + no auth check!
+  🔴 [installd] CRITICAL: Kernel private + XPC accessible + no auth check!
+  🔴 [installd] CRITICAL: App install + XPC accessible + no auth check!
+
+  [keybagd] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+    _system (7x) — system() — command injection
+    _dlopen (5x) — dlopen — code loading
+  🔴 [keybagd] CRITICAL: SIP exception + XPC accessible + no auth check!
+  [keybagd] IOKit target: Unexpected AppleKeyStore error: %d
+  [keybagd] IOKit target: Can't register OTA Backup bag with AppleKeyStore: %x.
+  [keybagd] IOKit target: Can't unregister OTA Backup bag with AppleKeyStore: %x.
+  [keybagd] IOKit target: /System/Library/PrivateFrameworks/AppleKeyStore.framework/Ap
+  [keybagd] IOKit target: Can't register for notifications with AppleKeyStore
+
+  [lockdownd] XPC Input → Dangerous Functions:
+    _strcpy (2x) — strcpy — buffer overflow
+    _sprintf (2x) — sprintf — format string + overflow
+    _memcpy (4x) — memcpy — size not validated?
+    _memmove (4x) — memmove — size not validated?
+    _dlopen (2x) — dlopen — code loading
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+    🔴 CRITICAL: XPC string → strcpy path exists!
+  🔴 [lockdownd] CRITICAL: SIP exception + XPC accessible + no auth check!
+  [lockdownd] IOKit target: AppleUSBDeviceMux
+  [lockdownd] IOKit target: AppleUSBDeviceAudioDevice
+  [lockdownd] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [lockdownd] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [lockdownd] IOKit target: AppleUSBMux
+  [lockdownd] IOKit target: AppleCredentialManager
+  [lockdownd] IOKit target: Failed to create IOKit matching dictionary for 'AppleUSBDevi
+
+  [misagent] XPC Input → Dangerous Functions:
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+
+  [MobileStorageMounter] XPC Input → Dangerous Functions:
+    _strcpy (2x) — strcpy — buffer overflow
+    _strcat (2x) — strcat — buffer overflow
+    _memcpy (4x) — memcpy — size not validated?
+    _system (2x) — system() — command injection
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+    🔴 CRITICAL: XPC string → strcpy path exists!
+  🔴 [MobileStorageMounter] CRITICAL: Can load trust cache + XPC accessible + no auth check!
+  🔴 [MobileStorageMounter] CRITICAL: Kernel TC load + XPC accessible + no auth check!
+  🔴 [MobileStorageMounter] CRITICAL: SIP exception + XPC accessible + no auth check!
+  [MobileStorageMounter] IOKit target: AppleKeyStoreUserClient0{
+  [MobileStorageMounter] IOKit target: /System/Library/PrivateFrameworks/AppleKeyStore.framework/Ap
+  [MobileStorageMounter] IOKit target: <string>AppleKeyStoreUserClient</string>
+
+  [profiled] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+    _system (2x) — system() — command injection
+    _dlopen (2x) — dlopen — code loading
+  🔴 [profiled] CRITICAL: SIP exception + XPC accessible + no auth check!
+  [profiled] IOKit target: AppleKeyStore
+  [profiled] IOKit target: IOSurfaceRootUserClient0
+  [profiled] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [profiled] IOKit target: Informing AMFI that this device is supervised.
+  [profiled] IOKit target:  AppleCredentialManagerUserClient
+  [profiled] IOKit target: _tellAMFIIfWeAreSupervised
+  [profiled] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [profiled] IOKit target: <string>IOSurfaceRootUserClient</string>
+  [profiled] IOKit target: setAMFISupervisionFromCloudConfiguration:
+  [profiled] IOKit target: <string>AppleCredentialManagerUserClient</string>
+  [profiled] IOKit target: AMFI/SEP setting internal supervision to mimic configurator 
+  [profiled] IOKit target: IOService:/IOResources/AppleKeyStore
+  [profiled] IOKit target: AppleCredentialManager
+  [profiled] IOKit target: AMFI/SEP ignoring supervision source: %{public}d
+
+  [securityd] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+    _memmove (2x) — memmove — size not validated?
+    _system (3x) — system() — command injection
+    _dlopen (3x) — dlopen — code loading
+    _NSKeyedUnarchiver (2x) — deserialization
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+  [securityd] IOKit target: AppleKeyStore
+  [securityd] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [securityd] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleKeyStore_libs/aes
+  [securityd] IOKit target: AppleKeyStore lock state: %d
+  [securityd] IOKit target: IOService:/IOResources/AppleKeyStore
+  [securityd] IOKit target: /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager
+  [securityd] IOKit target: AppleCredentialManager
+
+  [timed] XPC Input → Dangerous Functions:
+    _system (3x) — system() — command injection
+    _NSKeyedUnarchiver (2x) — deserialization
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+
+  [trustd] XPC Input → Dangerous Functions:
+    _memcpy (4x) — memcpy — size not validated?
+    _memmove (2x) — memmove — size not validated?
+    _system (2x) — system() — command injection
+    _dlopen (3x) — dlopen — code loading
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+
+  [xpcproxy] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+    _dlopen (2x) — dlopen — code loading
+    _xpc_connection_create (2x) — creates XPC connection (outbound)
+
+  [notifyd] XPC Input → Dangerous Functions:
+    _memcpy (2x) — memcpy — size not validated?
+
+--- iBEC.n841.RELEASE.im4p ---
+  Decompressed: 2162552 bytes, 2773 strings, 100 security-related
+    0x0fc7e3: trusted-darwinos
+    0x0fc840: boot-breadcrumbs
+    0x0fc8a5: boot-device
+    0x0fc8b6: boot-partition
+    0x0fc8e8: boot-ramdisk
+    0x0fc908: roothash-path
+    0x0fc92e: boot-path
+    0x0fc938: one-time-boot-command
+    0x0fc94e: disable-boot-wdt
+    0x0fc990: debug-uarts
+    0x0fca76: %s boot, Board 0x%x (%s%s)/Rev 0x%x
+    0x0fcb20: auto-boot-once
+    0x0fcb3d: auto-boot
+    0x0fcb47: boot-command
+    0x0fcb64: bootdelay
+    0x0fcb6e: aborting autoboot due to user intervention
+    0x0fcf43: fsboot
+    0x0fcfb5: /usr/standalone/firmware/root_hash.img4
+    0x0fd0b4: /boot/iBEC
+    0x0fd0d1: upgrade-fallback-boot-command
+    0x0fd136: verify boot manifest hash
+    0x0fd150: /boot/applelogo
+    0x0fd160: /boot/iboot_firmware
+    0x0fd18e: /boot/sep-firmware
+    0x0fd1a7: /boot/devicetree
+    0x0fd1c3: /boot/ramdisk
+    0x0fd1d9: /boot/kernelcache
+    0x0fd207: failed to boot
+    0x0fd24a: /boot/apticket.der
+    0x0fd25d: /boot/boot/iBEC
+
+--- iBSS.n841.RELEASE.im4p ---
+  Decompressed: 2162552 bytes, 2773 strings, 100 security-related
+    0x0fc7e3: trusted-darwinos
+    0x0fc840: boot-breadcrumbs
+    0x0fc8a5: boot-device
+    0x0fc8b6: boot-partition
+    0x0fc8e8: boot-ramdisk
+    0x0fc908: roothash-path
+    0x0fc92e: boot-path
+    0x0fc938: one-time-boot-command
+    0x0fc94e: disable-boot-wdt
+    0x0fc990: debug-uarts
+    0x0fca76: %s boot, Board 0x%x (%s%s)/Rev 0x%x
+    0x0fcb20: auto-boot-once
+    0x0fcb3d: auto-boot
+    0x0fcb47: boot-command
+    0x0fcb64: bootdelay
+    0x0fcb6e: aborting autoboot due to user intervention
+    0x0fcf43: fsboot
+    0x0fcfb5: /usr/standalone/firmware/root_hash.img4
+    0x0fd0b4: /boot/iBEC
+    0x0fd0d1: upgrade-fallback-boot-command
+    0x0fd136: verify boot manifest hash
+    0x0fd150: /boot/applelogo
+    0x0fd160: /boot/iboot_firmware
+    0x0fd18e: /boot/sep-firmware
+    0x0fd1a7: /boot/devicetree
+    0x0fd1c3: /boot/ramdisk
+    0x0fd1d9: /boot/kernelcache
+    0x0fd207: failed to boot
+    0x0fd24a: /boot/apticket.der
+    0x0fd25d: /boot/boot/iBEC
+
+
+================================================================================
+SUMMARY
+================================================================================
+  CRITICAL: 14
+  HIGH:     76
+  MEDIUM:   65
+  LOW:      0
+  TOTAL:    155
+
+================================================================================
+TOP CRITICAL/HIGH FINDINGS
+================================================================================
+
+  [CRITICAL] [Kernel AMFI] kernelcache @ 0x498d5d
+    cs_enforcement_disable (2x)
+    → Kernel CS disable variable
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x80f7b
+    cs_debug (8x)
+    → CS debug mode variable
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x3434e98
+    cs_system_enforcement (1x)
+    → System-wide CS enforcement toggle
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x3434e2b
+    cs_process_enforcement (1x)
+    → Per-process CS enforcement
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x50540
+    pmap_cs_allow_invalid (1x)
+    → pmap_cs allow invalid pages
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x342d8b6
+    PE_i_can_has_debugger (1x)
+    → Debugger check function
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x343469a
+    trust_cache_runtime (1x)
+    → Runtime trust cache operations
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x343a25b
+    pmap_lookup_in_loaded_trust_caches (1x)
+    → TC lookup function
+
+  [HIGH] [Kernel AMFI] kernelcache @ 0x343a286
+    pmap_lookup_in_static_trust_cache (1x)
+    → Static TC lookup
+
+  [HIGH] [Kernel NVRAM] kernelcache @ 0xa0419
+    boot-args (52x)
+    → Boot arguments variable
+
+  [HIGH] [Kernel NVRAM] kernelcache @ 0xa0383
+    nvram (62x)
+    → NVRAM access
+
+  [HIGH] [Kernel NVRAM] kernelcache @ 0xa03ec
+    IONVRAM (41x)
+    → NVRAM IOKit class
+
+  [HIGH] [Boot Chain] iBoot @ 0xfd31e
+    boot-args string found
+    → iBoot reads boot-args from NVRAM at 0xfd31e
+
+  [CRITICAL] [Boot Chain] iBoot @ 0xfedcb
+    debug-enabled check in iBoot
+    → If set in DeviceTree/NVRAM, enables full debug mode
+
+  [HIGH] [Boot Chain] iBoot @ 0xfedea
+    production-cert check
+    → Certificate status check — production vs development
+
+  [HIGH] [Boot Chain] iBoot @ 0xfedd9
+    development-cert check
+    → Certificate status check — production vs development
+
+  [HIGH] [Boot Chain] iBoot @ 0xfee1e
+    certificate-production-status check
+    → Certificate status check — production vs development
+
+  [HIGH] [Boot Chain] iBoot @ 0xfee12
+    secure-boot flag
+    → Secure boot enforcement check
+
+  [HIGH] [XPC→Dangerous] launchd
+    XPC input + _strcpy (2x)
+    → Binary receives XPC input AND uses _strcpy: strcpy — buffer overflow
+
+  [HIGH] [XPC→Dangerous] launchd
+    XPC input + _system (6x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [CRITICAL] [XPC→Overflow] launchd
+    xpc_dictionary_get_string + strcpy
+    → XPC string input flows to strcpy — BUFFER OVERFLOW if string > buffer!
+
+  [HIGH] [XPC→Dangerous] adid
+    XPC input + _system (2x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [HIGH] [IOKit Target] applekeystored
+    Opens IOKit: AppleKeyStore
+    → Binary connects to kernel driver AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] applekeystored
+    Opens IOKit: com.apple.AppleCredentialManagerDaemon
+    → Binary connects to kernel driver com.apple.AppleCredentialManagerDaemon — attack surface
+
+  [HIGH] [IOKit Target] applekeystored
+    Opens IOKit: AppleKeyStoreUserClient0&
+    → Binary connects to kernel driver AppleKeyStoreUserClient0& — attack surface
+
+  [HIGH] [IOKit Target] applekeystored
+    Opens IOKit: /System/Library/PrivateFrameworks/AppleKeyStore.fr
+    → Binary connects to kernel driver /System/Library/PrivateFrameworks/AppleKeyStore.framework/AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] applekeystored
+    Opens IOKit: <string>AppleKeyStoreUserClient</string>
+    → Binary connects to kernel driver <string>AppleKeyStoreUserClient</string> — attack surface
+
+  [HIGH] [XPC→Dangerous] cryptexd
+    XPC input + _strcat (2x)
+    → Binary receives XPC input AND uses _strcat: strcat — buffer overflow
+
+  [HIGH] [Entitlement Abuse] cryptexd
+    XPC service + com.apple.private.amfi.can-load-trust-cache
+    → Service has Can load trust cache — check if auth can be bypassed
+
+  [HIGH] [Entitlement Abuse] cryptexd
+    XPC service + com.apple.private.pmap.load-trust-cache
+    → Service has Kernel TC load — check if auth can be bypassed
+
+  [HIGH] [IOKit Target] cryptexd
+    Opens IOKit: /System/Library/PrivateFrameworks/AppleKeyStore.fr
+    → Binary connects to kernel driver /System/Library/PrivateFrameworks/AppleKeyStore.framework/AppleKeyStore — attack surface
+
+  [CRITICAL] [Entitlement Abuse] installd
+    XPC service + com.apple.private.security.no-sandbox + NO AUTH
+    → Service has No sandbox AND no caller validation — anyone can trigger!
+
+  [CRITICAL] [Entitlement Abuse] installd
+    XPC service + com.apple.private.kernel + NO AUTH
+    → Service has Kernel private AND no caller validation — anyone can trigger!
+
+  [CRITICAL] [Entitlement Abuse] installd
+    XPC service + com.apple.private.MobileInstallation + NO AUTH
+    → Service has App install AND no caller validation — anyone can trigger!
+
+  [HIGH] [XPC→Dangerous] keybagd
+    XPC input + _system (7x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [CRITICAL] [Entitlement Abuse] keybagd
+    XPC service + com.apple.rootless.storage + NO AUTH
+    → Service has SIP exception AND no caller validation — anyone can trigger!
+
+  [HIGH] [IOKit Target] keybagd
+    Opens IOKit: Unexpected AppleKeyStore error: %d
+    → Binary connects to kernel driver Unexpected AppleKeyStore error: %d — attack surface
+
+  [HIGH] [IOKit Target] keybagd
+    Opens IOKit: Can't register OTA Backup bag with AppleKeyStore: 
+    → Binary connects to kernel driver Can't register OTA Backup bag with AppleKeyStore: %x. — attack surface
+
+  [HIGH] [IOKit Target] keybagd
+    Opens IOKit: Can't unregister OTA Backup bag with AppleKeyStore
+    → Binary connects to kernel driver Can't unregister OTA Backup bag with AppleKeyStore: %x. — attack surface
+
+  [HIGH] [IOKit Target] keybagd
+    Opens IOKit: /System/Library/PrivateFrameworks/AppleKeyStore.fr
+    → Binary connects to kernel driver /System/Library/PrivateFrameworks/AppleKeyStore.framework/AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] keybagd
+    Opens IOKit: Can't register for notifications with AppleKeyStor
+    → Binary connects to kernel driver Can't register for notifications with AppleKeyStore — attack surface
+
+  [HIGH] [XPC→Dangerous] lockdownd
+    XPC input + _strcpy (2x)
+    → Binary receives XPC input AND uses _strcpy: strcpy — buffer overflow
+
+  [HIGH] [XPC→Dangerous] lockdownd
+    XPC input + _sprintf (2x)
+    → Binary receives XPC input AND uses _sprintf: sprintf — format string + overflow
+
+  [CRITICAL] [XPC→Overflow] lockdownd
+    xpc_dictionary_get_string + strcpy
+    → XPC string input flows to strcpy — BUFFER OVERFLOW if string > buffer!
+
+  [CRITICAL] [Entitlement Abuse] lockdownd
+    XPC service + com.apple.rootless.storage + NO AUTH
+    → Service has SIP exception AND no caller validation — anyone can trigger!
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: AppleUSBDeviceMux
+    → Binary connects to kernel driver AppleUSBDeviceMux — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: AppleUSBDeviceAudioDevice
+    → Binary connects to kernel driver AppleUSBDeviceAudioDevice — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/common/LibCall.c — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/ACMLib/ACMLib.c — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: AppleUSBMux
+    → Binary connects to kernel driver AppleUSBMux — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: AppleCredentialManager
+    → Binary connects to kernel driver AppleCredentialManager — attack surface
+
+  [HIGH] [IOKit Target] lockdownd
+    Opens IOKit: Failed to create IOKit matching dictionary for 'Ap
+    → Binary connects to kernel driver Failed to create IOKit matching dictionary for 'AppleUSBDeviceMux'. — attack surface
+
+  [HIGH] [XPC→Dangerous] MobileStorageMounter
+    XPC input + _strcpy (2x)
+    → Binary receives XPC input AND uses _strcpy: strcpy — buffer overflow
+
+  [HIGH] [XPC→Dangerous] MobileStorageMounter
+    XPC input + _strcat (2x)
+    → Binary receives XPC input AND uses _strcat: strcat — buffer overflow
+
+  [HIGH] [XPC→Dangerous] MobileStorageMounter
+    XPC input + _system (2x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [CRITICAL] [XPC→Overflow] MobileStorageMounter
+    xpc_dictionary_get_string + strcpy
+    → XPC string input flows to strcpy — BUFFER OVERFLOW if string > buffer!
+
+  [CRITICAL] [Entitlement Abuse] MobileStorageMounter
+    XPC service + com.apple.private.amfi.can-load-trust-cache + NO AUTH
+    → Service has Can load trust cache AND no caller validation — anyone can trigger!
+
+  [CRITICAL] [Entitlement Abuse] MobileStorageMounter
+    XPC service + com.apple.private.pmap.load-trust-cache + NO AUTH
+    → Service has Kernel TC load AND no caller validation — anyone can trigger!
+
+  [CRITICAL] [Entitlement Abuse] MobileStorageMounter
+    XPC service + com.apple.rootless.storage + NO AUTH
+    → Service has SIP exception AND no caller validation — anyone can trigger!
+
+  [HIGH] [IOKit Target] MobileStorageMounter
+    Opens IOKit: AppleKeyStoreUserClient0{
+    → Binary connects to kernel driver AppleKeyStoreUserClient0{ — attack surface
+
+  [HIGH] [IOKit Target] MobileStorageMounter
+    Opens IOKit: /System/Library/PrivateFrameworks/AppleKeyStore.fr
+    → Binary connects to kernel driver /System/Library/PrivateFrameworks/AppleKeyStore.framework/AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] MobileStorageMounter
+    Opens IOKit: <string>AppleKeyStoreUserClient</string>
+    → Binary connects to kernel driver <string>AppleKeyStoreUserClient</string> — attack surface
+
+  [HIGH] [XPC→Dangerous] profiled
+    XPC input + _system (2x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [CRITICAL] [Entitlement Abuse] profiled
+    XPC service + com.apple.rootless.storage + NO AUTH
+    → Service has SIP exception AND no caller validation — anyone can trigger!
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: AppleKeyStore
+    → Binary connects to kernel driver AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: IOSurfaceRootUserClient0
+    → Binary connects to kernel driver IOSurfaceRootUserClient0 — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/common/LibCall.c — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: Informing AMFI that this device is supervised.
+    → Binary connects to kernel driver Informing AMFI that this device is supervised. — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit:  AppleCredentialManagerUserClient
+    → Binary connects to kernel driver  AppleCredentialManagerUserClient — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: _tellAMFIIfWeAreSupervised
+    → Binary connects to kernel driver _tellAMFIIfWeAreSupervised — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/ACMLib/ACMLib.c — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: <string>IOSurfaceRootUserClient</string>
+    → Binary connects to kernel driver <string>IOSurfaceRootUserClient</string> — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: setAMFISupervisionFromCloudConfiguration:
+    → Binary connects to kernel driver setAMFISupervisionFromCloudConfiguration: — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: <string>AppleCredentialManagerUserClient</string>
+    → Binary connects to kernel driver <string>AppleCredentialManagerUserClient</string> — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: AMFI/SEP setting internal supervision to mimic con
+    → Binary connects to kernel driver AMFI/SEP setting internal supervision to mimic configurator supervision — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: IOService:/IOResources/AppleKeyStore
+    → Binary connects to kernel driver IOService:/IOResources/AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: AppleCredentialManager
+    → Binary connects to kernel driver AppleCredentialManager — attack surface
+
+  [HIGH] [IOKit Target] profiled
+    Opens IOKit: AMFI/SEP ignoring supervision source: %{public}d
+    → Binary connects to kernel driver AMFI/SEP ignoring supervision source: %{public}d — attack surface
+
+  [HIGH] [XPC→Dangerous] securityd
+    XPC input + _system (3x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [HIGH] [XPC→Dangerous] securityd
+    XPC input + _NSKeyedUnarchiver (2x)
+    → Binary receives XPC input AND uses _NSKeyedUnarchiver: deserialization
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: AppleKeyStore
+    → Binary connects to kernel driver AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/ACMLib/ACMLib.c — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleKeyStor
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleKeyStore_libs/aeskeywrap.c — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: AppleKeyStore lock state: %d
+    → Binary connects to kernel driver AppleKeyStore lock state: %d — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: IOService:/IOResources/AppleKeyStore
+    → Binary connects to kernel driver IOService:/IOResources/AppleKeyStore — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: /Library/Caches/com.apple.xbs/Sources/AppleCredent
+    → Binary connects to kernel driver /Library/Caches/com.apple.xbs/Sources/AppleCredentialManager_ClientLibs/common/LibCall.c — attack surface
+
+  [HIGH] [IOKit Target] securityd
+    Opens IOKit: AppleCredentialManager
+    → Binary connects to kernel driver AppleCredentialManager — attack surface
+
+  [HIGH] [XPC→Dangerous] timed
+    XPC input + _system (3x)
+    → Binary receives XPC input AND uses _system: system() — command injection
+
+  [HIGH] [XPC→Dangerous] timed
+    XPC input + _NSKeyedUnarchiver (2x)
+    → Binary receives XPC input AND uses _NSKeyedUnarchiver: deserialization
+
+  [HIGH] [XPC→Dangerous] trustd
+    XPC input + _system (2x)
+    → Binary receives XPC input AND uses _system: system() — command injection
