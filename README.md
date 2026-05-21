@@ -69,7 +69,7 @@ Requirements:
 ```bash
 git clone https://github.com/tosoonmulu123-ui/DSPloit.git
 cd DSPloit
-# Open lara.xcodeproj in Xcode
+# Open DSPloit.xcodeproj in Xcode
 # Build & run on device
 ```
 
@@ -83,6 +83,7 @@ cd DSPloit
 
 ## Credits
 
+- [rooootdev/lara](https://github.com/rooootdev/lara) — initial starting point / base foundation
 - darksword kernel exploit
 - XPF/ChOma for kernel symbol resolution
 - img4helper for IMG4 parsing

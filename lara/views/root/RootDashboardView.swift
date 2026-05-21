@@ -41,7 +41,7 @@ struct RootDashboardView: View {
                         Text("DSPloit")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
-                        Text("Rootless • iOS 16–26 • A10–A18")
+                        Text("iOS 16–18.2 • A11–A18 • Full Jailbreak")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -74,30 +74,17 @@ struct RootDashboardView: View {
 
     private var essentialsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Essentials", icon: "star.fill")
+            sectionHeader("Jailbreak Tools", icon: "star.fill")
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                navTool("terminal.fill", "Shell", "Perintah root", .red, RootShellView())
-                navTool("folder.fill", "Files", "Baca/tulis file", .blue, RootFileManagerView())
-                navTool("building.columns.fill", "Banking", "Sembunyikan /var/jb", .green, MobileBankingView())
-                navTool("shippingbox.fill", "Bootstrap", "/var/jb setup", .cyan, BootstrapView())
-                navTool("play.circle.fill", "Processes", "Daftar proses", .orange, RootProcessView())
-                navTool("info.circle.fill", "System", "Info perangkat", .teal, SystemInfoView())
+                navTool("folder.fill", "Filza", "File manager", .blue, RootFileManagerView())
+                navTool("shippingbox.fill", "Sileo", "Package manager", .purple, BootstrapView())
+                navTool("building.columns.fill", "Banking", "Hide jailbreak", .green, MobileBankingView())
             }
         }
     }
 
     private var advancedSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Advanced", icon: "gearshape.2.fill")
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                navTool("paintbrush.fill", "SB Tweaks", "SpringBoard RC", .pink, TweaksManagerView())
-                navTool("slider.horizontal.3", "Prefs", "Edit plist", .mint, PrefsEditorView())
-                navTool("arrow.clockwise", "Persist", "LaunchDaemon", .purple, RootPersistenceView())
-                navTool("network", "Network", "hosts, DNS", .indigo, NetworkToolsView())
-                navTool("gear.badge", "Daemons", "Kelola daemon", .brown, DaemonManagerView())
-                navTool("flask.fill", "AMFI Lab", "Riset AMFI", .yellow, AMFIExperimentView(), badge: .advanced)
-            }
-        }
+        EmptyView()
     }
 
     private func sectionHeader(_ title: String, icon: String) -> some View {
