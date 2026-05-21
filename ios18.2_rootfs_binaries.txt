@@ -1,0 +1,96 @@
+iOS 18.2 (22C152) iPhone XR (iPhone11,8) — Rootfs Binary List
+================================================================
+Extracted via: ipsw extract --files --pattern ".*/s?bin/.*"
+Date: 2026-05-22
+
+IMPORTANT: iOS 18 stripped almost ALL userland binaries.
+No tar, sh, ls, cp, cat, rm, id, bash, or any standard UNIX tools.
+posix_spawn from jailbreak context CANNOT execute anything useful.
+All .deb extraction must be done in-memory (manual tar parse + launchd write).
+
+================================================================
+/bin/ (2 binaries only)
+================================================================
+df
+ps
+
+================================================================
+/sbin/ (6 binaries)
+================================================================
+fsck
+launchd
+mount
+mount_lifs
+mount_nfs
+umount
+
+================================================================
+/usr/bin/ (24 binaries)
+================================================================
+DumpBasebandCrash
+IOMFB_FDR_Loader
+abmlite
+afktool
+appprotectiondiagnose
+brctl
+codecctl
+csfdiagnose
+fileproviderctl
+footprint
+hidutil
+hpmdiagnose
+kbdebug
+lsdiagnose
+ltop
+modelcatalogdump
+modelmanagerdump
+nfsstat
+powerlogHelperd
+swift-inspect
+sysdiagnose
+taskinfo
+truncate
+umtool
+vm_stat
+zprint
+
+================================================================
+/usr/sbin/ (25 binaries)
+================================================================
+BTAvrcp
+BTLEServer
+BTMap
+BTPbap
+BlueTool
+WirelessRadioManagerd
+absd
+addNetworkInterface
+applecamerad
+aslmanager
+bluetoothd
+cfprefsd
+ckksctl
+distnoted
+fairplayd.H2
+filecoordinationd
+hdik
+ioreg
+mDNSResponder
+mDNSResponderHelper
+notifyd
+nvram
+otctl
+pppd
+racoon
+rtadvd
+spindump
+syslogd
+wifid
+
+================================================================
+CONCLUSION FOR DSPLOIT:
+- posix_spawn approach for .deb extraction is IMPOSSIBLE
+- Must use in-memory tar parse + per-file launchd write
+- Jailbreak itself is NOT affected — KRW, root, AMFI bypass all work
+- Only limitation: no shell/tar for convenience operations
+================================================================
