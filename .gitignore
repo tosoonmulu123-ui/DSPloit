@@ -6,3 +6,6 @@ compile-logs.txt
 kernelcache*
 *.decompressed
 *.macho
+deeprev5_out/*
+iPhone11,8_18.2_22C152_Restore/*
+extracted/*
