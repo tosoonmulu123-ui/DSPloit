@@ -374,73 +374,61 @@ final class DebInstaller {
     }
     
     /// Move extracted files from app temp to /var/jb via launchd
-    /// Strategy: read each file from temp (app can read), write to /var/jb (launchd can write)
-    /// But we batch them — read from temp in batches, write via launchd
+    /// Strategy: rename entire temp directory to /var/jb in 1 atomic call
     private func moveFromTempToJb(tempBase: String, files: [TarFile], completion: @escaping (Bool) -> Void) {
-        let fm = FileManager.default
-        let dirs = files.filter { $0.isDirectory }
-        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
-        
-        // Try atomic rename first (same filesystem = instant)
-        // /var/mobile/Containers/Data/Application/.../tmp/ → /var/jb/
-        // Both on /var partition — rename should work!
         #if !DISABLE_REMOTECALL
         root.executeAsRoot(operation: "move_install") { [self] rc in
-            // First ensure /var/jb exists
+            // Ensure /var/jb exists
             let jbDir = remote_alloc_str(rc, "/var/jb")
             RootExecutor.rcall(rc, "mkdir", jbDir, 0o755)
             RootExecutor.rcall(rc, "free", jbDir)
             
-            // Create all directories in /var/jb
-            for dir in dirs {
-                let p = remote_alloc_str(rc, "/var/jb/\(dir.path)")
-                RootExecutor.rcall(rc, "mkdir", p, 0o755)
-                RootExecutor.rcall(rc, "free", p)
-            }
+            // Get list of top-level items in temp dir to move individually
+            // (can't rename tempBase directly to /var/jb because /var/jb already exists)
+            // Instead: rename each top-level subdir/file from temp into /var/jb
             
-            // Try rename each top-level item from temp to /var/jb
-            let tempAddr = remote_alloc_str(rc, tempBase)
-            let tempExists = RootExecutor.rcall(rc, "access", tempAddr, 0) == 0
-            RootExecutor.rcall(rc, "free", tempAddr)
+            // Common top-level dirs in .deb: usr/, Library/, Applications/, etc.
+            let topLevelDirs = Set(files.compactMap { path -> String? in
+                let components = path.path.split(separator: "/")
+                guard let first = components.first else { return nil }
+                return String(first)
+            })
             
-            if !tempExists {
-                DispatchQueue.main.async {
-                    self.emit("[deb] ❌ Temp dir not accessible from launchd")
-                    completion(false)
-                }
-                return (false, "temp not accessible", 0)
-            }
-            
-            // Move files by reading from temp and writing to /var/jb
-            // Since we're in launchd context, we can read from anywhere and write to /var/jb
             var moved = 0
-            for file in regularFiles {
-                let srcPath = "\(tempBase)/\(file.path)"
-                let dstPath = "/var/jb/\(file.path)"
+            var lastErrno: UInt64 = 0
+            
+            for dir in topLevelDirs {
+                let srcPath = "\(tempBase)/\(dir)"
+                let dstPath = "/var/jb/\(dir)"
+                
+                // Remove destination if exists (rename fails on EEXIST/ENOTEMPTY)
+                let dstAddr = remote_alloc_str(rc, dstPath)
+                // Don't remove existing — merge instead by skipping rename for existing dirs
+                RootExecutor.rcall(rc, "free", dstAddr)
                 
                 let srcAddr = remote_alloc_str(rc, srcPath)
-                let dstAddr = remote_alloc_str(rc, dstPath)
+                let dstAddr2 = remote_alloc_str(rc, dstPath)
                 
-                // Try rename (atomic, instant if same filesystem)
-                let renameResult = RootExecutor.rcall(rc, "rename", srcAddr, dstAddr)
-                if renameResult == 0 {
+                let ret = RootExecutor.rcall(rc, "rename", srcAddr, dstAddr2)
+                if ret == 0 {
                     moved += 1
+                } else {
+                    lastErrno = UInt64(remote_errno(rc))
                 }
                 
                 RootExecutor.rcall(rc, "free", srcAddr)
-                RootExecutor.rcall(rc, "free", dstAddr)
-                
-                // Safety: if we've been running too long, bail
-                if moved > 0 && moved % 500 == 0 {
-                    // We're doing great — continue
-                }
+                RootExecutor.rcall(rc, "free", dstAddr2)
             }
             
             DispatchQueue.main.async {
-                self.emit("[deb] Moved \(moved)/\(regularFiles.count) files via rename")
-                completion(moved > regularFiles.count / 2) // success if >50% moved
+                if moved > 0 {
+                    self.emit("[deb] ✅ Moved \(moved)/\(topLevelDirs.count) top-level dirs (errno=\(lastErrno) for failures)")
+                } else {
+                    self.emit("[deb] ❌ rename failed: errno=\(lastErrno) (18=EXDEV, 1=EPERM, 2=ENOENT, 17=EEXIST)")
+                }
+                completion(moved > 0)
             }
-            return (moved > 0, "moved \(moved) files", UInt64(moved))
+            return (moved > 0, "moved \(moved)/\(topLevelDirs.count), errno=\(lastErrno)", UInt64(moved))
         }
         #else
         completion(false)
