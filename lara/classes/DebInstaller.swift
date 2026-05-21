@@ -73,15 +73,15 @@ final class DebInstaller {
             tarData = dataTar.data
         }
         
-        // Step 4: Try fast path (extractor binary) first, fallback to manual
+        // Step 4: Try fast path (extractor binary) first, fallback to batch write
         emit("[deb] Attempting fast install via extractor...")
         installViaExtractor(tarData: tarData, name: name) { [weak self] success in
             if success {
                 self?.emit("[deb] ✅ Fast install complete")
                 self?.runUicache { completion(true, 1) }
             } else {
-                self?.emit("[deb] Extractor failed — using manual install...")
-                self?.manualWriteFromTar(tarData: tarData, name: name, completion: completion)
+                self?.emit("[deb] Extractor unavailable — using batch write (~2 min)...")
+                self?.batchWriteFromTar(tarData: tarData, name: name, completion: completion)
             }
         }
     }
@@ -310,6 +310,151 @@ final class DebInstaller {
     }
     
     // MARK: - Slow Path: Manual per-file write (fallback)
+    
+    /// BATCH WRITE: Group small files together, max 1.5MB per launchd call.
+    /// Proven safe: 2MB write in single call works (tar write test).
+    /// 1.5MB = ~0.5s per call. 33MB total = ~22 calls = ~55 seconds.
+    private func batchWriteFromTar(tarData: Data, name: String, completion: @escaping (Bool, Int) -> Void) {
+        let files = parseTar(data: tarData)
+        guard !files.isEmpty else {
+            emit("[deb] ❌ No files in tar")
+            completion(false, 0)
+            return
+        }
+        
+        let dirs = files.filter { $0.isDirectory }
+        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
+        
+        // Build batches: group files until total size reaches 1.5MB
+        let maxBatchBytes = 1536 * 1024 // 1.5MB
+        var batches: [[TarFile]] = []
+        var currentBatch: [TarFile] = []
+        var currentSize = 0
+        
+        for file in regularFiles {
+            if file.data.count > maxBatchBytes {
+                // Large file gets its own batch(es) — handled separately
+                if !currentBatch.isEmpty {
+                    batches.append(currentBatch)
+                    currentBatch = []
+                    currentSize = 0
+                }
+                batches.append([file]) // will be split in writeBatch
+            } else if currentSize + file.data.count > maxBatchBytes {
+                batches.append(currentBatch)
+                currentBatch = [file]
+                currentSize = file.data.count
+            } else {
+                currentBatch.append(file)
+                currentSize += file.data.count
+            }
+        }
+        if !currentBatch.isEmpty { batches.append(currentBatch) }
+        
+        let etaSec = (batches.count + 2) * 3
+        emit("[deb] Batch install: \(dirs.count) dirs + \(regularFiles.count) files in \(batches.count) batches")
+        emit("[deb] ⏱ Estimated: ~\(etaSec / 60)m \(etaSec % 60)s")
+        
+        // Phase 1: Create all directories (1 call)
+        emit("[deb] Creating directories...")
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "mkdirs") { rc in
+            for dir in dirs {
+                let p = remote_alloc_str(rc, "/var/jb/\(dir.path)")
+                RootExecutor.rcall(rc, "mkdir", p, 0o755)
+                RootExecutor.rcall(rc, "free", p)
+            }
+            return (true, "\(dirs.count) dirs", 0)
+        }
+        
+        // Phase 2: Write file batches
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            self.emit("[deb] Writing files in batches...")
+            self.writeBatchSequentially(batches: batches, index: 0, installed: dirs.count, startTime: Date(), completion: completion)
+        }
+        #else
+        completion(false, 0)
+        #endif
+    }
+    
+    private func writeBatchSequentially(batches: [[TarFile]], index: Int, installed: Int, startTime: Date, completion: @escaping (Bool, Int) -> Void) {
+        #if !DISABLE_REMOTECALL
+        guard index < batches.count else {
+            emit("[deb] ✅ Done: \(installed) items installed")
+            runUicache { completion(true, installed) }
+            return
+        }
+        
+        let batch = batches[index]
+        let batchSize = batch.reduce(0) { $0 + $1.data.count }
+        
+        // Large file (>1.5MB): use split write
+        if batch.count == 1 && batch[0].data.count > 1536 * 1024 {
+            let file = batch[0]
+            emit("[deb] Large: \(file.path) (\(file.data.count / 1024)KB)")
+            writeLargeFile(path: "/var/jb/\(file.path)", data: file.data, mode: file.mode) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    self.writeBatchSequentially(batches: batches, index: index + 1, installed: installed + 1, startTime: startTime, completion: completion)
+                }
+            }
+            return
+        }
+        
+        // Normal batch: write all files in single launchd call
+        root.executeAsRoot(operation: "batch_\(index)") { rc in
+            var written = 0
+            for file in batch {
+                let fullPath = "/var/jb/\(file.path)"
+                
+                // Ensure parent
+                let parent = (fullPath as NSString).deletingLastPathComponent
+                let parentAddr = remote_alloc_str(rc, parent)
+                RootExecutor.rcall(rc, "mkdir", parentAddr, 0o755)
+                RootExecutor.rcall(rc, "free", parentAddr)
+                
+                // Write file
+                let pathAddr = remote_alloc_str(rc, fullPath)
+                let fd = RootExecutor.rcall(rc, "open", pathAddr,
+                    UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
+                if fd != UInt64(bitPattern: -1) {
+                    let writeAddr = rc.trojanMem + 0x800
+                    var w = 0
+                    file.data.withUnsafeBytes { buf in
+                        while w < file.data.count {
+                            let chunk = min(file.data.count - w, 0x1000)
+                            rc.remote_write(writeAddr, from: buf.baseAddress!.advanced(by: w), size: UInt64(chunk))
+                            let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
+                            if n == 0 || n == UInt64(bitPattern: -1) { break }
+                            w += Int(n)
+                        }
+                    }
+                    RootExecutor.rcall(rc, "close", fd)
+                    RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
+                    written += 1
+                }
+                RootExecutor.rcall(rc, "free", pathAddr)
+            }
+            return (true, "batch \(index): \(written) files, \(batchSize/1024)KB", UInt64(written))
+        }
+        
+        // ETA every 5 batches
+        if index % 5 == 0 && index > 0 {
+            let elapsed = Date().timeIntervalSince(startTime)
+            let perBatch = elapsed / Double(index)
+            let remaining = Double(batches.count - index) * perBatch
+            let remMin = Int(remaining) / 60
+            let remSec = Int(remaining) % 60
+            emit("[deb] Batch \(index)/\(batches.count) — ~\(remMin)m \(remSec)s left")
+        }
+        
+        // 2.5s delay between batches
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            self.writeBatchSequentially(batches: batches, index: index + 1, installed: installed + batch.count, startTime: startTime, completion: completion)
+        }
+        #else
+        completion(false, 0)
+        #endif
+    }
     
     private func manualWriteFromTar(tarData: Data, name: String, completion: @escaping (Bool, Int) -> Void) {
         let files = parseTar(data: tarData)
