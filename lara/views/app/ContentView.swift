@@ -14,7 +14,6 @@ struct ContentView: View {
     
     @State private var showSettings = false
     @State private var showGuide = false
-    @State private var pulseAnimation = false
     @State private var ringRotation: Double = 0
 
     init() { globallogger.capture() }
@@ -151,9 +150,6 @@ struct ContentView: View {
                 Image(systemName: statusIcon)
                     .font(.system(size: 36, weight: .medium))
                     .foregroundStyle(statusGradient)
-                    .scaleEffect(pulseAnimation && jb.isRunning ? 1.1 : 1.0)
-                    .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: pulseAnimation)
-                    .onAppear { pulseAnimation = true }
                 
                 Text(statusText)
                     .font(.system(size: 13, weight: .semibold))

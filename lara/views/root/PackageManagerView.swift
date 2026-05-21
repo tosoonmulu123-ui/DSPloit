@@ -116,7 +116,11 @@ struct PackageManagerView: View {
                 }
             }
         }
-        .onAppear { checkBootstrap() }
+        .onAppear {
+            if mgr.rcready {
+                checkBootstrap()
+            }
+        }
         .sheet(isPresented: $showLog) { logSheet }
         .alert("Add Repository", isPresented: $showAddRepo) {
             TextField("https://repo.example.com", text: $newRepoURL)
