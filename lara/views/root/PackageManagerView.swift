@@ -65,6 +65,8 @@ struct PackageManagerView: View {
     }
     
     static let defaultRepos: [RepoInfo] = [
+        RepoInfo(name: "TIGI Software", url: "http://tigisoftware.com/repo", icon: "folder.circle.fill"),
+        RepoInfo(name: "Sileo", url: "https://repo.getsileo.app", icon: "shippingbox.circle.fill"),
         RepoInfo(name: "Chariz", url: "https://repo.chariz.com", icon: "star.circle.fill"),
         RepoInfo(name: "Havoc", url: "https://havoc.app", icon: "bolt.circle.fill"),
         RepoInfo(name: "BigBoss", url: "https://apt.thebigboss.org/repofiles/cydia", icon: "building.2.fill"),
@@ -199,17 +201,21 @@ struct PackageManagerView: View {
             // Quick install section
             Section("Quick Install") {
                 quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
-                    installFromURL(name: "Filza", url: "https://github.com/NitoTV/Bootstrap/releases/download/v1.0/com.tigisoftware.Filza_3.9.8-2_iphoneos-arm64.deb")
+                    installFromURL(name: "Filza", url: "http://tigisoftware.com/repo/debs/com.tigisoftware.Filza64_4.0.2-1_iphoneos-arm64.deb")
                 }
                 quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
-                    installFromURL(name: "Sileo", url: "https://github.com/Sileo/Sileo/releases/latest/download/org.coolstar.sileo_2.6_iphoneos-arm64.deb")
+                    installFromURL(name: "Sileo", url: "https://repo.getsileo.app/debs/org.coolstar.sileo_2.5_iphoneos-arm64.deb")
                 }
                 quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
                     installFromURL(name: "Ellekit", url: "https://ellekit.space/ellekit.deb")
                 }
                 quickInstallRow("PreferenceLoader", "Settings integration", "gear", .gray) {
-                    installFromURL(name: "PreferenceLoader", url: "https://apt.thebigboss.org/repofiles/cydia/debs/preferenceloader.deb")
+                    installFromURL(name: "PreferenceLoader", url: "https://apt.thebigboss.org/repofiles/cydia/debs2.0/preferenceloader_2.2.6-1_iphoneos-arm.deb")
                 }
+                
+                Text("If download fails, add the repo in Sources tab and install from there.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
