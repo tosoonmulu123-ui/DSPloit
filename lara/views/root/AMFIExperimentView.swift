@@ -1789,9 +1789,9 @@ struct AMFIExperimentView: View {
     /// Stub: expTrustCacheWrite — implementasi asli dihapus (KTRR protected)
     /// Sekarang pakai TrustCacheInjector.m yang sudah di-fix offset-nya
     private func expTrustCacheWrite(rc: RemoteCall?, dryRun: Bool) -> ExperimentResult {
-        let result = Int32(tc_injector_write_test())
+        let result = tc_injector_write_test()
         let log = String(cString: tc_injector_last_log())
-        let success = result == 0 // TCInject_OK
+        let success = result == TCInject_OK
         return ExperimentResult(name: "TC Write Test (Exp 79)", success: success, detail: log, timestamp: Date())
     }
 
@@ -1802,11 +1802,10 @@ struct AMFIExperimentView: View {
 
     /// Stub: expInjectCDHash — delegates ke TrustCacheInjector
     private func expInjectCDHash() -> ExperimentResult {
-        // Inject dummy CDHash untuk test
         var dummyHash: [UInt8] = Array(repeating: 0x41, count: 20)
-        let result = Int32(tc_injector_inject_cdhash(&dummyHash, 0))
+        let result = tc_injector_inject_cdhash(&dummyHash, 0)
         let log = String(cString: tc_injector_last_log())
-        let success = result == 6 // TCInject_InjectOK
+        let success = result == TCInject_InjectOK
         return ExperimentResult(name: "TC CDHash Inject (Exp 79)", success: success, detail: log, timestamp: Date())
     }
 
