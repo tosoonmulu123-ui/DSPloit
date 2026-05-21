@@ -109,6 +109,20 @@
 - Update conversation.md setiap batch
 - Komunikasi Bahasa Indonesia
 
+## 7. Exp 100 Fix — TC Load XPC
+
+**Problem:** Exp 100 menyebabkan **kernel panic** (`initproc exited -- exit reason namespace 2 subcode 0x5`).
+
+**Root cause:** XPC connections dipanggil dari **launchd (PID 1)** via RemoteCall. Launchd adalah XPC service manager — ketika dia mencoba `xpc_connection_create_mach_service` ke service yang dia sendiri manage (MobileStorageMounter, cryptexd, mobileassetd), ini menyebabkan deadlock/fatal error. Launchd exit → kernel panic karena PID 1 tidak boleh exit.
+
+**Fix:** Pindah semua XPC operations ke **SpringBoard RC**. SpringBoard adalah normal XPC client, bukan service manager, jadi aman untuk connect ke services tanpa deadlock.
+
+**Changes:**
+- `runExp100TCLoadXPC()` sekarang pakai `dspmgr.shared.sbProc` (SpringBoard RC)
+- File write, XPC connect, amfi_load_trust_cache, dan spawn test semua via SB RC
+- Tidak ada operasi yang menyentuh launchd → no more initproc panic
+- Button UI renamed: "③v TC Load XPC via SB (Exp 100)"
+
 ## 7. Exp 92 — Final Confirmation (Kernel Panic)
 
 **Exp 92 (TC Inject)** menulis test value `0x4141414141414141` ke trust cache slot di `0xfffffff0198819b4`.
