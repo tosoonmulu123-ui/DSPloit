@@ -1,21 +1,22 @@
 /*
- * extractor — Minimal plain tar extractor for iOS
- * 
- * Usage: extractor <input.tar> <output_dir>
- * 
- * Reads an UNCOMPRESSED tar archive and extracts all files to output_dir.
- * No dependencies (no zlib needed — gzip decompression done by caller).
- * Statically linked Mach-O arm64 binary.
+ * extractor.c — Tar extractor for iOS (ARM64 Mach-O)
  *
- * Compile with zig:
- *   zig cc -target aarch64-macos -O2 -o extractor extractor.c
+ * STATUS: Cannot compile for iOS from Linux.
+ * - zig cc -target aarch64-macos works but iOS rejects macOS binaries (EPERM)
+ * - zig cc -target aarch64-ios needs iOS SDK with .tbd support (zig can't parse .tbd)
+ * - Need macOS with Xcode to compile proper iOS binary
+ *
+ * WORKAROUND: DebInstaller uses manual per-file write via launchd (1s delay).
+ * If you have access to macOS, compile with:
+ *   xcrun -sdk iphoneos clang -arch arm64 -O2 -o extractor extractor_full.c
+ *
+ * The compiled binary should be placed in the app bundle as a resource.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -27,13 +28,8 @@ static void mkdirp(const char *path, mode_t mode) {
     snprintf(tmp, sizeof(tmp), "%s", path);
     size_t len = strlen(tmp);
     if (len > 0 && tmp[len - 1] == '/') tmp[len - 1] = 0;
-    
     for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = 0;
-            mkdir(tmp, mode);
-            *p = '/';
-        }
+        if (*p == '/') { *p = 0; mkdir(tmp, mode); *p = '/'; }
     }
     mkdir(tmp, mode);
 }
@@ -53,50 +49,35 @@ static unsigned long octal(const char *s, int n) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        write(2, "Usage: extractor <tar> <dir>\n", 28);
-        return 1;
-    }
+    if (argc != 3) { write(2, "Usage: extractor <tar> <dir>\n", 28); return 1; }
     
     int fd_in = open(argv[1], O_RDONLY);
     if (fd_in < 0) return 2;
-    
     mkdirp(argv[2], 0755);
     
     unsigned char hdr[TAR_BLOCK];
     int files = 0, dirs = 0;
     
     while (read(fd_in, hdr, TAR_BLOCK) == TAR_BLOCK) {
-        /* End of archive */
         int zero = 1;
         for (int i = 0; i < TAR_BLOCK; i++) if (hdr[i]) { zero = 0; break; }
         if (zero) break;
         
-        char name[101] = {0};
-        memcpy(name, hdr, 100);
+        char name[101] = {0}; memcpy(name, hdr, 100);
         unsigned long mode = octal((char*)hdr + 100, 8);
         unsigned long size = octal((char*)hdr + 124, 12);
         char type = hdr[156];
-        char prefix[156] = {0};
-        memcpy(prefix, hdr + 345, 155);
+        char prefix[156] = {0}; memcpy(prefix, hdr + 345, 155);
         
-        /* Skip pax headers */
         if (type == 'x' || type == 'g') {
             unsigned long blocks = (size + TAR_BLOCK - 1) / TAR_BLOCK;
             for (unsigned long i = 0; i < blocks; i++) read(fd_in, hdr, TAR_BLOCK);
             continue;
         }
         
-        /* Build path */
         char path[2048];
-        if (prefix[0])
-            snprintf(path, sizeof(path), "%s/%s/%s", argv[2], prefix, name);
-        else
-            snprintf(path, sizeof(path), "%s/%s", argv[2], name);
-        
-        /* Remove leading ./ from name portion */
-        char *p = strstr(path + strlen(argv[2]) + 1, "./");
-        /* (skip — path already includes output_dir prefix) */
+        if (prefix[0]) snprintf(path, sizeof(path), "%s/%s/%s", argv[2], prefix, name);
+        else snprintf(path, sizeof(path), "%s/%s", argv[2], name);
         
         if (type == '5' || (name[0] && name[strlen(name)-1] == '/')) {
             mkdirp(path, mode ? (mode_t)mode : 0755);
@@ -117,11 +98,9 @@ int main(int argc, char *argv[]) {
                 close(fd_out);
                 chmod(path, mode ? (mode_t)mode : 0644);
                 files++;
-                /* Skip padding */
                 unsigned long pad = (TAR_BLOCK - (size % TAR_BLOCK)) % TAR_BLOCK;
                 if (pad) read(fd_in, buf, (int)pad);
             } else {
-                /* Skip */
                 unsigned long blocks = (size + TAR_BLOCK - 1) / TAR_BLOCK;
                 for (unsigned long i = 0; i < blocks; i++) read(fd_in, hdr, TAR_BLOCK);
             }
@@ -132,8 +111,6 @@ int main(int argc, char *argv[]) {
     }
     
     close(fd_in);
-    
-    /* Signal success */
     char result[64];
     int len = snprintf(result, sizeof(result), "OK:%d:%d\n", files, dirs);
     write(1, result, len);

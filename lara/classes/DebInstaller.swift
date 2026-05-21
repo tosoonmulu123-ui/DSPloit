@@ -74,13 +74,13 @@ final class DebInstaller {
         }
         
         // Step 4: Try fast path (extractor binary) first, fallback to manual
-        emit("[deb] Attempting fast install via extractor binary...")
+        emit("[deb] Attempting fast install via extractor...")
         installViaExtractor(tarData: tarData, name: name) { [weak self] success in
             if success {
                 self?.emit("[deb] ✅ Fast install complete")
                 self?.runUicache { completion(true, 1) }
             } else {
-                self?.emit("[deb] Extractor failed — using manual install (slower)...")
+                self?.emit("[deb] Extractor failed — using manual install...")
                 self?.manualWriteFromTar(tarData: tarData, name: name, completion: completion)
             }
         }
@@ -414,8 +414,8 @@ final class DebInstaller {
             emit("[deb] Progress: \(index + 1)/\(files.count)")
         }
         
-        // 1.5s delay between files — safe from watchdog with queue guard
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        // 1s delay between files — proven safe with queue guard
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, total: total, startTime: startTime, completion: completion)
         }
         #else
