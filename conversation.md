@@ -272,3 +272,118 @@ Konfirmasi: hanya AMFI __DATA (0x541 bytes) yang writable. Semua segment lain KT
 - AMFI __TEXT_EXEC: `0xfffffff008f78e70` (MOV W0,#0; RET)
 - Kernel __TEXT_EXEC: `0xfffffff007d90074` (dan 4 lainnya)
 - Tapi tidak bisa dipakai karena __DATA_CONST (tempat function pointers) KTRR protected
+
+## 18. Exp 97 Result — amfid Race GAGAL
+
+**Hasil:** posix_spawn ret=0, pid=561, tapi tetap SIGKILL.
+- amfid berhasil di-kill (PID 54)
+- Spawn immediate setelah kill → ret=0 (berhasil spawn)
+- Tapi child tetap SIGKILL (signal=9)
+- amfid belum restart saat spawn terjadi
+
+**Konfirmasi:** SIGKILL datang dari KERNEL langsung (`mac_proc_check_run_cs_invalid`), BUKAN dari amfid. Kernel enforce CDHash validation secara independen tanpa menunggu amfid response.
+
+## 19. Exp 98 — CoreTrust __DATA WRITABLE! ✅
+
+**BREAKTHROUGH #2:** CoreTrust fileset component `__DATA` juga WRITABLE!
+
+```
+CoreTrust __DATA (unslid): 0xfffffff00a3b1230
+CoreTrust __DATA size: 0xe8 (232 bytes)
+```
+
+- Write test: tulis `0xdeadbeef12345678` ke `+0x40`, baca kembali → SUKSES!
+- CoreTrust __DATA ada di VA range yang sama dengan AMFI __DATA
+- Kedua fileset component __DATA di luar KTRR protection
+
+**Non-zero slots di CoreTrust __DATA:**
+```
++0x00: 0 (zero)
++0x08: 0xffffffff00000001
++0x10: "com.apple.kext.CoreTrust" (ASCII string)
++0x50: "1.0.0d1" (version string)
++0x90: 0xffffffff
++0x98-0xd0: metadata/struct data
+```
+
+## 20. Exp 99 — AMFI IOKit → RESPRING
+
+Exp 99 (AMFI IOKit deep probe) menyebabkan **respring** (bukan panic).
+- Salah satu IOKit method call crash SpringBoard
+- Ini berarti method "melakukan sesuatu" yang signifikan
+- Perlu investigate method mana yang trigger crash
+
+## 21. Exp 98b — CoreTrust Patch + Spawn (IMPLEMENTED)
+
+**Strategi:** Zero-out CoreTrust __DATA + disable AMFI flags → test spawn.
+- Baseline: spawn dari `/var/containers/Bundle/` → SIGKILL (confirmed)
+- Patch: zero CoreTrust __DATA + AMFI flags → spawn lagi
+- Juga test: CT-only patch (tanpa AMFI flags)
+- Restore semua setelah test
+
+**Hipotesis:** Kalau CoreTrust globals kontrol certificate validation,
+zeroing them → validation disabled → binary accepted → NO SIGKILL.
+
+**Realitas:** Kemungkinan besar masih SIGKILL karena:
+- CDHash validation terjadi di kernel level (pmap_cs)
+- CoreTrust hanya dipanggil via amfid (userspace path)
+- Kernel SIGKILL terjadi SEBELUM CoreTrust dipanggil
+
+## 22. Status Semua Writable Memory
+
+| Segment | VA (unslid) | Size | Writable | Useful? |
+|---------|-------------|------|----------|---------|
+| AMFI __DATA | 0xfffffff00a330098 | 0x541 | ✅ | ❌ (bukan enforcement) |
+| CoreTrust __DATA | 0xfffffff00a3b1230 | 0xe8 | ✅ | ❓ (testing) |
+| AMFI __DATA_CONST | 0xfffffff007b77a98 | 0x6280 | ❌ PANIC | - |
+| Kernel __DATA | 0xfffffff00a0e0000 | large | ❌ PANIC | - |
+| Kernel heap | zone allocator | varies | ✅ | ❌ (proc_ro RO) |
+
+## 23. Remaining Viable Approaches
+
+1. **Exp 98b** — CoreTrust __DATA patch + spawn (testing sekarang)
+2. **AMFI IOKit exploit** — find bug di method yang crash SB (Exp 99 variant)
+3. **Kernel function call** — panggil trust_cache_runtime_add dari kernel context
+4. **CoreTrust certificate craft** — reverse engineer CT validation, craft accepted cert
+
+## 24. Full Reverse Engineering — Temuan Critical
+
+**Binary yang di-extract dan di-reverse engineer:**
+amfid, trustd, securityd, launchd, dyld, xpcproxy, keybagd, mobileassetd, 
+MobileStorageMounter, cryptexd, installd, lockdownd, profiled, runningboardd, 
+containermanagerd, provisiond, adid, lsd, notifyd, OTATaskingAgent, applekeystored
+
+**TEMUAN PALING CRITICAL:**
+
+### MobileStorageMounter — BISA LOAD TRUST CACHE!
+Entitlements:
+- `com.apple.private.amfi.can-load-trust-cache`
+- `com.apple.private.pmap.load-trust-cache`
+- `com.apple.private.security.cryptex.install`
+- Working dir: `/private/var/tmp/com.apple.mobile_storage_mounter/`
+- XPC: `com.apple.mobile.storage_mounter`
+
+### mobileassetd — BISA LOAD TRUST CACHE!
+Entitlements:
+- `com.apple.private.pmap.load-trust-cache`
+- `com.apple.private.img4.nonce.cryptex1.asset`
+- Function: `loadTrustCache:bundle:bundleName:needsUnlock:`
+- Panggil `amfi_load_trust_cache()`
+
+### cryptexd — Trust Cache Manager
+- XPC: `com.apple.security.cryptexd`
+- Function: `amfi_load_trust_cache` (5 xrefs!)
+- Entitlement: `com.apple.private.security.cryptex.install`
+- `trustcache file transfer` function ditemukan
+
+### Blocker: Image4 Personalization
+Trust cache harus di-sign oleh Apple TSS server (personalized).
+Tanpa valid Image4 signature → kernel reject.
+TAPI: apakah ada unpersonalized path?
+
+## 25. Next Experiments (Exp 100+)
+
+- **Exp 100**: Trigger MobileStorageMounter trust cache load via XPC
+- **Exp 101**: Trigger mobileassetd loadTrustCache via XPC
+- **Exp 102**: Write fake TC ke `/private/var/tmp/com.apple.mobile_storage_mounter/`
+- **Exp 103**: Trigger cryptexd trust cache load via XPC
