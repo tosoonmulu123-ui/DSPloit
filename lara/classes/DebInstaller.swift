@@ -162,12 +162,6 @@ final class DebInstaller {
             return data
         }
         
-        // Use Apple's Compression framework
-        // Skip gzip header (10 bytes minimum) and decompress deflate stream
-        var decompressed = Data()
-        let bufferSize = 65536
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        
         // Find deflate data start (skip gzip header)
         var headerEnd = 10
         let flags = data[3]
@@ -189,24 +183,40 @@ final class DebInstaller {
         
         guard headerEnd < data.count else { return nil }
         
-        let compressed = Data(data[headerEnd..<(data.count - 8)]) // strip gzip footer
+        let compressed = Data(data[headerEnd..<(data.count - 8)]) // strip gzip footer (8 bytes: CRC32 + ISIZE)
         
-        // Use Compression framework for raw deflate
-        let srcSize = compressed.count
-        let dstSize = srcSize * 10
-        var dst = [UInt8](repeating: 0, count: dstSize)
+        // Streaming decompression for large files (Filza .deb can be 50MB+)
         var src = [UInt8](compressed)
+        let srcSize = src.count
         
-        let result = compression_decode_buffer(
-            &dst, dstSize,
-            &src, srcSize,
-            nil,
-            COMPRESSION_ZLIB
-        )
+        // Start with 4x estimate, grow if needed
+        var dstCapacity = srcSize * 4
+        if dstCapacity < 1024 * 1024 { dstCapacity = 4 * 1024 * 1024 } // min 4MB
         
-        if result > 0 {
-            return Data(dst.prefix(result))
+        // Try decompression, double buffer if it fills up
+        for attempt in 0..<4 {
+            var dst = [UInt8](repeating: 0, count: dstCapacity)
+            let result = compression_decode_buffer(
+                &dst, dstCapacity,
+                &src, srcSize,
+                nil,
+                COMPRESSION_ZLIB
+            )
+            
+            if result > 0 && result < dstCapacity {
+                // Success — didn't fill the buffer
+                return Data(dst.prefix(result))
+            } else if result == dstCapacity {
+                // Buffer was exactly filled — likely truncated, try bigger
+                dstCapacity *= 2
+                emit("[deb] Gzip buffer full, retrying with \(dstCapacity / 1024 / 1024)MB (attempt \(attempt + 2))")
+            } else {
+                // Decompression failed
+                break
+            }
         }
+        
+        emit("[deb] ⚠️ Gzip decompression failed after retries")
         return nil
     }
     
@@ -291,46 +301,119 @@ final class DebInstaller {
     }
     
     // MARK: - File Installation (via root)
+    //
+    // CRITICAL FIX: launchd is PID 1 — holding its thread >5s triggers watchdog panic.
+    // Previous approach: 15 files per launchd connection → easily exceeds 5s on large .debs.
+    // New approach:
+    //   - Directories: batch up to 20 per connection (mkdir is instant)
+    //   - Files: max 3 per connection (write is slow due to chunk copy)
+    //   - Large files (>16KB): 1 per connection with chunked write
+    //   - 1.5s delay between batches (enough for launchd to breathe)
+    //
     
     private func installFiles(files: [TarFile], prefix: String, completion: @escaping (Int) -> Void) {
         #if !DISABLE_REMOTECALL
-        // Sort: directories first, then files
-        let sorted = files.sorted { a, b in
-            if a.isDirectory != b.isDirectory { return a.isDirectory }
-            return a.path < b.path
-        }
+        // Separate directories and files
+        let directories = files.filter { $0.isDirectory }.sorted { $0.path < $1.path }
+        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }.sorted { $0.path < $1.path }
         
-        // Install in batches to avoid watchdog kill on launchd
-        let batchSize = 15
         var installed = 0
-        var batchIndex = 0
-        let batches = stride(from: 0, to: sorted.count, by: batchSize).map {
-            Array(sorted[$0..<min($0 + batchSize, sorted.count)])
+        
+        // Phase 1: Create all directories (fast — batch 20 at a time)
+        let dirBatchSize = 20
+        let dirBatches = stride(from: 0, to: directories.count, by: dirBatchSize).map {
+            Array(directories[$0..<min($0 + dirBatchSize, directories.count)])
         }
         
-        func installBatch() {
-            guard batchIndex < batches.count else {
-                completion(installed)
+        var dirBatchIndex = 0
+        
+        func installDirBatch() {
+            guard dirBatchIndex < dirBatches.count else {
+                // Phase 1 done → start Phase 2
+                emit("[deb] ✅ Created \(installed) directories")
+                installFilePhase()
                 return
             }
             
-            let batch = batches[batchIndex]
-            batchIndex += 1
+            let batch = dirBatches[dirBatchIndex]
+            dirBatchIndex += 1
             
-            root.executeAsRoot(operation: "install_batch_\(batchIndex)") { [self] rc in
-                for file in batch {
-                    let fullPath = "\(prefix)/\(file.path)"
+            root.executeAsRoot(operation: "mkdir_batch_\(dirBatchIndex)") { [self] rc in
+                for dir in batch {
+                    let fullPath = "\(prefix)/\(dir.path)"
                     let pathAddr = remote_alloc_str(rc, fullPath)
-                    
-                    if file.isDirectory {
-                        RootExecutor.rcall(rc, "mkdir", pathAddr, UInt64(file.mode) | 0o755)
-                        installed += 1
-                    } else if !file.data.isEmpty {
-                        // Write file
+                    RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+                    RootExecutor.rcall(rc, "free", pathAddr)
+                    installed += 1
+                }
+                return (true, "dirs \(dirBatchIndex)", UInt64(installed))
+            }
+            
+            // Short delay — mkdir is fast, launchd barely notices
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                installDirBatch()
+            }
+        }
+        
+        // Phase 2: Write files (slow — small batches)
+        var fileBatchIndex = 0
+        
+        // Split files into safe batches:
+        // - Large files (>16KB): 1 per batch
+        // - Small files (<=16KB): up to 3 per batch
+        func makeFileBatches() -> [[TarFile]] {
+            var batches: [[TarFile]] = []
+            var currentBatch: [TarFile] = []
+            var currentBatchBytes = 0
+            let maxBatchFiles = 3
+            let maxBatchBytes = 32 * 1024 // 32KB total per batch
+            let largeCutoff = 16 * 1024   // 16KB = "large" file
+            
+            for file in regularFiles {
+                if file.data.count > largeCutoff {
+                    // Large file gets its own batch
+                    if !currentBatch.isEmpty {
+                        batches.append(currentBatch)
+                        currentBatch = []
+                        currentBatchBytes = 0
+                    }
+                    batches.append([file])
+                } else if currentBatch.count >= maxBatchFiles || (currentBatchBytes + file.data.count) > maxBatchBytes {
+                    // Current batch is full
+                    batches.append(currentBatch)
+                    currentBatch = [file]
+                    currentBatchBytes = file.data.count
+                } else {
+                    currentBatch.append(file)
+                    currentBatchBytes += file.data.count
+                }
+            }
+            if !currentBatch.isEmpty { batches.append(currentBatch) }
+            return batches
+        }
+        
+        func installFilePhase() {
+            let fileBatches = makeFileBatches()
+            emit("[deb] Installing \(regularFiles.count) files in \(fileBatches.count) batches...")
+            
+            func installFileBatch() {
+                guard fileBatchIndex < fileBatches.count else {
+                    completion(installed)
+                    return
+                }
+                
+                let batch = fileBatches[fileBatchIndex]
+                fileBatchIndex += 1
+                
+                root.executeAsRoot(operation: "file_batch_\(fileBatchIndex)") { [self] rc in
+                    for file in batch {
+                        let fullPath = "\(prefix)/\(file.path)"
+                        let pathAddr = remote_alloc_str(rc, fullPath)
+                        
                         let fd = RootExecutor.rcall(rc, "open", pathAddr,
                             UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
+                        
                         if fd != UInt64(bitPattern: -1) {
-                            // Write in chunks
                             let writeAddr = rc.trojanMem + 0x800
                             var written = 0
                             file.data.withUnsafeBytes { buffer in
@@ -345,28 +428,30 @@ final class DebInstaller {
                                 }
                             }
                             RootExecutor.rcall(rc, "close", fd)
-                            
-                            // chmod
                             RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
                             installed += 1
                         }
+                        
+                        RootExecutor.rcall(rc, "free", pathAddr)
                     }
-                    RootExecutor.rcall(rc, "free", pathAddr)
+                    
+                    DispatchQueue.main.async {
+                        self.emit("[deb] Batch \(fileBatchIndex)/\(fileBatches.count) done (\(installed) files total)")
+                    }
+                    return (true, "files \(fileBatchIndex)", UInt64(installed))
                 }
                 
-                DispatchQueue.main.async {
-                    self.emit("[deb] Batch \(batchIndex)/\(batches.count) done (\(installed) files)")
+                // 2s delay between file batches — gives launchd time to reset watchdog
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    installFileBatch()
                 }
-                return (true, "batch \(batchIndex)", UInt64(installed))
             }
             
-            // Wait for batch to complete, then do next
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-                installBatch()
-            }
+            installFileBatch()
         }
         
-        installBatch()
+        // Start Phase 1
+        installDirBatch()
         #else
         completion(0)
         #endif
