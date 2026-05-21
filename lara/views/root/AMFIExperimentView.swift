@@ -5900,7 +5900,7 @@ struct AMFIExperimentView: View {
         detail += "mmap(RW, PRIVATE|ANON): 0x\(String(format: "%llx", mmapA))\n"
 
         if mmapA != MAP_FAILED && mmapA != 0 {
-            detail += "  \u2705 mmap OK\n"
+            detail += "  ✅ mmap OK\n"
 
             // Write shellcode
             sb[mmapA].setValue32(shellcode_mov_x0_42)
@@ -5913,7 +5913,7 @@ struct AMFIExperimentView: View {
             detail += "  mprotect(RX): ret=\(mprotRet), errno=\(mprotErr)\n"
 
             if mprotRet == 0 {
-                detail += "  \u2705 mprotect(RX) SUCCESS!\n\n"
+                detail += "  ✅ mprotect(RX) SUCCESS!\n\n"
 
                 // Call shellcode as function pointer!
                 // rcallAddr calls a function pointer directly
@@ -5921,18 +5921,18 @@ struct AMFIExperimentView: View {
                 detail += "  CALL shellcode: ret=\(result)\n"
 
                 if result == 42 {
-                    detail += "\n\ud83c\udfc6\ud83c\udfc6\ud83c\udfc6 SHELLCODE EXECUTED! Return = 42! \ud83c\udfc6\ud83c\udfc6\ud83c\udfc6\n\n"
+                    detail += "\n🏆🏆🏆 SHELLCODE EXECUTED! Return = 42! 🏆🏆🏆\n\n"
                     detail += "JIT CODE EXECUTION IN SPRINGBOARD!\n"
                     detail += "Arbitrary ARM64 code runs in trusted process!\n\n"
                     detail += "FULL JAILBREAK ACHIEVED!\n"
-                    detail += "  \u2192 Bisa execute code apapun tanpa spawn binary\n"
-                    detail += "  \u2192 Bisa inject ke proses lain via mach ports\n"
-                    detail += "  \u2192 Bisa load unsigned dylib via manual mapping\n"
+                    detail += "  → Bisa execute code apapun tanpa spawn binary\n"
+                    detail += "  → Bisa inject ke proses lain via mach ports\n"
+                    detail += "  → Bisa load unsigned dylib via manual mapping\n"
                 } else {
-                    detail += "  \u26a0\ufe0f Return bukan 42 (got \(result)) \u2014 mungkin crash/abort\n"
+                    detail += "  ⚠️ Return bukan 42 (got \(result)) \u2014 mungkin crash/abort\n"
                 }
             } else {
-                detail += "  \u274c mprotect gagal (errno=\(mprotErr))\n"
+                detail += "  ❌ mprotect gagal (errno=\(mprotErr))\n"
                 if mprotErr == 1 { detail += "  EPERM \u2014 W^X enforced tanpa MAP_JIT\n" }
                 if mprotErr == 12 { detail += "  ENOMEM\n" }
             }
@@ -5940,7 +5940,7 @@ struct AMFIExperimentView: View {
             // Cleanup
             RootExecutor.rcall(sb, "munmap", mmapA, PAGE_SIZE)
         } else {
-            detail += "  \u274c mmap gagal\n"
+            detail += "  ❌ mmap gagal\n"
         }
 
         // ═══ TEST B: mmap dengan MAP_JIT flag ═══
@@ -5954,7 +5954,7 @@ struct AMFIExperimentView: View {
         detail += "mmap(RW, MAP_JIT): 0x\(String(format: "%llx", mmapB))\n"
 
         if mmapB != MAP_FAILED && mmapB != 0 {
-            detail += "  \u2705 mmap MAP_JIT OK!\n"
+            detail += "  ✅ mmap MAP_JIT OK!\n"
 
             // Write shellcode
             sb[mmapB].setValue32(shellcode_mov_x0_42)
@@ -5966,24 +5966,24 @@ struct AMFIExperimentView: View {
             detail += "  mprotect(RX): ret=\(mprotB), errno=\(mprotBErr)\n"
 
             if mprotB == 0 {
-                detail += "  \u2705 mprotect(RX) with MAP_JIT SUCCESS!\n"
+                detail += "  ✅ mprotect(RX) with MAP_JIT SUCCESS!\n"
 
                 let result = RootExecutor.rcallAddr(sb, mmapB)
                 detail += "  CALL: ret=\(result)\n"
 
                 if result == 42 {
-                    detail += "\n\ud83c\udfc6\ud83c\udfc6\ud83c\udfc6 JIT SHELLCODE EXECUTED! \ud83c\udfc6\ud83c\udfc6\ud83c\udfc6\n"
+                    detail += "\n🏆🏆🏆 JIT SHELLCODE EXECUTED! 🏆🏆🏆\n"
                     detail += "MAP_JIT + mprotect = arbitrary code execution!\n"
                     detail += "FULL JAILBREAK!\n"
                 }
             } else {
-                detail += "  \u274c mprotect gagal (errno=\(mprotBErr))\n"
+                detail += "  ❌ mprotect gagal (errno=\(mprotBErr))\n"
             }
 
             RootExecutor.rcall(sb, "munmap", mmapB, PAGE_SIZE)
         } else {
             let mmapBErr = remote_errno(sb)
-            detail += "  \u274c mmap MAP_JIT gagal (errno=\(mmapBErr))\n"
+            detail += "  ❌ mmap MAP_JIT gagal (errno=\(mmapBErr))\n"
             if mmapBErr == 1 { detail += "  EPERM \u2014 MAP_JIT butuh entitlement\n" }
         }
 
@@ -5997,7 +5997,7 @@ struct AMFIExperimentView: View {
         detail += "mmap(RWX): 0x\(String(format: "%llx", mmapC))\n"
 
         if mmapC != MAP_FAILED && mmapC != 0 {
-            detail += "  \u2705 mmap RWX OK!\n"
+            detail += "  ✅ mmap RWX OK!\n"
 
             sb[mmapC].setValue32(shellcode_mov_x0_42)
             sb[mmapC + 4].setValue32(shellcode_ret)
@@ -6006,7 +6006,7 @@ struct AMFIExperimentView: View {
             detail += "  CALL: ret=\(result)\n"
 
             if result == 42 {
-                detail += "\n\ud83c\udfc6\ud83c\udfc6\ud83c\udfc6 RWX SHELLCODE EXECUTED! \ud83c\udfc6\ud83c\udfc6\ud83c\udfc6\n"
+                detail += "\n🏆🏆🏆 RWX SHELLCODE EXECUTED! 🏆🏆🏆\n"
                 detail += "mmap RWX allowed! No W^X enforcement!\n"
                 detail += "FULL JAILBREAK!\n"
             }
@@ -6014,7 +6014,7 @@ struct AMFIExperimentView: View {
             RootExecutor.rcall(sb, "munmap", mmapC, PAGE_SIZE)
         } else {
             let mmapCErr = remote_errno(sb)
-            detail += "  \u274c mmap RWX gagal (errno=\(mmapCErr))\n"
+            detail += "  ❌ mmap RWX gagal (errno=\(mmapCErr))\n"
         }
 
         // ═══ TEST D: Pakai pthread_jit_write_protect (iOS 14.5+) ═══
@@ -6052,7 +6052,7 @@ struct AMFIExperimentView: View {
                 detail += "  CALL via pthread_jit: ret=\(result)\n"
 
                 if result == 42 {
-                    detail += "\n\ud83c\udfc6\ud83c\udfc6\ud83c\udfc6 PTHREAD_JIT SHELLCODE EXECUTED! \ud83c\udfc6\ud83c\udfc6\ud83c\udfc6\n"
+                    detail += "\n🏆🏆🏆 PTHREAD_JIT SHELLCODE EXECUTED! 🏆🏆🏆\n"
                     detail += "FULL JAILBREAK via JIT API!\n"
                 }
 
@@ -6062,9 +6062,9 @@ struct AMFIExperimentView: View {
 
         // Summary
         detail += "\n=== SUMMARY ===\n"
-        let success = detail.contains("\ud83c\udfc6")
+        let success = detail.contains("🏆")
         if success {
-            detail += "\ud83c\udfc6 ARBITRARY CODE EXECUTION ACHIEVED!\n"
+            detail += "🏆 ARBITRARY CODE EXECUTION ACHIEVED!\n"
             detail += "Bisa execute ARM64 code apapun di SpringBoard!\n"
         } else {
             detail += "W^X enforced \u2014 tidak bisa execute writable memory.\n"
