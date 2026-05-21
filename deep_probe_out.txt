@@ -1,0 +1,392 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║  DEEP TRUST CACHE & AMFI BYPASS ANALYSIS                            ║
+║  iOS 18.2 (22C152) — iPhone XR (A12 T8020)                          ║
+║  Kernelcache: kernelcache                                           ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+File size: 52.6 MiB
+Fileset: Yes
+Components: 223
+Segments: 7
+
+__TEXT base (unslid): 0xfffffff007004000
+__DATA base (unslid): 0xfffffff00a0e0000
+__DATA offset from __TEXT: 0x30dc000
+__TEXT_EXEC: 0xfffffff007d90000 (size 0x2198000)
+
+--- Fileset components (security-relevant) ---
+  com.apple.security.AppleImage4: vm=0xfffffff0073c3670
+  com.apple.driver.AppleMobileFileIntegrity: vm=0xfffffff007497c30
+  com.apple.kext.CoreTrust: vm=0xfffffff00757f1b0
+  com.apple.security.sandbox: vm=0xfffffff0076f7550
+  com.apple.filesystems.apfs: vm=0xfffffff00788f250
+
+======================================================================
+PHASE 1: DYNAMIC TRUST CACHE LINKED LIST ANALYSIS
+======================================================================
+
+--- Step 1: __DATA slots = 0 (runtime heap pointers) ---
+These are globals filled at boot time. Some point to heap trust caches.
+
+Zero slots (runtime heap ptrs): 61
+Non-zero slots (static data):   0
+
+--- Step 2: Zero slots with high ADRP ref count ---
+(More refs = more important global → likely trust cache head)
+
+    Offset  Refs Notes
+------------------------------------------------------------
+  +0xe8       214  early-init region, HIGH-REF
+  +0x3980      14  trust_cache region, HIGH-REF
+  +0x248       12  HIGH-REF
+  +0xf8         9  early-init region
+  +0x2d0        8  
+  +0x1a4        8  
+  +0x2770       8  pmap_cs region
+  +0x1f8        6  
+  +0x48         5  early-init region
+  +0xb4         5  early-init region
+  +0x38e0       5  trust_cache region
+  +0x68         4  early-init region
+  +0x45b8       4  amfi_policy region
+  +0x24c        4  
+  +0x2a0        4  
+  +0x2f8        4  
+  +0xc8         4  early-init region
+  +0x3920       4  trust_cache region
+  +0x3930       4  trust_cache region
+  +0x208        3  
+  +0x2780       3  pmap_cs region
+  +0x27ad       3  pmap_cs region
+  +0x38         3  early-init region
+  +0x2828       3  pmap_cs region
+  +0x280e       3  pmap_cs region
+  +0x28         3  early-init region
+  +0x1c8        3  
+  +0x2838       3  pmap_cs region
+  +0x38c0       3  trust_cache region
+  +0x38a0       3  trust_cache region
+  +0x8          2  early-init region
+  +0x1dc        2  
+  +0x1e8        2  
+  +0x1d8        2  
+  +0x1e4        2  
+  +0x2860       2  pmap_cs region
+  +0x2788       2  pmap_cs region
+  +0x2798       2  pmap_cs region
+  +0x308        2  
+  +0x18         2  early-init region
+
+--- Step 3: Functions that STORE to zero slots ---
+(These are init functions that set up trust cache pointers)
+
+  +0x2770: written by 1 function(s)
+    PC=0xfffffff007f122c4 (func ~0xfffffff007f12298)
+
+  +0x2f8: written by 1 function(s)
+    PC=0xfffffff007f0f7c0 (func ~0xfffffff007f0f7c0)
+
+--- Step 4: Non-zero slots (static TC pointers in kernelcache) ---
+
+
+--- Step 5: DYNAMIC TC CANDIDATES ---
+
+⚠️ No definitive dynamic TC slots found via string xref.
+Trying broader heuristic...
+  Candidate zero slots near TC region: ['0xe8', '0x3980', '0x248', '0xf8', '0x2d0', '0x1a4', '0x2770', '0x1f8', '0x48', '0xb4']
+
+
+======================================================================
+PHASE 2: pmap_cs CODE SIGNING SUBSYSTEM
+======================================================================
+
+--- pmap_cs / CS enforcement strings found ---
+  'cs_blob': VA=0xfffffff00708c66b
+  'cs_blob': VA=0xfffffff00708c7ab
+  'cs_enforcement_disable': VA=0xfffffff00749cd5d
+  'cs_enforcement_disable': VA=0xfffffff00749cddc
+  'cs_process_enforcement': VA=0xfffffff00a438e2b
+  'pmap_cs_associate': VA=0xfffffff007055158
+  'pmap_cs_check_': VA=0xfffffff0070554a8
+  'pmap_cs_lookup': VA=0xfffffff007055490
+  'pmap_lookup_in_loaded_trust_caches': VA=0xfffffff00a43e25b
+  'pmap_lookup_in_static_trust_cache': VA=0xfffffff00a43e286
+
+--- CS enforcement disable flags ---
+(If these are __DATA globals, writing 1 = disable CS!)
+
+  'cs_enforcement_disable': string at VA=0xfffffff00749cd5d
+    Referenced by func at 0xfffffff008f852dc
+  'cs_enforcement_disable': string at VA=0xfffffff00749cddc
+  'cs_system_enforcement_disable': NOT FOUND
+  'amfi_get_out_of_my_way': NOT FOUND
+  'cs_process_enforcement': string at VA=0xfffffff00a438e2b
+
+--- pmap_lookup_in_loaded_trust_caches ---
+(THE function that validates CDHash against all trust caches)
+
+
+
+======================================================================
+PHASE 3: AMFI DISPATCH TABLE & MAC POLICY
+======================================================================
+
+AMFI fileset component not found (non-fileset kernel?)
+
+--- MAC policy strings ---
+  'AMFI: ': VA=0xfffffff007498cbf
+  'AMFI: ': VA=0xfffffff007498cef
+  'AppleMobileFileIntegrity': VA=0xfffffff007005b81
+  'AppleMobileFileIntegrity': VA=0xfffffff00709fcf0
+  'mac_policy_register': VA=0xfffffff00749ce1b
+  'mac_policy_register': VA=0xfffffff007886855
+
+CoreTrust component: com.apple.kext.CoreTrust
+  vmaddr=0xfffffff00757f1b0
+    __TEXT           vm=0xfffffff00757f1b0 size=0x1612
+    __TEXT_EXEC      vm=0xfffffff0094631f0 size=0x87e8
+    __DATA           vm=0xfffffff00a3b1230 size=0xe8
+    __DATA_CONST     vm=0xfffffff007c39fb8 size=0x1658
+    __LINKEDIT       vm=0xfffffff00a450000 size=0x529a1
+
+  CoreTrust __DATA: vm=0xfffffff00a3b1230 size=0xe8
+  (If CT has function pointers in __DATA, they might be patchable)
+
+
+======================================================================
+PHASE 4: TRUST CACHE CALL GRAPH & DATA FLOW
+======================================================================
+
+
+--- __DATA globals accessed by trust cache functions ---
+(These are the globals we need to target on-device)
+
+--- Callee analysis (functions called by TC functions) ---
+
+--- MOST REFERENCED __DATA SLOTS (from TC functions) ---
+(Higher count = more likely to be trust cache head pointer)
+
+
+
+======================================================================
+PHASE 5: BYPASS VECTOR ENUMERATION
+======================================================================
+
+🟢 [HIGH] Dynamic Trust Cache Injection (Heap TC)
+   iOS maintains a linked list of trust caches. Static TC is KTRR-protected, but dynamic TCs (DDI, personalized) are heap-a...
+   Requirements:
+     • Find __DATA slot that points to heap TC list head
+     • Read slot on-device → get heap TC address
+     • Write CDHash entry + update count
+     • OR: kalloc spray to create fake TC struct, link into list
+
+🟡 [MEDIUM] CS Enforcement Disable Flag
+   Kernel has global flags like cs_enforcement_disable, amfi_get_out_of_my_way that can disable code signing. On production...
+   Requirements:
+     • Find cs_enforcement_disable in __DATA (not __TEXT)
+     • Confirm it's checked at runtime (not just boot)
+     • Write 1 via KRW
+     • May need to also set amfi_get_out_of_my_way
+
+🟡 [MEDIUM] MAC Policy Hook Redirect
+   AMFI registers MAC policy hooks (function pointers). If mac_policy_ops struct is in writable memory, we can redirect mpo...
+   Requirements:
+     • Find mac_policy_ops struct address
+     • Confirm it's in writable memory (heap or writable __DATA)
+     • Find a 'return 0' gadget in kernel text
+     • Overwrite mpo_vnode_check_exec pointer
+     • PAC: function pointers may be PAC-signed (A12 has PAC)
+
+🟡 [MEDIUM] pmap_cs Trust Cache Manipulation
+   pmap_cs is a separate code signing subsystem in iOS 18. It maintains its own trust cache lookup path. If pmap_cs has a w...
+   Requirements:
+     • Find pmap_cs trust cache globals
+     • Determine if they're in writable memory
+     • Understand pmap_cs struct layout
+     • Inject CDHash into pmap_cs TC
+
+🔴 [LOW] CoreTrust Certificate Bypass
+   CoreTrust validates code signatures. If we can craft a certificate that CT accepts (like TrollStore did on iOS 14-16), w...
+   Requirements:
+     • Reverse engineer CoreTrust validation logic
+     • Find accepted certificate format
+     • Craft valid signature with custom CDHash
+     • This is crypto research — very hard
+
+🟢 [HIGH] Trigger DDI Trust Cache Load Path
+   Developer Disk Images (DDI) add trust caches at runtime. The kernel has trust_cache_runtime_add for this. If we can call...
+   Requirements:
+     • Find trust_cache_runtime_add function address
+     • Understand its parameters (TC struct pointer, size, type)
+     • Craft valid TC struct in userspace memory
+     • Call via RemoteCall from launchd (PID 1 context)
+     • May need specific entitlements or PPL context
+
+🟡 [MEDIUM] AMFI.kext __DATA Patch
+   AMFI.kext has its own __DATA segment (fileset component). If AMFI's __DATA is at a different physical address than the m...
+   Requirements:
+     • Find AMFI __DATA VA on device
+     • Test write to AMFI __DATA (might not panic if outside KTRR)
+     • If writable: patch AMFI globals to disable checks
+     • Key target: amfi_allow_any flag or similar
+
+
+======================================================================
+PHASE 6: AMFI.kext __DATA DEEP SCAN
+======================================================================
+
+AMFI __DATA: VA=0xfffffff00a330098, size=0x541
+AMFI __DATA fileoff: 0x332c098
+
+--- AMFI __DATA content analysis ---
+
+  Zero slots: 73
+  Kernel pointers: 1
+  Small integers: 12
+
+--- Interesting AMFI __DATA slots ---
+  Offset              Value         Type Notes
+----------------------------------------------------------------------
+  +0x8     0xffffffff00000001       pointer  → 0xffffffff00000001 (outside kc)
+  +0x110   1                      bool flag  VA=0xfffffff00a3301a8
+  +0x160   1                      bool flag  VA=0xfffffff00a3301f8
+  +0x1b0   1                      bool flag  VA=0xfffffff00a330248
+  +0x200   1                      bool flag  VA=0xfffffff00a330298
+  +0x250   1                      bool flag  VA=0xfffffff00a3302e8
+  +0x2a0   1                      bool flag  VA=0xfffffff00a330338
+  +0x2f0   1                      bool flag  VA=0xfffffff00a330388
+  +0x340   1                      bool flag  VA=0xfffffff00a3303d8
+  +0x398   1                      bool flag  VA=0xfffffff00a330430
+  +0x408   1                      bool flag  VA=0xfffffff00a3304a0
+
+--- KEY FINDING: AMFI __DATA address range ---
+  Start: 0xfffffff00a330098
+  End:   0xfffffff00a3305d9
+  Size:  0x541
+
+  ON DEVICE TEST:
+  1. Read 0xfffffff00a330098 + slide → confirm accessible
+  2. Try write test byte → if NO panic, AMFI __DATA is WRITABLE!
+  3. If writable: patch boolean flags to disable AMFI checks
+
+  IMPORTANT: AMFI __DATA might be OUTSIDE KTRR range!
+  KTRR protects main kernel __TEXT/__DATA but fileset components
+  might have their __DATA in a different physical region.
+
+
+======================================================================
+PHASE 7: SWIFT OFFSET GENERATION
+======================================================================
+
+// === AUTO-GENERATED by deep_tc_analysis.py ===
+// Paste into AMFIExperimentView.swift (new experiment)
+
+// Dynamic TC candidate slots (zero at compile time = heap ptr at runtime)
+// Higher ref count = more important global
+static let dynamicTCCandidateSlots: [(offset: UInt64, refs: Int)] = [
+    (0xe8, 214),  // __DATA+0xe8
+    (0x3980, 14),  // __DATA+0x3980
+    (0x248, 12),  // __DATA+0x248
+    (0xf8, 9),  // __DATA+0xf8
+    (0x2d0, 8),  // __DATA+0x2d0
+    (0x1a4, 8),  // __DATA+0x1a4
+    (0x2770, 8),  // __DATA+0x2770
+    (0x1f8, 6),  // __DATA+0x1f8
+    (0x48, 5),  // __DATA+0x48
+    (0xb4, 5),  // __DATA+0xb4
+    (0x38e0, 5),  // __DATA+0x38e0
+    (0x68, 4),  // __DATA+0x68
+    (0x45b8, 4),  // __DATA+0x45b8
+    (0x24c, 4),  // __DATA+0x24c
+    (0x2a0, 4),  // __DATA+0x2a0
+    (0x2f8, 4),  // __DATA+0x2f8
+    (0xc8, 4),  // __DATA+0xc8
+    (0x3920, 4),  // __DATA+0x3920
+    (0x3930, 4),  // __DATA+0x3930
+    (0x208, 3),  // __DATA+0x208
+    (0x2780, 3),  // __DATA+0x2780
+    (0x27ad, 3),  // __DATA+0x27ad
+    (0x38, 3),  // __DATA+0x38
+    (0x2828, 3),  // __DATA+0x2828
+    (0x280e, 3),  // __DATA+0x280e
+    (0x28, 3),  // __DATA+0x28
+    (0x1c8, 3),  // __DATA+0x1c8
+    (0x2838, 3),  // __DATA+0x2838
+    (0x38c0, 3),  // __DATA+0x38c0
+    (0x38a0, 3),  // __DATA+0x38a0
+]
+
+// AMFI __DATA (unslid): 0xfffffff00a330098
+// AMFI __DATA size: 0x541
+static let amfiDataUnslid: UInt64 = 0xfffffff00a330098
+static let amfiDataSize: UInt64 = 0x541
+
+// AMFI boolean flags (potential disable switches)
+// Write 1 to disable, 0 to enable
+static let amfiFlagOffsets: [UInt64] = [
+    0x0,  // AMFI __DATA+0x0 = 0
+    0x40,  // AMFI __DATA+0x40 = 0
+    0x48,  // AMFI __DATA+0x48 = 0
+    0x58,  // AMFI __DATA+0x58 = 0
+    0x60,  // AMFI __DATA+0x60 = 0
+    0x68,  // AMFI __DATA+0x68 = 0
+    0x70,  // AMFI __DATA+0x70 = 0
+    0x78,  // AMFI __DATA+0x78 = 0
+    0x80,  // AMFI __DATA+0x80 = 0
+    0x88,  // AMFI __DATA+0x88 = 0
+    0xa8,  // AMFI __DATA+0xa8 = 0
+    0xd0,  // AMFI __DATA+0xd0 = 0
+    0xe8,  // AMFI __DATA+0xe8 = 0
+    0xf8,  // AMFI __DATA+0xf8 = 0
+    0x110,  // AMFI __DATA+0x110 = 1
+    0x120,  // AMFI __DATA+0x120 = 0
+    0x130,  // AMFI __DATA+0x130 = 0
+    0x138,  // AMFI __DATA+0x138 = 0
+    0x160,  // AMFI __DATA+0x160 = 1
+    0x170,  // AMFI __DATA+0x170 = 0
+    0x188,  // AMFI __DATA+0x188 = 0
+    0x1b0,  // AMFI __DATA+0x1b0 = 1
+    0x1c0,  // AMFI __DATA+0x1c0 = 0
+    0x1d8,  // AMFI __DATA+0x1d8 = 0
+]
+
+// CoreTrust __DATA (unslid): 0xfffffff00a3b1230
+static let coreTrustDataUnslid: UInt64 = 0xfffffff00a3b1230
+
+// Key function addresses (unslid — add KASLR slide on device)
+
+// === RECOMMENDED EXPERIMENT ORDER ===
+// 1. Read dynamicTCCandidateSlots on device
+//    → Non-zero = heap pointer to dynamic trust cache!
+//    → Follow pointer → read version/count → inject CDHash
+// 2. Test write to AMFI __DATA (amfiDataUnslid + slide)
+//    → If no panic: patch boolean flags!
+// 3. Try trust_cache_runtime_add via RemoteCall
+//    → Craft TC struct → call from launchd context
+// 4. Scan for cs_enforcement_disable in main __DATA
+//    → If found and writable: game over, all CS disabled
+
+
+======================================================================
+FINAL SUMMARY & RECOMMENDED NEXT STEPS
+======================================================================
+
+Based on this analysis, the most promising approaches are:
+
+1. 🟢 DYNAMIC TC INJECTION
+   Read zero __DATA slots on device → find heap TC → inject CDHash
+   This is the SAME approach as Exp 92 but targeting HEAP TC
+   instead of static __DATA TC (which is KTRR-protected).
+
+2. 🟢 trust_cache_runtime_add via RemoteCall
+   Call the kernel function that adds DDI trust caches.
+   Craft a valid TC struct with our CDHash → call from launchd.
+   This is how Xcode/DeveloperDiskImage adds trust caches!
+
+3. 🟡 AMFI __DATA patch
+   AMFI.kext __DATA might be OUTSIDE KTRR range.
+   Test write → if works, patch boolean flags to disable checks.
+
+4. 🟡 cs_enforcement_disable
+   If this global exists and is writable, setting it = 1
+   disables ALL code signing enforcement.

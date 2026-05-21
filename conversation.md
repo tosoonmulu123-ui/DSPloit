@@ -180,3 +180,41 @@ NOTE: Exp 92 pakai offset SALAH (count di +0x04, entries di +0x08).
 - **Exp 93**: AMFI __DATA write test (flip boolean flags)
 - **Exp 94**: Heap TC scan (baca zero slots → cari Cryptex TC di heap)
 - **Exp 95**: cs_enforcement_disable (write ke __DATA+0x45b8)
+
+## 10. Exp 93 BERHASIL — AMFI __DATA WRITABLE!
+
+**BREAKTHROUGH:** Exp 93 membuktikan bahwa AMFI.kext fileset component `__DATA` segment **TIDAK dilindungi KTRR**!
+
+- AMFI __DATA (unslid): `0xfffffff00a330098`, size `0x541`
+- 10 boolean flags ditemukan di offsets: `+0x110, +0x160, +0x1b0, +0x200, +0x250, +0x2a0, +0x2f0, +0x340, +0x398, +0x408` (semua value=1)
+- Write test: tulis 0 ke `+0x408`, baca kembali 0, restore ke 1 — **SUKSES!**
+- Screenshot proof tersedia
+
+**Implikasi:** Fileset component __DATA (AMFI, CoreTrust, dll) berada di physical pages yang BERBEDA dari main kernel __DATA, dan KTRR tidak melindunginya!
+
+## 11. Exp 93b — AMFI Flag Disable + Spawn Test (IMPLEMENTED)
+
+**Exp 93b** melakukan:
+1. Baca semua 10 flag (konfirmasi value=1)
+2. Write 0 ke SEMUA 10 flag (disable AMFI checks)
+3. Test `posix_spawn("/usr/bin/id")` dan `posix_spawn("/bin/ls")`
+4. Test `fork() + execve("/usr/bin/id")` sebagai fallback
+5. Restore semua flag ke value original
+
+**Jika berhasil:** FULL JAILBREAK — AMFI flags mengontrol code signing enforcement!
+**Jika gagal:** Flags mungkin hanya logging/telemetry, bukan enforcement control.
+
+## 12. Exp 94 Fix — Filter 0xffffff8000000000
+
+Panic di Exp 94 disebabkan oleh:
+- Slot __DATA berisi value `0xffffff8000000000` (base kernel VA space)
+- Value ini lolos `isSafeKernelKreadAddress()` tapi alamatnya unmapped
+- Fix: tambah explicit filter untuk skip value ini sebelum kread
+- Juga: `isSafeKernelKreadAddress()` sekarang exclude range `0xffffff80_00000000` sampai `0xffffff81_00000000`
+
+## 13. Next Steps
+
+1. **Run Exp 93b** — test apakah AMFI flags mengontrol enforcement
+2. Jika berhasil → binary search flag mana yang spesifik
+3. Jika gagal → combine dengan heap TC inject (Exp 94 fixed)
+4. CoreTrust __DATA (`0xfffffff00a3b1230`, size `0xe8`) juga mungkin writable — test berikutnya
