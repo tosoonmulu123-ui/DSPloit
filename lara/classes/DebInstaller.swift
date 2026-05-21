@@ -949,26 +949,11 @@ final class DebInstaller {
     
     private func runUicache(completion: @escaping () -> Void) {
         #if !DISABLE_REMOTECALL
-        ensureAMFIDisabled()
-        
-        guard let sb = mgr.sbProc else {
-            emit("[deb] ⚠️ SpringBoard RC not available — skip uicache")
-            completion()
-            return
-        }
-        
-        let workspace = remote_getClass(sb, "LSApplicationWorkspace")
-        let defaultWS = remote_msg(sb, workspace, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
-        
-        if defaultWS != 0 {
-            remote_msg(sb, defaultWS,
-                remote_sel(sb, "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:"),
-                1, 1, 1, 0)
-            emit("[deb] ✅ uicache triggered")
-        } else {
-            emit("[deb] ⚠️ LSApplicationWorkspace not available")
-        }
-        
+        // NOTE: uicache with unsigned .app bundles causes SpringBoard crash loop → panic
+        // Skip for now until trust cache properly injects CDHash of installed binaries
+        // Files are installed to /var/jb/ and accessible via File Manager
+        emit("[deb] ⚠️ Skipping uicache (prevents SpringBoard crash with unsigned apps)")
+        emit("[deb] ℹ️ Files installed to /var/jb/ — use File Manager to verify")
         completion()
         #else
         completion()
