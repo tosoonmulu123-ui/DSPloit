@@ -113,8 +113,9 @@ final class DebInstaller {
                         }
                     }
                 } else {
-                    self.emit("[deb] ❌ tar spawn failed — using fallback")
-                    self.fallbackManualExtract(dataTar: dataTar, name: name, completion: completion)
+                    self.emit("[deb] ❌ tar spawn failed")
+                    self.emit("[deb] ❌ Installation failed — tar could not be spawned")
+                    completion(false, 0)
                 }
             }
         }
@@ -193,13 +194,13 @@ final class DebInstaller {
                 RootExecutor.rcall(rc, "free", pathAddr)
                 totalWritten += written
                 
+                // Schedule next chunk AFTER this one completes (inside the block)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    self.emit("[deb] Chunk \(callIndex)/\(totalCalls) done (\(totalWritten)/\(totalSize))")
+                    writeNextChunk()
+                }
+                
                 return (true, "chunk \(callIndex): \(written) bytes", UInt64(totalWritten))
-            }
-            
-            // 1s delay between chunks — launchd fully released between calls
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                self.emit("[deb] Chunk \(callIndex)/\(totalCalls) done (\(totalWritten)/\(totalSize))")
-                writeNextChunk()
             }
         }
         
