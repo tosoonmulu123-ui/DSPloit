@@ -58,83 +58,290 @@ final class DebInstaller {
         
         emit("[deb] data.tar: \(dataTar.name) (\(dataTar.data.count) bytes)")
         
-        // Step 3: iOS 18 has NO /usr/bin/tar — go directly to manual extraction
-        emit("[deb] iOS 18 has no tar binary — using direct extraction...")
-        manualExtractAndWrite(dataTar: dataTar, name: name, completion: completion)
-    }
-    
-    // MARK: - Fallback: Manual extraction via launchd (split per file)
-    
-    private func fallbackManualExtract(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
-        manualExtractAndWrite(dataTar: dataTar, name: name, completion: completion)
-    }
-    
-    /// Extract tar in memory, write each file via individual launchd calls with safe delays
-    private func manualExtractAndWrite(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
-        emit("[deb] Manual extract: decompressing...")
-        
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let tarData: Data
-            if dataTar.name.hasSuffix(".gz") || dataTar.name.hasSuffix(".tgz") {
-                guard let decompressed = decompressGzip(dataTar.data) else {
-                    DispatchQueue.main.async {
-                        self.emit("[deb] ❌ Gzip decompression failed")
-                        completion(false, 0)
-                    }
-                    return
-                }
-                tarData = decompressed
-                DispatchQueue.main.async {
-                    self.emit("[deb] Decompressed: \(decompressed.count) bytes")
-                }
-            } else {
-                tarData = dataTar.data
+        // Step 3: Decompress gzip → plain tar
+        emit("[deb] Decompressing...")
+        let tarData: Data
+        if dataTar.name.hasSuffix(".gz") || dataTar.name.hasSuffix(".tgz") {
+            guard let decompressed = decompressGzip(dataTar.data) else {
+                emit("[deb] ❌ Gzip decompression failed")
+                completion(false, 0)
+                return
             }
-            
-            let files = parseTar(data: tarData)
-            guard !files.isEmpty else {
-                DispatchQueue.main.async {
-                    self.emit("[deb] ❌ No files in tar")
-                    completion(false, 0)
-                }
+            tarData = decompressed
+            emit("[deb] Decompressed: \(decompressed.count) bytes")
+        } else {
+            tarData = dataTar.data
+        }
+        
+        // Step 4: Try fast path (extractor binary) first, fallback to manual
+        emit("[deb] Attempting fast install via extractor binary...")
+        installViaExtractor(tarData: tarData, name: name) { [weak self] success in
+            if success {
+                self?.emit("[deb] ✅ Fast install complete")
+                self?.runUicache { completion(true, 1) }
+            } else {
+                self?.emit("[deb] Extractor failed — using manual install (slower)...")
+                self?.manualWriteFromTar(tarData: tarData, name: name, completion: completion)
+            }
+        }
+    }
+    
+    // MARK: - Fast Path: Extractor Binary
+    //
+    // 1. Write data.tar to /var/jb/tmp/ (split 2MB per launchd call)
+    // 2. Write extractor binary to /var/jb/tmp/extractor (1 call, 50KB)
+    // 3. posix_spawn extractor — runs in own process, no watchdog
+    // 4. Extractor extracts all files in seconds
+    //
+    
+    private func installViaExtractor(tarData: Data, name: String, completion: @escaping (Bool) -> Void) {
+        let tarPath = "/var/jb/tmp/\(name.lowercased().replacingOccurrences(of: " ", with: "_"))_data.tar"
+        let extractorPath = "/var/jb/tmp/extractor"
+        
+        // Step 1: Write data.tar to disk (split 2MB per call)
+        emit("[deb] Writing \(tarData.count) bytes tar to disk...")
+        writeLargeData(data: tarData, path: tarPath) { [weak self] writeOk in
+            guard let self, writeOk else {
+                self?.emit("[deb] ❌ Failed to write tar to disk")
+                completion(false)
                 return
             }
             
-            // Group files into batches by total size (max 500KB per launchd call)
-            // Small files can be batched together; large files get their own call
-            let dirs = files.filter { $0.isDirectory }
-            let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
+            self.emit("[deb] ✅ Tar written to disk")
             
-            DispatchQueue.main.async {
-                self.emit("[deb] Manual: \(dirs.count) dirs + \(regularFiles.count) files")
-                
-                // Calculate ETA
-                let largeFiles = regularFiles.filter { $0.data.count > 2 * 1024 * 1024 }
-                let largeChunks = largeFiles.reduce(0) { $0 + ($1.data.count + 2*1024*1024 - 1) / (2*1024*1024) }
-                let totalOps = regularFiles.count + largeChunks
-                let etaSeconds = Int(Double(totalOps) * 1.5) + 5
-                let etaMin = etaSeconds / 60
-                let etaSec = etaSeconds % 60
-                self.emit("[deb] ⏱ Estimated time: ~\(etaMin)m \(etaSec)s")
-                self.emit("[deb] Creating directories...")
-                
-                // Phase 1: Create all directories in one call (fast)
-                self.root.executeAsRoot(operation: "mkdirs") { rc in
-                    for dir in dirs {
-                        let fullPath = "/var/jb/\(dir.path)"
-                        let pathAddr = remote_alloc_str(rc, fullPath)
-                        RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
-                        RootExecutor.rcall(rc, "free", pathAddr)
-                    }
-                    return (true, "\(dirs.count) dirs", 0)
+            // Step 2: Write extractor binary from app bundle
+            self.writeExtractorBinary(to: extractorPath) { binOk in
+                guard binOk else {
+                    self.emit("[deb] ❌ Failed to write extractor binary")
+                    completion(false)
+                    return
                 }
                 
-                // Phase 2: Write files one at a time
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                    self.emit("[deb] Writing \(regularFiles.count) files...")
-                    self.writeFilesSequentially(files: regularFiles, index: 0, installed: dirs.count, total: regularFiles.count, startTime: Date(), completion: completion)
+                self.emit("[deb] ✅ Extractor binary deployed")
+                
+                // Step 3: posix_spawn extractor
+                self.spawnExtractor(binary: extractorPath, tarPath: tarPath, destDir: "/var/jb") { spawnOk in
+                    if spawnOk {
+                        // Give extractor time to finish (33MB tar ≈ 3-5s on device)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                            self.emit("[deb] ✅ Extraction complete")
+                            // Cleanup
+                            self.removeFile(path: tarPath)
+                            completion(true)
+                        }
+                    } else {
+                        self.emit("[deb] ❌ Spawn failed — extractor cannot execute")
+                        self.removeFile(path: tarPath)
+                        completion(false)
+                    }
                 }
             }
+        }
+    }
+    
+    // Write large data to disk via launchd split (2MB per call)
+    private func writeLargeData(data: Data, path: String, completion: @escaping (Bool) -> Void) {
+        #if !DISABLE_REMOTECALL
+        let chunkLimit = 2 * 1024 * 1024
+        let totalSize = data.count
+        var totalWritten = 0
+        var callIndex = 0
+        let totalCalls = (totalSize + chunkLimit - 1) / chunkLimit
+        
+        func writeNext() {
+            guard totalWritten < totalSize else {
+                completion(true)
+                return
+            }
+            
+            let offset = totalWritten
+            let thisSize = min(chunkLimit, totalSize - offset)
+            let chunk = data[offset..<offset + thisSize]
+            let isFirst = (offset == 0)
+            callIndex += 1
+            
+            root.executeAsRoot(operation: "wd_\(callIndex)") { rc in
+                if isFirst {
+                    let dir = remote_alloc_str(rc, "/var/jb/tmp")
+                    RootExecutor.rcall(rc, "mkdir", dir, 0o755)
+                    RootExecutor.rcall(rc, "free", dir)
+                }
+                
+                let pathAddr = remote_alloc_str(rc, path)
+                let flags: UInt64 = isFirst ? UInt64(O_WRONLY | O_CREAT | O_TRUNC) : UInt64(O_WRONLY | O_APPEND)
+                let fd = RootExecutor.rcall(rc, "open", pathAddr, flags, 0o644)
+                
+                guard fd != UInt64(bitPattern: -1) else {
+                    RootExecutor.rcall(rc, "free", pathAddr)
+                    DispatchQueue.main.async { completion(false) }
+                    return (false, "open failed", 0)
+                }
+                
+                let writeAddr = rc.trojanMem + 0x800
+                var written = 0
+                Data(chunk).withUnsafeBytes { buf in
+                    while written < thisSize {
+                        let sub = min(thisSize - written, 0x1000)
+                        rc.remote_write(writeAddr, from: buf.baseAddress!.advanced(by: written), size: UInt64(sub))
+                        let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(sub))
+                        if n == 0 || n == UInt64(bitPattern: -1) { break }
+                        written += Int(n)
+                    }
+                }
+                
+                RootExecutor.rcall(rc, "close", fd)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                totalWritten += written
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    self.emit("[deb] Chunk \(callIndex)/\(totalCalls) (\(totalWritten)/\(totalSize))")
+                    writeNext()
+                }
+                return (true, "chunk \(callIndex)", UInt64(totalWritten))
+            }
+        }
+        
+        writeNext()
+        #else
+        completion(false)
+        #endif
+    }
+    
+    // Write extractor binary from app bundle to /var/jb/tmp/
+    private func writeExtractorBinary(to path: String, completion: @escaping (Bool) -> Void) {
+        #if !DISABLE_REMOTECALL
+        // Load extractor from app bundle
+        guard let url = Bundle.main.url(forResource: "extractor", withExtension: nil),
+              let binData = try? Data(contentsOf: url) else {
+            emit("[deb] ❌ extractor binary not found in app bundle")
+            completion(false)
+            return
+        }
+        
+        emit("[deb] Writing extractor (\(binData.count) bytes)...")
+        
+        // 50KB fits in 1 launchd call easily
+        root.executeAsRoot(operation: "write_extractor") { rc in
+            let pathAddr = remote_alloc_str(rc, path)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            
+            guard fd != UInt64(bitPattern: -1) else {
+                RootExecutor.rcall(rc, "free", pathAddr)
+                DispatchQueue.main.async { completion(false) }
+                return (false, "open failed", 0)
+            }
+            
+            let writeAddr = rc.trojanMem + 0x800
+            var written = 0
+            binData.withUnsafeBytes { buf in
+                while written < binData.count {
+                    let chunk = min(binData.count - written, 0x1000)
+                    rc.remote_write(writeAddr, from: buf.baseAddress!.advanced(by: written), size: UInt64(chunk))
+                    let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
+                    if n == 0 || n == UInt64(bitPattern: -1) { break }
+                    written += Int(n)
+                }
+            }
+            
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
+            RootExecutor.rcall(rc, "free", pathAddr)
+            
+            DispatchQueue.main.async { completion(written == binData.count) }
+            return (true, "extractor written", UInt64(written))
+        }
+        #else
+        completion(false)
+        #endif
+    }
+    
+    // Spawn extractor binary
+    private func spawnExtractor(binary: String, tarPath: String, destDir: String, completion: @escaping (Bool) -> Void) {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "spawn_extractor") { rc in
+            let mem = rc.trojanMem
+            
+            let binAddr = remote_alloc_str(rc, binary)
+            let tarAddr = remote_alloc_str(rc, tarPath)
+            let destAddr = remote_alloc_str(rc, destDir)
+            
+            // argv = [binary, tarPath, destDir, NULL]
+            let argvBase = mem + 0x400
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(tarAddr)
+            rc[argvBase + 16].setValue64(destAddr)
+            rc[argvBase + 24].setValue64(0)
+            
+            let pidAddr = mem + 0x300
+            rc[pidAddr].setValue32(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            
+            RootExecutor.rcall(rc, "free", binAddr)
+            RootExecutor.rcall(rc, "free", tarAddr)
+            RootExecutor.rcall(rc, "free", destAddr)
+            
+            let ok = (ret == 0 && pid != 0)
+            DispatchQueue.main.async {
+                if ok {
+                    self.emit("[deb] ✅ Extractor spawned (PID \(pid))")
+                } else {
+                    self.emit("[deb] ❌ posix_spawn ret=\(ret), pid=\(pid)")
+                }
+                completion(ok)
+            }
+            return (ok, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
+        }
+        #else
+        completion(false)
+        #endif
+    }
+    
+    private func removeFile(path: String) {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "rm") { rc in
+            let p = remote_alloc_str(rc, path)
+            RootExecutor.rcall(rc, "unlink", p)
+            RootExecutor.rcall(rc, "free", p)
+            return (true, "rm \(path)", 0)
+        }
+        #endif
+    }
+    
+    // MARK: - Slow Path: Manual per-file write (fallback)
+    
+    private func manualWriteFromTar(tarData: Data, name: String, completion: @escaping (Bool, Int) -> Void) {
+        let files = parseTar(data: tarData)
+        guard !files.isEmpty else {
+            emit("[deb] ❌ No files in tar")
+            completion(false, 0)
+            return
+        }
+        
+        let dirs = files.filter { $0.isDirectory }
+        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
+        
+        // ETA
+        let largeChunks = regularFiles.filter { $0.data.count > 2*1024*1024 }.reduce(0) { $0 + ($1.data.count + 2*1024*1024 - 1) / (2*1024*1024) }
+        let totalOps = regularFiles.count + largeChunks
+        let etaMin = Int(Double(totalOps) * 1.5) / 60
+        emit("[deb] Manual: \(dirs.count) dirs + \(regularFiles.count) files")
+        emit("[deb] ⏱ Estimated: ~\(etaMin) minutes")
+        emit("[deb] Creating directories...")
+        
+        root.executeAsRoot(operation: "mkdirs") { rc in
+            for dir in dirs {
+                let p = remote_alloc_str(rc, "/var/jb/\(dir.path)")
+                RootExecutor.rcall(rc, "mkdir", p, 0o755)
+                RootExecutor.rcall(rc, "free", p)
+            }
+            return (true, "\(dirs.count) dirs", 0)
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            self.emit("[deb] Writing \(regularFiles.count) files...")
+            self.writeFilesSequentially(files: regularFiles, index: 0, installed: dirs.count, total: regularFiles.count, startTime: Date(), completion: completion)
         }
     }
     
