@@ -191,7 +191,7 @@ struct RootFileManagerView: View {
             Button(action: goUp) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(currentPath == "/" ? .secondary : .blue)
+                    .foregroundColor(currentPath == "/" ? .secondary : .blue)
             }
             .disabled(currentPath == "/")
             

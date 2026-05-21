@@ -516,11 +516,11 @@ struct ContentView: View {
         return .secondary
     }
     
-    private var statusGradient: some ShapeStyle {
-        if isJailbroken { return .linearGradient(colors: [.green, .mint], startPoint: .top, endPoint: .bottom) }
-        if jb.isRunning { return .linearGradient(colors: [.blue, .cyan], startPoint: .top, endPoint: .bottom) }
-        if jb.state == .failed { return .linearGradient(colors: [.red, .orange], startPoint: .top, endPoint: .bottom) }
-        return .linearGradient(colors: [.secondary, .secondary], startPoint: .top, endPoint: .bottom)
+    private var statusGradient: LinearGradient {
+        if isJailbroken { return LinearGradient(colors: [.green, .mint], startPoint: .top, endPoint: .bottom) }
+        if jb.isRunning { return LinearGradient(colors: [.blue, .cyan], startPoint: .top, endPoint: .bottom) }
+        if jb.state == .failed { return LinearGradient(colors: [.red, .orange], startPoint: .top, endPoint: .bottom) }
+        return LinearGradient(colors: [.secondary, .secondary], startPoint: .top, endPoint: .bottom)
     }
     
     private var statusText: String {

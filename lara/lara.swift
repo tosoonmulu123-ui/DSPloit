@@ -86,7 +86,14 @@ struct DSPloit: App {
                         showGuide = true
                     }
                 } else {
-                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by DSPloit. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
+                    let dc = DeviceCompat.shared
+                    let reason = dc.unsupportedReason ?? "Unknown reason"
+                    Alertinator.shared.alert(
+                        title: "Device Not Supported",
+                        body: "\(dc.deviceName) • \(dc.chip.rawValue) • iOS \(dc.iosString)\n\n\(reason)\n\nSupported: A11–A18, iOS 16.0–18.2",
+                        actionLabel: "Exit App",
+                        action: { exitinator() }
+                    )
                 }
             }
             .sheet(isPresented: $showGuide) {

@@ -30,19 +30,9 @@ func hasmie() -> Bool {
 }
 
 func isunsupported() -> Bool {
-    let v = ProcessInfo.processInfo.operatingSystemVersion
-    
-    if v.majorVersion < 17 {
+    // Use DeviceCompat for chip + iOS version check
+    if !DeviceCompat.shared.canJailbreak {
         return true
-    }
-    
-    if v.majorVersion > 26 {
-        return true
-    }
-    
-    if v.majorVersion == 26 {
-        if v.minorVersion > 0 { return true }
-        if v.minorVersion == 0 && v.patchVersion > 1 { return true }
     }
     
     if hasmie() {
