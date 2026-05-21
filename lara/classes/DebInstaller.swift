@@ -107,6 +107,15 @@ final class DebInstaller {
             
             DispatchQueue.main.async {
                 self.emit("[deb] Manual: \(dirs.count) dirs + \(regularFiles.count) files")
+                
+                // Calculate ETA
+                let largeFiles = regularFiles.filter { $0.data.count > 2 * 1024 * 1024 }
+                let largeChunks = largeFiles.reduce(0) { $0 + ($1.data.count + 2*1024*1024 - 1) / (2*1024*1024) }
+                let totalOps = regularFiles.count + largeChunks
+                let etaSeconds = Int(Double(totalOps) * 1.5) + 5
+                let etaMin = etaSeconds / 60
+                let etaSec = etaSeconds % 60
+                self.emit("[deb] ⏱ Estimated time: ~\(etaMin)m \(etaSec)s")
                 self.emit("[deb] Creating directories...")
                 
                 // Phase 1: Create all directories in one call (fast)
@@ -120,16 +129,16 @@ final class DebInstaller {
                     return (true, "\(dirs.count) dirs", 0)
                 }
                 
-                // Phase 2: Write files one at a time with 2s delay
+                // Phase 2: Write files one at a time
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                    self.emit("[deb] Writing \(regularFiles.count) files (one per call)...")
-                    self.writeFilesSequentially(files: regularFiles, index: 0, installed: dirs.count, completion: completion)
+                    self.emit("[deb] Writing \(regularFiles.count) files...")
+                    self.writeFilesSequentially(files: regularFiles, index: 0, installed: dirs.count, total: regularFiles.count, startTime: Date(), completion: completion)
                 }
             }
         }
     }
     
-    private func writeFilesSequentially(files: [TarFile], index: Int, installed: Int, completion: @escaping (Bool, Int) -> Void) {
+    private func writeFilesSequentially(files: [TarFile], index: Int, installed: Int, total: Int = 0, startTime: Date = Date(), completion: @escaping (Bool, Int) -> Void) {
         guard index < files.count else {
             emit("[deb] ✅ Done: \(installed) items installed")
             runUicache { completion(true, installed) }
@@ -139,12 +148,22 @@ final class DebInstaller {
         let file = files[index]
         let fullPath = "/var/jb/\(file.path)"
         
+        // Show ETA every 25 files
+        if index > 0 && index % 25 == 0 {
+            let elapsed = Date().timeIntervalSince(startTime)
+            let perFile = elapsed / Double(index)
+            let remaining = Double(files.count - index) * perFile
+            let remMin = Int(remaining) / 60
+            let remSec = Int(remaining) % 60
+            emit("[deb] \(index)/\(files.count) — ~\(remMin)m \(remSec)s remaining")
+        }
+        
         // Large files (>2MB): split into multiple launchd calls
         if file.data.count > 2 * 1024 * 1024 {
-            emit("[deb] Large file: \(file.path) (\(file.data.count / 1024)KB) — splitting...")
+            emit("[deb] Large file: \(file.path) (\(file.data.count / 1024)KB)")
             writeLargeFile(path: fullPath, data: file.data, mode: file.mode) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, completion: completion)
+                    self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, total: total, startTime: startTime, completion: completion)
                 }
             }
             return
@@ -190,7 +209,7 @@ final class DebInstaller {
         
         // 1.5s delay between files — safe from watchdog with queue guard
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, completion: completion)
+            self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, total: total, startTime: startTime, completion: completion)
         }
         #else
         completion(false, 0)
