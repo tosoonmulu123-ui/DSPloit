@@ -59,7 +59,7 @@ struct DeviceCompatibilityView: View {
                     }
                 }
             } header: {
-                Label("Device Ini (Auto-Detect)", systemImage: "iphone")
+                Label("This Device (Auto-Detect)", systemImage: "iphone")
             }
             
             // iOS version support
@@ -75,7 +75,7 @@ struct DeviceCompatibilityView: View {
                         versionBadge("18.3+", .red)
                         Text("PATCHED").font(.system(size: 9, weight: .bold)).foregroundStyle(.red)
                     }
-                    Text("darksword exploit di-patch di iOS 18.3 beta 1.")
+                    Text("darksword exploit patched in iOS 18.3 beta 1.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -87,13 +87,13 @@ struct DeviceCompatibilityView: View {
             // Exploit info
             Section {
                 exploitRow("Kernel", "darksword (socket KRW)", "A11–A18 universal", .orange)
-                exploitRow("Offsets", "XPF dynamic resolve", "Tanpa hardcode", .blue)
+                exploitRow("Offsets", "XPF dynamic resolve", "No hardcoded offsets", .blue)
                 exploitRow("Trust Cache", "MSM XPC inject", "Universal", .green)
                 exploitRow("KASLR", "Auto-detect per boot", "Random slide", .purple)
             } header: {
                 Label("Exploit Components", systemImage: "cpu")
             } footer: {
-                Text("Semua komponen universal. Hanya KASLR slide yang random per boot (auto-detected).")
+                Text("All components are universal. Only KASLR slide is random per boot (auto-detected).")
             }
             
             // Supported devices

@@ -41,7 +41,7 @@ struct ParsedLogLine: Identifiable {
 }
 
 enum LogTagFilter: String, CaseIterable, Identifiable {
-    case all = "Semua"
+    case all = "All"
     case ds = "Exploit"
     case offs = "Offsets"
     case kcache = "Kcache"

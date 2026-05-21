@@ -41,7 +41,7 @@ struct LogsView: View {
                 }
             }
             .navigationTitle("Logs")
-            .searchable(text: $search, prompt: "Cari log…")
+            .searchable(text: $search, prompt: "Search logs...")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Toggle(isOn: $followTail) {

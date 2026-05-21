@@ -50,7 +50,7 @@ struct SettingsView: View {
                     NavigationLink {
                         GuideView()
                     } label: {
-                        Label("Panduan / Quick Start", systemImage: "book.fill")
+                        Label("Guide / Quick Start", systemImage: "book.fill")
                     }
                     NavigationLink("Credits", destination: CreditsView())
                 }
@@ -112,7 +112,7 @@ struct SettingsView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                         } label: {
-                            Text("Kernelcache + XPF siap")
+                            Text("Kernelcache + XPF ready")
                         }
                         Button {
                             guard !dlingkcache else { return }
@@ -127,12 +127,12 @@ struct SettingsView: View {
                         } label: {
                             if dlingkcache {
                                 HStack {
-                                    Text("Memverifikasi ulang…")
+                                    Text("Re-verifying...")
                                     Spacer()
                                     ProgressView()
                                 }
                             } else {
-                                Text("Verifikasi ulang XPF")
+                                Text("Re-verify XPF")
                             }
                         }
                         .disabled(dlingkcache || !mgr.dsready)
@@ -200,7 +200,7 @@ struct SettingsView: View {
                                 if kaenabled { toggleka() }
                             }
                         }
-                    Toggle("Log polos (tanpa warna/filter)", isOn: $plainLogsMode)
+                    Toggle("Plain logs (no color/filter)", isOn: $plainLogsMode)
                     Picker("Logs Display", selection: $selectedlogdisplaymode) {
                         ForEach(logsdisplaymode.allCases, id: \.self) { mode in
                             Text(mode.rawValue).tag(mode)

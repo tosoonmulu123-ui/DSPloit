@@ -104,12 +104,12 @@ final class DeviceCompat {
         
         // Check chip
         guard chip.isExploitable else {
-            return (false, false, "Chip tidak didukung (\(chip.rawValue)). Butuh A11–A18 atau M1/M2.")
+            return (false, false, "Unsupported chip (\(chip.rawValue)). Requires A11–A18 or M1/M2.")
         }
         
         // Check MIE (A19+ / iPhone18,x)
         if machine.contains("iPhone18,") {
-            return (false, false, "Device memiliki MIE (Memory Isolation Engine). Tidak bisa di-exploit.")
+            return (false, false, "Device has MIE (Memory Isolation Engine). Cannot be exploited.")
         }
         
         // Check iOS version
@@ -118,7 +118,7 @@ final class DeviceCompat {
         // Also supported: 26.0 - 26.0.1 (special case from isunsupported)
         
         if major < 16 {
-            return (false, false, "iOS \(major).\(minor) terlalu lama. Minimum iOS 16.0.")
+            return (false, false, "iOS \(major).\(minor) is too old. Minimum iOS 16.0.")
         }
         
         if major >= 16 && major <= 17 {
@@ -132,13 +132,13 @@ final class DeviceCompat {
                 return (true, false, nil)
             } else {
                 // iOS 18.3+ — PATCHED
-                return (false, true, "iOS 18.\(minor) sudah di-patch. darksword exploit di-fix di 18.3 beta 1.")
+                return (false, true, "iOS 18.\(minor) is patched. darksword exploit fixed in 18.3 beta 1.")
             }
         }
         
         if major >= 19 && major <= 25 {
             // Hypothetical future versions — patched
-            return (false, true, "iOS \(major).\(minor) sudah di-patch.")
+            return (false, true, "iOS \(major).\(minor) is patched.")
         }
         
         if major == 26 {
@@ -146,10 +146,10 @@ final class DeviceCompat {
             if minor == 0 && patch <= 1 {
                 return (true, false, nil)
             }
-            return (false, true, "iOS 26.\(minor).\(patch) tidak didukung.")
+            return (false, true, "iOS 26.\(minor).\(patch) is not supported.")
         }
         
-        return (false, true, "iOS \(major).\(minor) tidak didukung.")
+        return (false, true, "iOS \(major).\(minor) is not supported.")
     }
     
     // MARK: - Chip Detection
