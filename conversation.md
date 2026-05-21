@@ -218,3 +218,36 @@ Panic di Exp 94 disebabkan oleh:
 2. Jika berhasil → binary search flag mana yang spesifik
 3. Jika gagal → combine dengan heap TC inject (Exp 94 fixed)
 4. CoreTrust __DATA (`0xfffffff00a3b1230`, size `0xe8`) juga mungkin writable — test berikutnya
+
+## 14. Exp 93b-93g Results — AMFI Flags = BUKAN Enforcement
+
+**Definitief bewezen:**
+- 10 boolean flags di AMFI __DATA BUKAN enforcement flags
+- CDHash validation menyebabkan SIGKILL terlepas dari status flag
+- `fork+execve` via RC BROKEN (child tidak pernah execve)
+- `posix_spawn` dari `/var/containers/Bundle/` = ret=0 tapi SIGKILL
+- `posix_spawn` dari `/var/tmp/` = ret=1 (EPERM, sandbox)
+- AMFI flags ON vs OFF TIDAK berpengaruh terhadap SIGKILL
+
+**Spawn path discovery:**
+- `/var/containers/Bundle/` → spawn BERHASIL (ret=0) tapi SIGKILL oleh AMFI
+- `/var/tmp/`, `/var/root/`, `/var/mobile/` → ret=1 (sandbox block)
+- `/usr/libexec/amfid` (original) → ret=0 tapi SIGKILL (conflict dengan amfid running)
+
+## 15. Analisis Kernelcache — VECTOR BARU: __DATA_CONST
+
+**Segment AMFI fileset component:**
+```
+__TEXT           vm=0xfffffff007497c30 size=0xbaf3
+__TEXT_EXEC      vm=0xfffffff008f76d10 size=0x263e4  (KTRR, kode enforcement)
+__DATA           vm=0xfffffff00a330098 size=0x541    (WRITABLE! terbukti)
+__DATA_CONST     vm=0xfffffff007b77a98 size=0x6280   (mac_policy_ops di sini!)
+__LINKEDIT       vm=0xfffffff00a450000 size=0x529a1
+```
+
+**INSIGHT KUNCI:** `mac_policy_ops` adalah tabel function pointer yang dipanggil setiap kali binary di-spawn. Pointer `mpo_vnode_check_exec` memutuskan apakah binary boleh jalan atau di-SIGKILL.
+
+**Exp 96:** Test write ke AMFI __DATA_CONST. Kalau writable:
+1. Cari gadget "MOV W0, #0; RET" di kernel
+2. Overwrite `mpo_vnode_check_exec` → gadget
+3. Semua binary diizinkan → FULL JAILBREAK
