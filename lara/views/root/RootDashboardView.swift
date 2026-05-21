@@ -80,7 +80,6 @@ struct RootDashboardView: View {
                 navTool("folder.fill", "File Manager", "Root file browser", .blue, RootFileManagerView())
                 navTool("shippingbox.fill", "Packages", "Install tweaks & debs", .purple, PackageManagerView())
                 navTool("building.columns.fill", "Banking", "Hide jailbreak", .green, MobileBankingView())
-                navTool("cpu", "Compatibility", "Device support", .orange, DeviceCompatibilityView())
             }
         }
     }
