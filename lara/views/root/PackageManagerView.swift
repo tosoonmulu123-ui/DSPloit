@@ -196,6 +196,9 @@ struct PackageManagerView: View {
             
             // Quick install section
             Section("Quick Install") {
+                quickInstallRow("Filza", "Root file manager", "folder.fill", .blue) {
+                    installFromURL(name: "Filza", url: "https://tigisoftware.com/cydia/debs/com.tigisoftware.filza_4.0.2_iphoneos-arm64.deb")
+                }
                 quickInstallRow("Sileo", "Package manager GUI", "shippingbox.fill", .purple) {
                     installFromURL(name: "Sileo", url: "https://github.com/Sileo/Sileo/releases/latest/download/org.coolstar.sileo_2.6_iphoneos-arm64.deb")
                 }
@@ -589,84 +592,34 @@ struct PackageManagerView: View {
     }
     
     private func extractDeb(name: String, debPath: String, data: Data) {
-        installLog.append("[install] Extracting \(name).deb...")
+        installLog.append("[install] Extracting \(name).deb with DebInstaller...")
         installProgress = 0.8
         
-        // .deb is an ar archive containing:
-        // - debian-binary (version)
-        // - control.tar.gz (package info)
-        // - data.tar.gz (actual files)
-        
-        // For now, we extract using dpkg if available, or manual ar parsing
-        // Since we have root, try dpkg first
-        #if !DISABLE_REMOTECALL
-        root.executeAsRoot(operation: "dpkg_install") { rc in
-            // Check if dpkg exists
-            let dpkgPath = remote_alloc_str(rc, "/var/jb/usr/bin/dpkg")
-            let hasDpkg = RootExecutor.rcall(rc, "access", dpkgPath, 0) == 0
-            RootExecutor.rcall(rc, "free", dpkgPath)
-            
-            if hasDpkg {
-                // Use dpkg -i
-                let debAddr = remote_alloc_str(rc, debPath)
-                let dpkgAddr = remote_alloc_str(rc, "/var/jb/usr/bin/dpkg")
-                let flagAddr = remote_alloc_str(rc, "-i")
-                
-                // posix_spawn dpkg -i package.deb
-                let pidAddr = rc.trojanMem + 0x300
-                rc[pidAddr].setValue32(0)
-                
-                let argvBase = rc.trojanMem + 0x400
-                rc[argvBase].setValue64(dpkgAddr)
-                rc[argvBase + 8].setValue64(flagAddr)
-                rc[argvBase + 16].setValue64(debAddr)
-                rc[argvBase + 24].setValue64(0)
-                
-                let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, dpkgAddr, 0, 0, argvBase, 0)
-                let pid = rc[pidAddr].value32()
-                
-                RootExecutor.rcall(rc, "free", debAddr)
-                RootExecutor.rcall(rc, "free", dpkgAddr)
-                RootExecutor.rcall(rc, "free", flagAddr)
-                
-                DispatchQueue.main.async {
-                    if ret == 0 {
-                        self.installLog.append("[install] ✅ dpkg -i spawned (PID \(pid))")
-                    } else {
-                        self.installLog.append("[install] ⚠️ dpkg spawn failed (ret=\(ret))")
-                    }
-                }
-                return (ret == 0, "dpkg -i \(name)", UInt64(pid))
-            } else {
-                // Manual install: just record in dpkg status
-                let statusPath = remote_alloc_str(rc, "/var/jb/var/lib/dpkg/status")
-                let fd = RootExecutor.rcall(rc, "open", statusPath, UInt64(O_WRONLY | O_APPEND), 0)
-                if fd != UInt64(bitPattern: -1) {
-                    let entry = "\nPackage: \(name.lowercased())\nStatus: install ok installed\nVersion: 1.0\n\n"
-                    let entryAddr = remote_alloc_str(rc, entry)
-                    RootExecutor.rcall(rc, "write", fd, entryAddr, UInt64(entry.count))
-                    RootExecutor.rcall(rc, "close", fd)
-                    RootExecutor.rcall(rc, "free", entryAddr)
-                }
-                RootExecutor.rcall(rc, "free", statusPath)
-                
-                DispatchQueue.main.async {
-                    self.installLog.append("[install] ✅ \(name) registered (manual — dpkg not available)")
-                    self.installLog.append("[install] ℹ️ Install dpkg/apt first for full package management")
-                }
-                return (true, "registered \(name)", 0)
+        let installer = DebInstaller { [weak self] msg in
+            DispatchQueue.main.async {
+                self?.installLog.append(msg)
             }
         }
-        #endif
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-            self.installProgress = 1.0
-            self.isInstalling = false
-            self.installLog.append("[install] ✅ \(name) installation complete")
-            self.installedPackages.append(InstalledPackage(
-                name: name, bundleId: name.lowercased(), version: "1.0", installedDate: Date()
-            ))
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        installer.install(debData: data, name: name) { [weak self] success, fileCount in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.installProgress = 1.0
+                self.isInstalling = false
+                
+                if success {
+                    self.installLog.append("[install] ✅ \(name) installed (\(fileCount) files extracted)")
+                    self.installLog.append("[install] ℹ️ If app was installed, respring to see icon on Home Screen")
+                    self.installedPackages.append(InstalledPackage(
+                        name: name, bundleId: name.lowercased().replacingOccurrences(of: " ", with: "."),
+                        version: "1.0", installedDate: Date()
+                    ))
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                } else {
+                    self.installLog.append("[install] ❌ \(name) extraction failed")
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            }
         }
     }
 }

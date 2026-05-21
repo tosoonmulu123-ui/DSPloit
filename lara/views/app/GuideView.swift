@@ -1,6 +1,6 @@
 //
 //  GuideView.swift
-//  DSPloit — Quick start (Indonesia)
+//  DSPloit — Quick Start Guide
 //
 
 import SwiftUI
@@ -50,50 +50,52 @@ struct GuideView: View {
 
                     **Success in Logs:** `(kcache) XPF resolve OK` or `(offs) kernproc: 0x...`
 
-                    **Failed:** `(offs) kernelcache download failed` → try **Import** file from your IPSW (see info ⓘ in Settings).
+                    **Failed:** `(offs) kernelcache download failed` → try **Import** from your IPSW (see info ⓘ in Settings).
                     """)
                 }
 
                 Section {
-                    stepHeader("Step 3", "AMFI Lab (without full jailbreak)")
+                    stepHeader("Step 3", "Full Jailbreak")
+                    stepBody("""
+                    If Jailbreak on Main completes with **🎉 Jailbreak complete!** → bootstrap `/var/jb` is ready.
+
+                    Open **Root** tab to access:
+                    • **File Manager** — browse filesystem with root access
+                    • **Packages** — install Sileo, Filza, tweaks (.deb)
+                    • **Banking** — hide jailbreak from banking apps
+                    """)
+                }
+
+                Section {
+                    stepHeader("Optional", "AMFI Lab (advanced)")
                     stepBody("""
                     Only need **Step 1 + 2**. **Root** tab → **AMFI Lab** → **Jailbreak Path**:
 
-                    ① **Physmap Access (74)** — tunggu hijau (boleh skip jika sudah verified).
-                    ② **Trust Cache Probe (77)** — baca hasil di kartu + Logs.
-                    ③ **Inject** — **jangan** sampai ② hijau.
+                    ① **Physmap Access (74)** — wait for green (skip if already verified).
+                    ② **Trust Cache Probe (77)** — read results in card + Logs.
 
-                    **Jangan tutup app** dari app switcher (bisa panic). Pakai **Respring** di Main jika perlu.
+                    **Do NOT close app** from app switcher (can cause panic). Use **Respring** on Main if needed.
                     """)
                 }
 
-                Section {
-                    stepHeader("Opsional", "Jailbreak penuh (bootstrap)")
-                    stepBody("""
-                    Jika Jailbreak di Main sampai **🎉 Jailbreak complete!** → bootstrap `/var/jb` siap.
-
-                    Kalau gagal di **Sandbox escape** tapi exploit hijau → AMFI Lab tetap bisa (hanya butuh KRW). Build terbaru memperlonggar verifikasi sandbox.
-                    """)
+                Section("Reading Logs") {
+                    Label("Tap terminal icon on Main → filter chips: Exploit, Offsets, Kcache", systemImage: "terminal")
+                    Label("Green = success · Red = failed · Orange = warning", systemImage: "paintpalette")
+                    Label("Tap a line = copy to clipboard", systemImage: "doc.on.doc")
+                    Label("Settings → disable **Plain Log** for colors + filter chips", systemImage: "text.alignleft")
                 }
 
-                Section("Cara baca Logs") {
-                    Label("Tap ikon terminal di Main → filter chip: Exploit, Offsets, Kcache", systemImage: "terminal")
-                    Label("Hijau = sukses · Merah = gagal · Oranye = peringatan", systemImage: "paintpalette")
-                    Label("Tap satu baris = salin ke clipboard", systemImage: "doc.on.doc")
-                    Label("Settings → matikan **Log polos** untuk warna + filter chip", systemImage: "text.alignleft")
-                }
-
-                Section("Peringatan") {
-                    Label("Reboot = hilang jailbreak — ulangi Langkah 1–2", systemImage: "arrow.clockwise")
-                    Label("Exp 77 Inject bisa panic — hanya setelah Probe hijau", systemImage: "exclamationmark.triangle")
-                    Label("Jangan baca __ppl_data (otomatis dilewati di Probe)", systemImage: "hand.raised")
+                Section("Warnings") {
+                    Label("Reboot = jailbreak lost — repeat Steps 1–2", systemImage: "arrow.clockwise")
+                    Label("AMFI Inject can panic — only after Probe is green", systemImage: "exclamationmark.triangle")
+                    Label("Don't read __ppl_data (auto-skipped in Probe)", systemImage: "hand.raised")
                 }
             }
-            .navigationTitle("Panduan")
+            .navigationTitle("Guide")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Selesai") { dismiss() }
+                    Button("Done") { dismiss() }
                 }
             }
         }

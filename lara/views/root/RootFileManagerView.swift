@@ -472,7 +472,9 @@ struct RootFileManagerView: View {
                 if name != "." && name != ".." {
                     var dtype: UInt8 = 0
                     rc.remoteRead(dirent + 20, to: &dtype, size: 1)
-                    items.append(FileEntry(name: name, isDir: dtype == 4))
+                    // dtype 4 = directory, 10 = symlink (treat symlinks as directories for navigation)
+                    let isDir = dtype == 4 || dtype == 10
+                    items.append(FileEntry(name: name, isDir: isDir))
                 }
             }
             
