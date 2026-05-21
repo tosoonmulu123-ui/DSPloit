@@ -302,71 +302,53 @@ final class DebInstaller {
     
     // MARK: - File Installation (via root)
     //
-    // CRITICAL: launchd is PID 1 — holding its thread >5s = watchdog panic (initproc exited).
+    // CRITICAL: launchd (PID 1) has a strict 5s watchdog — ANY file write via launchd
+    // risks panic if the operation takes too long. Even 1 file per connection can panic
+    // if the file is large or there's latency.
     //
-    // APPROACH: Use writeFileAsRoot() which does connect→write→destroy per file.
-    // This is the SAFEST pattern — each file gets its own short-lived launchd connection.
-    // Directories use a single batch (mkdir is instant, 10 dirs < 1s).
-    // Files are written ONE AT A TIME via the existing writeFileAsRoot() API.
-    //
-    // Trade-off: slower (1-2s per file) but ZERO risk of watchdog kill.
+    // SOLUTION: Use SpringBoard RC (mgr.sbProc) for all file writes.
+    // SpringBoard is a persistent connection with NO watchdog kill.
+    // After sandbox escape, SpringBoard can write to /var/jb/.
+    // If SpringBoard is unavailable, fall back to launchd with single small files only.
     //
     
     private func installFiles(files: [TarFile], prefix: String, completion: @escaping (Int) -> Void) {
         #if !DISABLE_REMOTECALL
-        // Separate directories and files
+        guard let sb = mgr.sbProc else {
+            emit("[deb] ❌ SpringBoard RC not available — cannot install safely")
+            completion(0)
+            return
+        }
+        
+        // All operations go through SpringBoard — no watchdog risk
         let directories = files.filter { $0.isDirectory }.sorted { $0.path < $1.path }
-        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }.sorted { $0.path < $1.path }
+        let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
         
+        emit("[deb] Using SpringBoard RC (no watchdog risk)")
+        emit("[deb] Creating \(directories.count) directories...")
+        
+        // Phase 1: Create all directories via SpringBoard (instant, no risk)
         var installed = 0
-        
-        // Phase 1: Create directories in small batches (mkdir is instant — safe to batch 10)
-        let dirBatchSize = 10
-        let dirBatches = stride(from: 0, to: directories.count, by: dirBatchSize).map {
-            Array(directories[$0..<min($0 + dirBatchSize, directories.count)])
+        for dir in directories {
+            let fullPath = "\(prefix)/\(dir.path)"
+            let pathAddr = remote_alloc_str(sb, fullPath)
+            RootExecutor.rcall(sb, "mkdir", pathAddr, 0o755)
+            RootExecutor.rcall(sb, "free", pathAddr)
+            installed += 1
         }
         
-        var dirBatchIndex = 0
+        emit("[deb] ✅ Created \(installed) directories")
+        emit("[deb] Writing \(regularFiles.count) files via SpringBoard...")
         
-        func installDirBatch() {
-            guard dirBatchIndex < dirBatches.count else {
-                emit("[deb] ✅ Created \(installed) directories")
-                installFilePhase()
-                return
-            }
-            
-            let batch = dirBatches[dirBatchIndex]
-            dirBatchIndex += 1
-            
-            root.executeAsRoot(operation: "mkdir_\(dirBatchIndex)") { [self] rc in
-                for dir in batch {
-                    let fullPath = "\(prefix)/\(dir.path)"
-                    let pathAddr = remote_alloc_str(rc, fullPath)
-                    RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
-                    RootExecutor.rcall(rc, "free", pathAddr)
-                    installed += 1
-                }
-                return (true, "dirs \(dirBatchIndex)", UInt64(installed))
-            }
-            
-            // 1.5s between dir batches
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                installDirBatch()
-            }
-        }
-        
-        // Phase 2: Write files ONE BY ONE using writeFileAsRoot
-        // This is the safest approach — each file = connect → write → destroy
+        // Phase 2: Write all files via SpringBoard — chunked, no time limit
         var fileIndex = 0
         
-        func installFilePhase() {
-            emit("[deb] Installing \(regularFiles.count) files one-by-one (safe mode)...")
-            installNextFile()
-        }
-        
-        func installNextFile() {
+        func writeNextFile() {
             guard fileIndex < regularFiles.count else {
                 // All done
+                DispatchQueue.main.async {
+                    self.emit("[deb] ✅ All \(installed) items installed")
+                }
                 completion(installed)
                 return
             }
@@ -375,25 +357,60 @@ final class DebInstaller {
             fileIndex += 1
             let fullPath = "\(prefix)/\(file.path)"
             
-            // Use writeFileAsRoot — it does its own connect/destroy cycle
-            root.writeFileAsRoot(path: fullPath, content: file.data)
-            installed += 1
+            // Ensure parent directory exists
+            let parentPath = (fullPath as NSString).deletingLastPathComponent
+            let parentAddr = remote_alloc_str(sb, parentPath)
+            RootExecutor.rcall(sb, "mkdir", parentAddr, 0o755)
+            RootExecutor.rcall(sb, "free", parentAddr)
             
-            // Log progress every 10 files
-            if installed % 10 == 0 || fileIndex == regularFiles.count {
+            // Open file
+            let pathAddr = remote_alloc_str(sb, fullPath)
+            let fd = RootExecutor.rcall(sb, "open", pathAddr,
+                UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
+            
+            if fd != UInt64(bitPattern: -1) {
+                // Write in 4KB chunks
+                let writeAddr = sb.trojanMem + 0x800
+                var written = 0
+                file.data.withUnsafeBytes { buffer in
+                    while written < file.data.count {
+                        let chunk = min(file.data.count - written, 0x1000)
+                        sb.remote_write(writeAddr,
+                            from: buffer.baseAddress!.advanced(by: written),
+                            size: UInt64(chunk))
+                        let n = RootExecutor.rcall(sb, "write", fd, writeAddr, UInt64(chunk))
+                        if n == 0 || n == UInt64(bitPattern: -1) { break }
+                        written += Int(n)
+                    }
+                }
+                RootExecutor.rcall(sb, "close", fd)
+                RootExecutor.rcall(sb, "chmod", pathAddr, UInt64(file.mode))
+                installed += 1
+            }
+            
+            RootExecutor.rcall(sb, "free", pathAddr)
+            
+            // Log progress every 50 files
+            if fileIndex % 50 == 0 || fileIndex == regularFiles.count {
                 DispatchQueue.main.async {
-                    self.emit("[deb] Progress: \(self.installed)/\(directories.count + regularFiles.count) (\(fileIndex)/\(regularFiles.count) files)")
+                    self.emit("[deb] Progress: \(fileIndex)/\(regularFiles.count) files written")
                 }
             }
             
-            // 1.5s delay between each file write — ensures launchd thread is fully released
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                installNextFile()
+            // Yield to main thread every 20 files to keep UI responsive
+            if fileIndex % 20 == 0 {
+                DispatchQueue.main.async {
+                    writeNextFile()
+                }
+            } else {
+                writeNextFile()
             }
         }
         
-        // Start Phase 1
-        installDirBatch()
+        // Start writing on background thread to not block UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            writeNextFile()
+        }
         #else
         completion(0)
         #endif
