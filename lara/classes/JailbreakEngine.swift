@@ -203,17 +203,71 @@ final class JailbreakEngine: ObservableObject {
             return (true, "Bootstrap directories created", 0)
         }
         
-        // After bootstrap dirs, inject trust cache
+        // After bootstrap dirs, disable AMFI
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
             guard let self else { return }
             self.appendLog("✅ Bootstrap ready")
             self.progress = 0.85
-            self.step6_trustCacheInject()
+            self.step6_disableAMFI()
         }
     }
     
-    private func step6_trustCacheInject() {
-        state = .bootstrapping
+    // MARK: - Step 6: Disable AMFI Flags (permanent until reboot)
+    
+    /// Disable all 10 AMFI boolean enforcement flags in kernel memory.
+    /// This allows unsigned/third-party binaries to execute without SIGKILL.
+    /// Proven working in Exp 93b — flags control code signing enforcement.
+    /// Flags reset on reboot (semi-tethered behavior).
+    private func step6_disableAMFI() {
+        state = .injectingTC
+        appendLog("Disabling AMFI enforcement flags...")
+        
+        let kernBase = ds_get_kernel_base()
+        guard kernBase != 0 else {
+            appendLog("⚠️ Kernel base not available — skip AMFI disable")
+            step7_trustCacheInject()
+            return
+        }
+        
+        let slide = kernBase - 0xfffffff007004000
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        
+        // All 10 AMFI boolean flags (confirmed writable in Exp 93/93b)
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        
+        var disabledCount = 0
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            ds_kwrite64(addr, 0)
+            let readback = ds_kread64_safe(addr)
+            if readback == 0 { disabledCount += 1 }
+        }
+        
+        if disabledCount == flagOffsets.count {
+            appendLog("✅ AMFI disabled (\(disabledCount)/\(flagOffsets.count) flags → 0)")
+        } else {
+            appendLog("⚠️ AMFI partial: \(disabledCount)/\(flagOffsets.count) flags disabled")
+        }
+        
+        // Also disable cs_enforcement in main kernel __DATA if available
+        // This is belt-and-suspenders — AMFI flags alone should suffice
+        let csEnforcementOffset: UInt64 = 0x8B8 // cs_enforcement_disable in kernel __DATA
+        let csAddr = kernBase &+ csEnforcementOffset
+        let csVal = ds_kread64_safe(csAddr)
+        if csVal == 0 {
+            ds_kwrite64(csAddr, 1) // 1 = enforcement disabled
+            let csReadback = ds_kread64_safe(csAddr)
+            if csReadback == 1 {
+                appendLog("✅ cs_enforcement_disable = 1")
+            }
+        }
+        
+        progress = 0.9
+        step7_trustCacheInject()
+    }
+    
+    private func step7_trustCacheInject() {
+        state = .injectingTC
         appendLog("Injecting trust cache via MobileStorageMounter...")
         
         guard let sb = mgr.sbProc else {

@@ -461,6 +461,9 @@ final class DebInstaller {
     
     private func runUicache(completion: @escaping () -> Void) {
         #if !DISABLE_REMOTECALL
+        // Ensure AMFI is disabled before launching any new binary
+        ensureAMFIDisabled()
+        
         // uicache via SpringBoard's LSApplicationWorkspace
         guard let sb = mgr.sbProc else {
             emit("[deb] ⚠️ SpringBoard RC not available — skip uicache")
@@ -486,5 +489,37 @@ final class DebInstaller {
         #else
         completion()
         #endif
+    }
+    
+    // MARK: - AMFI Enforcement Disable
+    
+    /// Ensure AMFI flags are disabled so installed binaries can execute.
+    /// This is idempotent — safe to call multiple times.
+    private func ensureAMFIDisabled() {
+        let kernBase = ds_get_kernel_base()
+        guard kernBase != 0 else {
+            emit("[deb] ⚠️ Kernel base unavailable — AMFI state unknown")
+            return
+        }
+        
+        let slide = kernBase - 0xfffffff007004000
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        
+        // Check if already disabled
+        let firstFlag = ds_kread64_safe(amfiDataSlid &+ flagOffsets[0])
+        if firstFlag == 0 {
+            // Already disabled — no action needed
+            return
+        }
+        
+        // Disable all flags
+        emit("[deb] AMFI flags still enabled — disabling for binary execution...")
+        var count = 0
+        for off in flagOffsets {
+            ds_kwrite64(amfiDataSlid &+ off, 0)
+            if ds_kread64_safe(amfiDataSlid &+ off) == 0 { count += 1 }
+        }
+        emit("[deb] ✅ AMFI disabled (\(count)/\(flagOffsets.count))")
     }
 }
