@@ -5783,10 +5783,6 @@ struct AMFIExperimentView: View {
         let pidSB = RootExecutor.rcall(sb, "getpid")
         detail += "SpringBoard PID: \(pidSB)\n"
 
-        // Cleanup
-        RootExecutor.rcall(sb, "unlink", dylibPathAddr)
-        RootExecutor.rcall(sb, "free", dylibPathAddr)
-
         // Summary
         detail += "\n=== SUMMARY ===\n"
         let success = detail.contains("🎉")
