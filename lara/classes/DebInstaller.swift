@@ -140,7 +140,7 @@ final class DebInstaller {
         
         func writeNextChunk() {
             guard totalWritten < totalSize else {
-                DispatchQueue.main.async { completion(true) }
+                completion(true)
                 return
             }
             
@@ -194,10 +194,15 @@ final class DebInstaller {
                 RootExecutor.rcall(rc, "free", pathAddr)
                 totalWritten += written
                 
-                // Schedule next chunk AFTER this one completes (inside the block)
+                // Schedule next chunk or finish
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     self.emit("[deb] Chunk \(callIndex)/\(totalCalls) done (\(totalWritten)/\(totalSize))")
-                    writeNextChunk()
+                    if totalWritten >= totalSize {
+                        self.emit("[deb] ✅ All chunks written")
+                        completion(true)
+                    } else {
+                        writeNextChunk()
+                    }
                 }
                 
                 return (true, "chunk \(callIndex): \(written) bytes", UInt64(totalWritten))
