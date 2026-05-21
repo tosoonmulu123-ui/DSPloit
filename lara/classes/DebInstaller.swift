@@ -222,36 +222,48 @@ final class DebInstaller {
         root.executeAsRoot(operation: "spawn_tar") { rc in
             let mem = rc.trojanMem
             
-            // Use /bin/sh -c "tar [flags] [path] -C [dest]" for flexibility
-            let shAddr = remote_alloc_str(rc, "/bin/sh")
-            let dashC = remote_alloc_str(rc, "-c")
-            let cmd = "tar \(flags) \(tarPath) -C \(destDir)"
-            let cmdAddr = remote_alloc_str(rc, cmd)
+            // Spawn /usr/bin/tar directly (no shell — /bin/sh doesn't exist on iOS)
+            let tarBin = remote_alloc_str(rc, "/usr/bin/tar")
             
-            // argv = ["/bin/sh", "-c", "tar ...", NULL]
+            // argv = ["/usr/bin/tar", flags..., tarPath, "-C", destDir, NULL]
+            // Split flags into individual args
             let argvBase = mem + 0x400
-            rc[argvBase].setValue64(shAddr)
-            rc[argvBase + 8].setValue64(dashC)
-            rc[argvBase + 16].setValue64(cmdAddr)
-            rc[argvBase + 24].setValue64(0) // NULL terminator
+            var argPtrs: [UInt64] = [tarBin]
+            
+            // Parse flags: "-xzf" → ["-xzf"] or "--zstd -xf" → ["--zstd", "-xf"]
+            let flagParts = flags.split(separator: " ").map(String.init)
+            for flag in flagParts {
+                let flagAddr = remote_alloc_str(rc, flag)
+                argPtrs.append(flagAddr)
+            }
+            
+            let pathAddr = remote_alloc_str(rc, tarPath)
+            let dashC = remote_alloc_str(rc, "-C")
+            let destAddr = remote_alloc_str(rc, destDir)
+            argPtrs.append(pathAddr)
+            argPtrs.append(dashC)
+            argPtrs.append(destAddr)
+            argPtrs.append(0) // NULL terminator
+            
+            // Write argv array
+            for (i, ptr) in argPtrs.enumerated() {
+                rc[argvBase + UInt64(i * 8)].setValue64(ptr)
+            }
             
             // pid output
             let pidAddr = mem + 0x300
             rc[pidAddr].setValue32(0)
             
-            // posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, NULL)
-            // This is INSTANT — launchd just spawns the process and returns
-            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, shAddr, 0, 0, argvBase, 0)
+            // posix_spawn(&pid, "/usr/bin/tar", NULL, NULL, argv, NULL)
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, tarBin, 0, 0, argvBase, 0)
             let pid = rc[pidAddr].value32()
             
             // Free strings
-            RootExecutor.rcall(rc, "free", shAddr)
-            RootExecutor.rcall(rc, "free", dashC)
-            RootExecutor.rcall(rc, "free", cmdAddr)
+            for ptr in argPtrs where ptr != 0 {
+                RootExecutor.rcall(rc, "free", ptr)
+            }
             
             if ret == 0 && pid != 0 {
-                // SUCCESS — tar is now running in its own process
-                // DO NOT waitpid — that would hold launchd thread!
                 DispatchQueue.main.async {
                     self.emit("[deb] ✅ tar spawned as PID \(pid)")
                     completion(true)
