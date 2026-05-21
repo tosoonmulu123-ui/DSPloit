@@ -302,13 +302,14 @@ final class DebInstaller {
     
     // MARK: - File Installation (via root)
     //
-    // CRITICAL FIX: launchd is PID 1 — holding its thread >5s triggers watchdog panic.
-    // Previous approach: 15 files per launchd connection → easily exceeds 5s on large .debs.
-    // New approach:
-    //   - Directories: batch up to 20 per connection (mkdir is instant)
-    //   - Files: max 3 per connection (write is slow due to chunk copy)
-    //   - Large files (>16KB): 1 per connection with chunked write
-    //   - 1.5s delay between batches (enough for launchd to breathe)
+    // CRITICAL: launchd is PID 1 — holding its thread >5s = watchdog panic (initproc exited).
+    //
+    // APPROACH: Use writeFileAsRoot() which does connect→write→destroy per file.
+    // This is the SAFEST pattern — each file gets its own short-lived launchd connection.
+    // Directories use a single batch (mkdir is instant, 10 dirs < 1s).
+    // Files are written ONE AT A TIME via the existing writeFileAsRoot() API.
+    //
+    // Trade-off: slower (1-2s per file) but ZERO risk of watchdog kill.
     //
     
     private func installFiles(files: [TarFile], prefix: String, completion: @escaping (Int) -> Void) {
@@ -319,8 +320,8 @@ final class DebInstaller {
         
         var installed = 0
         
-        // Phase 1: Create all directories (fast — batch 20 at a time)
-        let dirBatchSize = 20
+        // Phase 1: Create directories in small batches (mkdir is instant — safe to batch 10)
+        let dirBatchSize = 10
         let dirBatches = stride(from: 0, to: directories.count, by: dirBatchSize).map {
             Array(directories[$0..<min($0 + dirBatchSize, directories.count)])
         }
@@ -329,7 +330,6 @@ final class DebInstaller {
         
         func installDirBatch() {
             guard dirBatchIndex < dirBatches.count else {
-                // Phase 1 done → start Phase 2
                 emit("[deb] ✅ Created \(installed) directories")
                 installFilePhase()
                 return
@@ -338,7 +338,7 @@ final class DebInstaller {
             let batch = dirBatches[dirBatchIndex]
             dirBatchIndex += 1
             
-            root.executeAsRoot(operation: "mkdir_batch_\(dirBatchIndex)") { [self] rc in
+            root.executeAsRoot(operation: "mkdir_\(dirBatchIndex)") { [self] rc in
                 for dir in batch {
                     let fullPath = "\(prefix)/\(dir.path)"
                     let pathAddr = remote_alloc_str(rc, fullPath)
@@ -349,105 +349,47 @@ final class DebInstaller {
                 return (true, "dirs \(dirBatchIndex)", UInt64(installed))
             }
             
-            // Short delay — mkdir is fast, launchd barely notices
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            // 1.5s between dir batches
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 installDirBatch()
             }
         }
         
-        // Phase 2: Write files (slow — small batches)
-        var fileBatchIndex = 0
-        
-        // Split files into safe batches:
-        // - Large files (>16KB): 1 per batch
-        // - Small files (<=16KB): up to 3 per batch
-        func makeFileBatches() -> [[TarFile]] {
-            var batches: [[TarFile]] = []
-            var currentBatch: [TarFile] = []
-            var currentBatchBytes = 0
-            let maxBatchFiles = 3
-            let maxBatchBytes = 32 * 1024 // 32KB total per batch
-            let largeCutoff = 16 * 1024   // 16KB = "large" file
-            
-            for file in regularFiles {
-                if file.data.count > largeCutoff {
-                    // Large file gets its own batch
-                    if !currentBatch.isEmpty {
-                        batches.append(currentBatch)
-                        currentBatch = []
-                        currentBatchBytes = 0
-                    }
-                    batches.append([file])
-                } else if currentBatch.count >= maxBatchFiles || (currentBatchBytes + file.data.count) > maxBatchBytes {
-                    // Current batch is full
-                    batches.append(currentBatch)
-                    currentBatch = [file]
-                    currentBatchBytes = file.data.count
-                } else {
-                    currentBatch.append(file)
-                    currentBatchBytes += file.data.count
-                }
-            }
-            if !currentBatch.isEmpty { batches.append(currentBatch) }
-            return batches
-        }
+        // Phase 2: Write files ONE BY ONE using writeFileAsRoot
+        // This is the safest approach — each file = connect → write → destroy
+        var fileIndex = 0
         
         func installFilePhase() {
-            let fileBatches = makeFileBatches()
-            emit("[deb] Installing \(regularFiles.count) files in \(fileBatches.count) batches...")
+            emit("[deb] Installing \(regularFiles.count) files one-by-one (safe mode)...")
+            installNextFile()
+        }
+        
+        func installNextFile() {
+            guard fileIndex < regularFiles.count else {
+                // All done
+                completion(installed)
+                return
+            }
             
-            func installFileBatch() {
-                guard fileBatchIndex < fileBatches.count else {
-                    completion(installed)
-                    return
-                }
-                
-                let batch = fileBatches[fileBatchIndex]
-                fileBatchIndex += 1
-                
-                root.executeAsRoot(operation: "file_batch_\(fileBatchIndex)") { [self] rc in
-                    for file in batch {
-                        let fullPath = "\(prefix)/\(file.path)"
-                        let pathAddr = remote_alloc_str(rc, fullPath)
-                        
-                        let fd = RootExecutor.rcall(rc, "open", pathAddr,
-                            UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
-                        
-                        if fd != UInt64(bitPattern: -1) {
-                            let writeAddr = rc.trojanMem + 0x800
-                            var written = 0
-                            file.data.withUnsafeBytes { buffer in
-                                while written < file.data.count {
-                                    let chunk = min(file.data.count - written, 0x1000)
-                                    rc.remote_write(writeAddr,
-                                        from: buffer.baseAddress!.advanced(by: written),
-                                        size: UInt64(chunk))
-                                    let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
-                                    if n == 0 || n == UInt64(bitPattern: -1) { break }
-                                    written += Int(n)
-                                }
-                            }
-                            RootExecutor.rcall(rc, "close", fd)
-                            RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
-                            installed += 1
-                        }
-                        
-                        RootExecutor.rcall(rc, "free", pathAddr)
-                    }
-                    
-                    DispatchQueue.main.async {
-                        self.emit("[deb] Batch \(fileBatchIndex)/\(fileBatches.count) done (\(installed) files total)")
-                    }
-                    return (true, "files \(fileBatchIndex)", UInt64(installed))
-                }
-                
-                // 2s delay between file batches — gives launchd time to reset watchdog
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    installFileBatch()
+            let file = regularFiles[fileIndex]
+            fileIndex += 1
+            let fullPath = "\(prefix)/\(file.path)"
+            
+            // Use writeFileAsRoot — it does its own connect/destroy cycle
+            root.writeFileAsRoot(path: fullPath, content: file.data)
+            installed += 1
+            
+            // Log progress every 10 files
+            if installed % 10 == 0 || fileIndex == regularFiles.count {
+                DispatchQueue.main.async {
+                    self.emit("[deb] Progress: \(self.installed)/\(directories.count + regularFiles.count) (\(fileIndex)/\(regularFiles.count) files)")
                 }
             }
             
-            installFileBatch()
+            // 1.5s delay between each file write — ensures launchd thread is fully released
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                installNextFile()
+            }
         }
         
         // Start Phase 1
