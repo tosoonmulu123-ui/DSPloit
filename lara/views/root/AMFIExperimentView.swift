@@ -5661,7 +5661,7 @@ struct AMFIExperimentView: View {
         detail += "=== Test A: dlopen system dylib (baseline) ===\n"
         let sysLib = remote_alloc_str(sb, "/usr/lib/libSystem.B.dylib")
         let handleA = RootExecutor.rcall(sb, "dlopen", sysLib, RTLD_NOW)
-        detail += "dlopen(/usr/lib/libSystem.B.dylib): handle=0x\(String(format: \"%llx\", handleA))\n"
+        detail += "dlopen(/usr/lib/libSystem.B.dylib): handle=0x\(String(format: "%llx", handleA))\n"
         if handleA != 0 {
             detail += "✅ System dylib loaded (expected)\n"
         } else {
@@ -5673,7 +5673,7 @@ struct AMFIExperimentView: View {
         detail += "\n=== Test B: dlopen non-existent (error baseline) ===\n"
         let fakeLib = remote_alloc_str(sb, "/var/tmp/.dsp_nonexist.dylib")
         let handleB = RootExecutor.rcall(sb, "dlopen", fakeLib, RTLD_NOW)
-        detail += "dlopen(nonexist): handle=0x\(String(format: \"%llx\", handleB))\n"
+        detail += "dlopen(nonexist): handle=0x\(String(format: "%llx", handleB))\n"
         if handleB == 0 {
             // Get dlerror
             let dlerrorFn = RootExecutor.rcall(sb, "dlerror")
@@ -5710,7 +5710,7 @@ struct AMFIExperimentView: View {
 
             // dlopen it
             let handleC = RootExecutor.rcall(sb, "dlopen", dylibPathAddr, RTLD_LAZY)
-            detail += "dlopen(\(dylibPath)): handle=0x\(String(format: \"%llx\", handleC))\n"
+            detail += "dlopen(\(dylibPath)): handle=0x\(String(format: "%llx", handleC))\n"
 
             if handleC != 0 {
                 detail += "\n🎉🎉🎉 DLOPEN UNSIGNED DYLIB WORKS! 🎉🎉🎉\n"
@@ -5738,7 +5738,7 @@ struct AMFIExperimentView: View {
 
         if slRet == 0 {
             let handleD = RootExecutor.rcall(sb, "dlopen", symlinkLibAddr, RTLD_NOW)
-            detail += "dlopen(symlink to libz): handle=0x\(String(format: \"%llx\", handleD))\n"
+            detail += "dlopen(symlink to libz): handle=0x\(String(format: "%llx", handleD))\n"
             if handleD != 0 {
                 detail += "✅ dlopen via symlink works!\n"
                 detail += "Ini berarti dlopen follow symlink dan validate target.\n"
