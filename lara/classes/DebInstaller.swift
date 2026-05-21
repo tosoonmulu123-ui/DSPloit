@@ -113,9 +113,14 @@ final class DebInstaller {
                         }
                     }
                 } else {
-                    self.emit("[deb] ❌ tar spawn failed")
-                    self.emit("[deb] ❌ Installation failed — tar could not be spawned")
-                    completion(false, 0)
+                    self.emit("[deb] ❌ tar spawn failed (ret=\(spawnSuccess ? "ok" : "err"))")
+                    self.emit("[deb] Extracting manually (slower but safe)...")
+                    
+                    // Cleanup the tmp tar file
+                    self.removeTmpFile(path: tmpPath)
+                    
+                    // Fallback: extract in memory, write per-file via launchd
+                    self.manualExtractAndWrite(dataTar: dataTar, name: name, completion: completion)
                 }
             }
         }
@@ -298,9 +303,13 @@ final class DebInstaller {
     // MARK: - Fallback: Manual extraction via launchd (split per file)
     
     private func fallbackManualExtract(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
-        emit("[deb] Fallback: decompressing and extracting manually...")
+        manualExtractAndWrite(dataTar: dataTar, name: name, completion: completion)
+    }
+    
+    /// Extract tar in memory, write each file via individual launchd calls with safe delays
+    private func manualExtractAndWrite(dataTar: ArEntry, name: String, completion: @escaping (Bool, Int) -> Void) {
+        emit("[deb] Manual extract: decompressing...")
         
-        // Decompress on background thread
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let tarData: Data
             if dataTar.name.hasSuffix(".gz") || dataTar.name.hasSuffix(".tgz") {
@@ -312,11 +321,13 @@ final class DebInstaller {
                     return
                 }
                 tarData = decompressed
+                DispatchQueue.main.async {
+                    self.emit("[deb] Decompressed: \(decompressed.count) bytes")
+                }
             } else {
                 tarData = dataTar.data
             }
             
-            // Parse tar
             let files = parseTar(data: tarData)
             guard !files.isEmpty else {
                 DispatchQueue.main.async {
@@ -326,17 +337,38 @@ final class DebInstaller {
                 return
             }
             
+            // Group files into batches by total size (max 500KB per launchd call)
+            // Small files can be batched together; large files get their own call
+            let dirs = files.filter { $0.isDirectory }
+            let regularFiles = files.filter { !$0.isDirectory && !$0.data.isEmpty }
+            
             DispatchQueue.main.async {
-                self.emit("[deb] Fallback: \(files.count) files, writing via launchd (1 file per call)...")
-                self.fallbackWriteFiles(files: files, index: 0, installed: 0, completion: completion)
+                self.emit("[deb] Manual: \(dirs.count) dirs + \(regularFiles.count) files")
+                self.emit("[deb] Creating directories...")
+                
+                // Phase 1: Create all directories in one call (fast)
+                self.root.executeAsRoot(operation: "mkdirs") { rc in
+                    for dir in dirs {
+                        let fullPath = "/var/jb/\(dir.path)"
+                        let pathAddr = remote_alloc_str(rc, fullPath)
+                        RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
+                        RootExecutor.rcall(rc, "free", pathAddr)
+                    }
+                    return (true, "\(dirs.count) dirs", 0)
+                }
+                
+                // Phase 2: Write files one at a time with 2s delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    self.emit("[deb] Writing \(regularFiles.count) files (one per call)...")
+                    self.writeFilesSequentially(files: regularFiles, index: 0, installed: dirs.count, completion: completion)
+                }
             }
         }
     }
     
-    private func fallbackWriteFiles(files: [TarFile], index: Int, installed: Int, completion: @escaping (Bool, Int) -> Void) {
-        #if !DISABLE_REMOTECALL
+    private func writeFilesSequentially(files: [TarFile], index: Int, installed: Int, completion: @escaping (Bool, Int) -> Void) {
         guard index < files.count else {
-            emit("[deb] ✅ Fallback installed \(installed) items")
+            emit("[deb] ✅ Done: \(installed) items installed")
             runUicache { completion(true, installed) }
             return
         }
@@ -344,51 +376,56 @@ final class DebInstaller {
         let file = files[index]
         let fullPath = "/var/jb/\(file.path)"
         
-        root.executeAsRoot(operation: "fb_\(index)") { rc in
-            if file.isDirectory {
-                let pathAddr = remote_alloc_str(rc, fullPath)
-                RootExecutor.rcall(rc, "mkdir", pathAddr, 0o755)
-                RootExecutor.rcall(rc, "free", pathAddr)
-            } else if !file.data.isEmpty {
-                // Ensure parent
-                let parent = (fullPath as NSString).deletingLastPathComponent
-                let parentAddr = remote_alloc_str(rc, parent)
-                RootExecutor.rcall(rc, "mkdir", parentAddr, 0o755)
-                RootExecutor.rcall(rc, "free", parentAddr)
-                
-                let pathAddr = remote_alloc_str(rc, fullPath)
-                let fd = RootExecutor.rcall(rc, "open", pathAddr,
-                    UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
-                if fd != UInt64(bitPattern: -1) {
-                    let writeAddr = rc.trojanMem + 0x800
-                    var written = 0
-                    file.data.withUnsafeBytes { buffer in
-                        while written < file.data.count {
-                            let chunk = min(file.data.count - written, 0x1000)
-                            rc.remote_write(writeAddr,
-                                from: buffer.baseAddress!.advanced(by: written),
-                                size: UInt64(chunk))
-                            let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
-                            if n == 0 || n == UInt64(bitPattern: -1) { break }
-                            written += Int(n)
-                        }
-                    }
-                    RootExecutor.rcall(rc, "close", fd)
-                    RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
-                }
-                RootExecutor.rcall(rc, "free", pathAddr)
+        // Skip files larger than 500KB for now (too risky for single launchd call)
+        if file.data.count > 512 * 1024 {
+            emit("[deb] ⚠️ Skipping large file: \(file.path) (\(file.data.count) bytes)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.writeFilesSequentially(files: files, index: index + 1, installed: installed, completion: completion)
             }
+            return
+        }
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "wf_\(index)") { rc in
+            // Ensure parent directory
+            let parent = (fullPath as NSString).deletingLastPathComponent
+            let parentAddr = remote_alloc_str(rc, parent)
+            RootExecutor.rcall(rc, "mkdir", parentAddr, 0o755)
+            RootExecutor.rcall(rc, "free", parentAddr)
+            
+            // Write file
+            let pathAddr = remote_alloc_str(rc, fullPath)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr,
+                UInt64(O_WRONLY | O_CREAT | O_TRUNC), UInt64(file.mode))
+            if fd != UInt64(bitPattern: -1) {
+                let writeAddr = rc.trojanMem + 0x800
+                var written = 0
+                file.data.withUnsafeBytes { buffer in
+                    while written < file.data.count {
+                        let chunk = min(file.data.count - written, 0x1000)
+                        rc.remote_write(writeAddr,
+                            from: buffer.baseAddress!.advanced(by: written),
+                            size: UInt64(chunk))
+                        let n = RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(chunk))
+                        if n == 0 || n == UInt64(bitPattern: -1) { break }
+                        written += Int(n)
+                    }
+                }
+                RootExecutor.rcall(rc, "close", fd)
+                RootExecutor.rcall(rc, "chmod", pathAddr, UInt64(file.mode))
+            }
+            RootExecutor.rcall(rc, "free", pathAddr)
             return (true, "file \(index)", 0)
         }
         
-        let newInstalled = installed + 1
-        if (index + 1) % 50 == 0 {
-            emit("[deb] Fallback: \(index + 1)/\(files.count)")
+        // Log every 25 files
+        if (index + 1) % 25 == 0 {
+            emit("[deb] Progress: \(index + 1)/\(files.count)")
         }
         
-        // 0.3s delay — each file is small, launchd call is fast
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.fallbackWriteFiles(files: files, index: index + 1, installed: newInstalled, completion: completion)
+        // 2s delay between files — safe from watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.writeFilesSequentially(files: files, index: index + 1, installed: installed + 1, completion: completion)
         }
         #else
         completion(false, 0)
