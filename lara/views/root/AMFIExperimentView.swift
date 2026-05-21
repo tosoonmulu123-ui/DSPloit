@@ -5318,7 +5318,7 @@ struct AMFIExperimentView: View {
         // ── Step 3: Copy /usr/bin/id ke /var/tmp dan spawn ───────────
         detail += "=== Step 3: Copy /usr/bin/id → /var/tmp + spawn ===\n"
 
-        let srcBin = "/bin/ls"
+        let srcBin = "/usr/libexec/amfid"
         let dstBin = "/var/tmp/.dsp_signed_copy"
         let srcAddr = remote_alloc_str(rc, srcBin)
         let dstAddr = remote_alloc_str(rc, dstBin)
