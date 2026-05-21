@@ -210,7 +210,7 @@ struct PackageManagerView: View {
                     installFromURL(name: "TrollStore", url: "https://havoc.app/api/download/package/66d4ee514ce732df1fd8b283/com.opa334.trollstorehelper_2.1_iphoneos-arm.deb")
                 }
                 quickInstallRow("Ellekit", "Tweak injection library", "wand.and.stars", .pink) {
-                    installFromURL(name: "Ellekit", url: "https://ellekit.space/ellekit.deb")
+                    installFromURL(name: "Ellekit", url: "https://apt.autotouch.net/debs/iphoneos-arm/ellekit_1.1.3_iphoneos-arm.deb")
                 }
                 
                 Text("If download fails, add the repo in Sources tab and install from there.")
