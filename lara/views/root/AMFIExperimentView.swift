@@ -6187,7 +6187,7 @@ struct AMFIExperimentView: View {
             detail += "system() FOUND!\n\n"
 
             // Coba system("id > /var/tmp/.dsp_system_out")
-            detail += "--- system("id > /var/tmp/.dsp_system_out") ---\n"
+            detail += "--- system(\"id > /var/tmp/.dsp_system_out\") ---\n"
             let cmd1 = remote_alloc_str(sb, "id > /var/tmp/.dsp_system_out")
             let ret1 = RootExecutor.rcallAddr(sb, systemAddr, cmd1)
             RootExecutor.rcall(sb, "free", cmd1)
@@ -6232,7 +6232,7 @@ struct AMFIExperimentView: View {
             }
 
             // Coba system("touch /var/tmp/.dsp_proof")
-            detail += "\n--- system("touch /var/tmp/.dsp_proof") ---\n"
+            detail += "\n--- system(\"touch /var/tmp/.dsp_proof\") ---\n"
             let cmd2 = remote_alloc_str(sb, "touch /var/tmp/.dsp_proof")
             let ret2 = RootExecutor.rcallAddr(sb, systemAddr, cmd2)
             RootExecutor.rcall(sb, "free", cmd2)
@@ -6264,7 +6264,7 @@ struct AMFIExperimentView: View {
             let cmd = remote_alloc_str(sb, "id")
             let mode = remote_alloc_str(sb, "r")
             let fp = RootExecutor.rcallAddr(sb, popenAddr, cmd, mode)
-            detail += "popen("id", "r"): fp=0x\(String(format: "%llx", fp))\n"
+            detail += "popen(\"id\", \"r\"): fp=0x\(String(format: "%llx", fp))\n"
 
             if fp != 0 {
                 // fread from fp
