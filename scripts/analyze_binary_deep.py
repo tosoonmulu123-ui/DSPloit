@@ -1530,16 +1530,16 @@ def _extract_apfs_via_7z(apfs_image: Path, extract_dir: Path) -> list[Path]:
     try:
         result = subprocess.run(
             [seven_z, "x", str(apfs_image), f"-o{out_dir}", "-y", "-bso0", "-bsp0"],
-            capture_output=True, text=True, timeout=600
+            capture_output=True, text=True, timeout=7200
         )
         if result.returncode != 0:
             # Try with -t flag to force APFS type
             result = subprocess.run(
                 [seven_z, "x", f"-tAPFS", str(apfs_image), f"-o{out_dir}", "-y", "-bso0", "-bsp0"],
-                capture_output=True, text=True, timeout=600
+                capture_output=True, text=True, timeout=7200
             )
     except subprocess.TimeoutExpired:
-        print("[!] 7z extraction timed out (>10 min)", file=sys.stderr)
+        print("[!] 7z extraction timed out (>2 hours)", file=sys.stderr)
         return []
     except Exception as e:
         print(f"[!] 7z execution failed: {e}", file=sys.stderr)
