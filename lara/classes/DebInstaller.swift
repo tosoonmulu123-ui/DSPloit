@@ -88,34 +88,17 @@ final class DebInstaller {
                 return
             }
             
-            // Step 5: Compute CDHash for all Mach-O binaries and inject trust cache
-            let files = self.parseTar(data: tarData)
+            // Step 5: CDHash + trust cache
+            // NOTE: Skip uicache — registering unsigned .app causes SpringBoard crash on respring
+            // Trust cache inject via MSM with simplified CDHash doesn't prevent AMFI kill
+            // Files are installed to /var/jb/ and accessible via built-in File Manager
             let executables = files.filter { !$0.isDirectory && self.isMachO($0.data) }
-            
             if !executables.isEmpty {
-                self.emit("[deb] Found \(executables.count) Mach-O binaries — injecting trust cache...")
-                let cdhashes = executables.compactMap { self.computeCDHash(data: $0.data, path: $0.path) }
-                
-                if !cdhashes.isEmpty {
-                    self.injectTrustCacheBatch(cdhashes: cdhashes) {
-                        self.emit("[deb] ✅ Trust cache: \(cdhashes.count) hashes injected")
-                        
-                        // Step 6: uicache for .app bundles
-                        let hasApp = files.contains { $0.path.contains(".app/Info.plist") }
-                        if hasApp {
-                            self.emit("[deb] Registering app with SpringBoard...")
-                            self.runUicache { completion(true, count) }
-                        } else {
-                            completion(true, count)
-                        }
-                    }
-                } else {
-                    self.emit("[deb] ⚠️ No valid CDHashes computed")
-                    completion(true, count)
-                }
-            } else {
-                completion(true, count)
+                self.emit("[deb] Found \(executables.count) Mach-O binaries")
+                self.emit("[deb] ⚠️ App won't appear on Home Screen (trust cache limitation)")
+                self.emit("[deb] ℹ️ Files installed at /var/jb/ — accessible via File Manager")
             }
+            completion(true, count)
         }
     }
     
