@@ -1246,84 +1246,87 @@ final class DebInstaller {
     /// SpringBoard receives notification externally = safe
     private func runUicache(completion: @escaping () -> Void) {
         emit("[deb] Registering app from DSPloit process...")
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.performRegistration(completion: completion)
+        }
+    }
+    
+    private func performRegistration(completion: @escaping () -> Void) {
+        dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
+        dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
         
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            // dlopen private frameworks in our app process
-            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
-            dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
-            
-            // Get LSApplicationWorkspace
-            guard let wsClass = NSClassFromString("LSApplicationWorkspace"),
-                  let workspace = wsClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue() else {
-                DispatchQueue.main.async {
-                    self.emit("[deb] ⚠️ LSApplicationWorkspace not available")
-                    completion()
-                }
-                return
-            }
-            
-            // Resolve symlinks
-            let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
-            let infoPlistPath = (appPath as NSString).appendingPathComponent("Info.plist")
-            
-            guard let infoPlist = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any],
-                  let bundleID = infoPlist["CFBundleIdentifier"] as? String else {
-                DispatchQueue.main.async {
-                    self.emit("[deb] ⚠️ No Info.plist at \(appPath)")
-                    self.emit("[deb] ℹ️ Files installed — use File Manager to browse")
-                    completion()
-                }
-                return
-            }
-            
-            // Create container
-            let containerPath = Self.createMCMContainer(bundleID: bundleID)
-            
-            // Build registration dictionary (from uicache source)
-            var dict: [String: Any] = [
-                "ApplicationType": "System",
-                "BundleNameIsLocalized": 1,
-                "CFBundleIdentifier": bundleID,
-                "CodeInfoIdentifier": bundleID,
-                "CompatibilityState": 0,
-                "IsDeletable": 0,
-                "IsContainerized": 1,
-                "Path": appPath,
-                "SignerOrganization": "Apple Inc.",
-                "SignatureVersion": 132352,
-                "SignerIdentity": "Apple iPhone OS Application Signing",
-                "IsAdHocSigned": true,
-                "LSInstallType": 1,
-                "HasMIDBasedSINF": 0,
-                "MissingSINF": 0,
-                "FamilyID": 0,
-                "IsOnDemandInstallCapable": 0,
-                "_LSBundlePlugins": [String: Any](),
-            ]
-            
-            if let cp = containerPath {
-                dict["Container"] = cp
-                dict["EnvironmentVariables"] = [
-                    "CFFIXED_USER_HOME": cp,
-                    "HOME": cp,
-                    "TMPDIR": (cp as NSString).appendingPathComponent("tmp")
-                ]
-            }
-            
-            // Register!
-            let regSel = NSSelectorFromString("registerApplicationDictionary:")
-            let result = workspace.perform(regSel, with: dict as NSDictionary)
-            
+        guard let wsClass = NSClassFromString("LSApplicationWorkspace"),
+              let workspace = wsClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue()
+        else {
             DispatchQueue.main.async {
-                if result != nil {
-                    self.emit("[deb] ✅ App registered — check Home Screen")
-                } else {
-                    self.emit("[deb] ⚠️ Registration returned nil (may need platform entitlement)")
-                    self.emit("[deb] ℹ️ Files installed at /var/jb/")
-                }
+                self.emit("[deb] ⚠️ LSApplicationWorkspace not available")
                 completion()
             }
+            return
         }
+        
+        let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
+        let infoPlistPath = (appPath as NSString).appendingPathComponent("Info.plist")
+        
+        guard let infoPlist = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any],
+              let bundleID = infoPlist["CFBundleIdentifier"] as? String
+        else {
+            DispatchQueue.main.async {
+                self.emit("[deb] ⚠️ No Info.plist — files installed at /var/jb/")
+                completion()
+            }
+            return
+        }
+        
+        let containerPath = Self.createMCMContainer(bundleID: bundleID)
+        let dict = buildRegistrationDict(bundleID: bundleID, appPath: appPath, containerPath: containerPath)
+        
+        let regSel = NSSelectorFromString("registerApplicationDictionary:")
+        let result: Unmanaged<AnyObject>? = workspace.perform(regSel, with: dict)
+        
+        DispatchQueue.main.async {
+            if result != nil {
+                self.emit("[deb] ✅ App registered — check Home Screen")
+            } else {
+                self.emit("[deb] ⚠️ Registration returned nil")
+                self.emit("[deb] ℹ️ Files installed at /var/jb/")
+            }
+            completion()
+        }
+    }
+    
+    private func buildRegistrationDict(bundleID: String, appPath: String, containerPath: String?) -> NSDictionary {
+        var dict: [String: Any] = [
+            "ApplicationType": "System",
+            "BundleNameIsLocalized": 1,
+            "CFBundleIdentifier": bundleID,
+            "CodeInfoIdentifier": bundleID,
+            "CompatibilityState": 0,
+            "IsDeletable": 0,
+            "IsContainerized": 1,
+            "Path": appPath,
+            "SignerOrganization": "Apple Inc.",
+            "SignatureVersion": 132352,
+            "SignerIdentity": "Apple iPhone OS Application Signing",
+            "IsAdHocSigned": true,
+            "LSInstallType": 1,
+            "HasMIDBasedSINF": 0,
+            "MissingSINF": 0,
+            "FamilyID": 0,
+            "IsOnDemandInstallCapable": 0,
+            "_LSBundlePlugins": [String: Any](),
+        ]
+        
+        if let cp = containerPath {
+            dict["Container"] = cp
+            dict["EnvironmentVariables"] = [
+                "CFFIXED_USER_HOME": cp,
+                "HOME": cp,
+                "TMPDIR": (cp as NSString).appendingPathComponent("tmp")
+            ]
+        }
+        
+        return dict as NSDictionary
     }
     
     // MARK: - MCM Container Helper
