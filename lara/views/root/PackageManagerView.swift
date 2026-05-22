@@ -727,11 +727,10 @@ struct PackageManagerView: View {
     }
     
     private func testRegisterReal() {
-        installLog.append("[exp] Test Register REAL — with MCM container + full dict...")
+        installLog.append("[exp] Test Register REAL — without MCM container (safe)...")
         selectedTab = .queue
         
         DispatchQueue.global(qos: .userInitiated).async {
-            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
             dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
             
             guard let wsClass = NSClassFromString("LSApplicationWorkspace") else {
@@ -747,41 +746,15 @@ struct PackageManagerView: View {
             
             let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
             
-            // Create MCM container
-            var containerPath: String?
-            if let mcmClass = NSClassFromString("MCMAppDataContainer") {
-                let mcmSel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
-                if let mcmMethod = class_getClassMethod(mcmClass, mcmSel) {
-                    typealias MCMFunc = @convention(c) (AnyClass, Selector, NSString, Bool, UnsafeMutablePointer<ObjCBool>?, UnsafeMutablePointer<NSError?>?) -> AnyObject?
-                    let mcmFn = unsafeBitCast(method_getImplementation(mcmMethod), to: MCMFunc.self)
-                    var existed: ObjCBool = false
-                    var err: NSError?
-                    if let container = mcmFn(mcmClass, mcmSel, "com.tigisoftware.Filza" as NSString, true, &existed, &err) {
-                        let urlSel = NSSelectorFromString("url")
-                        if let urlMethod = class_getInstanceMethod(type(of: container), urlSel) {
-                            typealias URLFunc = @convention(c) (AnyObject, Selector) -> AnyObject?
-                            let urlFn = unsafeBitCast(method_getImplementation(urlMethod), to: URLFunc.self)
-                            if let url = urlFn(container, urlSel) as? URL {
-                                containerPath = url.path
-                            }
-                        }
-                    }
-                }
-            }
-            
-            DispatchQueue.main.async {
-                self.installLog.append("[exp] Container: \(containerPath ?? "nil")")
-            }
-            
-            // Full dictionary from uicache source
-            var dict: [String: Any] = [
+            // Register WITHOUT MCM container (MCM causes panic)
+            let dict: NSDictionary = [
                 "ApplicationType": "System",
                 "BundleNameIsLocalized": 1,
                 "CFBundleIdentifier": "com.tigisoftware.Filza",
                 "CodeInfoIdentifier": "com.tigisoftware.Filza",
                 "CompatibilityState": 0,
                 "IsDeletable": 0,
-                "IsContainerized": 1,
+                "IsContainerized": 0,  // NO container
                 "Path": appPath,
                 "SignerOrganization": "Apple Inc.",
                 "SignatureVersion": 132352,
@@ -795,30 +768,21 @@ struct PackageManagerView: View {
                 "_LSBundlePlugins": [:] as [String: Any],
             ]
             
-            if let cp = containerPath {
-                dict["Container"] = cp
-                dict["EnvironmentVariables"] = [
-                    "CFFIXED_USER_HOME": cp,
-                    "HOME": cp,
-                    "TMPDIR": (cp as NSString).appendingPathComponent("tmp")
-                ]
-            }
-            
             let regSel = NSSelectorFromString("registerApplicationDictionary:")
             guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else {
-                DispatchQueue.main.async { self.installLog.append("[exp] ❌ registerApplicationDictionary not found") }
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ method not found") }
                 return
             }
             typealias RegFunc = @convention(c) (AnyObject, Selector, NSDictionary) -> Bool
             let regFn = unsafeBitCast(method_getImplementation(regMethod), to: RegFunc.self)
-            let result = regFn(workspace, regSel, dict as NSDictionary)
+            let result = regFn(workspace, regSel, dict)
             
             DispatchQueue.main.async {
-                self.installLog.append("[exp] ✅ Real register returned: \(result)")
+                self.installLog.append("[exp] ✅ Register returned: \(result)")
                 if result {
-                    self.installLog.append("[exp] 🎉 REGISTRATION SUCCESS! Check Home Screen!")
+                    self.installLog.append("[exp] 🎉 SUCCESS! Check Home Screen!")
                 } else {
-                    self.installLog.append("[exp] Register returned false — lsd rejected")
+                    self.installLog.append("[exp] Returned false — lsd rejected (but no panic)")
                 }
             }
         }
