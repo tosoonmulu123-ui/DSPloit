@@ -1243,11 +1243,37 @@ final class DebInstaller {
     // MARK: - UICache (register app to Home Screen)
     
     /// Register app from DSPloit app process (NOT SpringBoard) to avoid re-entrant crash
-    /// SpringBoard receives notification externally = safe
+    /// Kill amfid before register to prevent signature validation crash
     private func runUicache(completion: @escaping () -> Void) {
-        emit("[deb] Registering app from DSPloit process...")
-        DispatchQueue.global(qos: .userInitiated).async {
-            self.performRegistration(completion: completion)
+        emit("[deb] Preparing app registration...")
+        
+        // Step 1: Kill amfid to prevent signature validation during registration
+        #if !DISABLE_REMOTECALL
+        emit("[deb] Killing amfid...")
+        
+        if mgr.dsready {
+            let amfidProc = mgr.findProc(name: "amfid")
+            if amfidProc != 0 {
+                let amfidPid = Int32(ds_kread32(amfidProc + 0x68))
+                if amfidPid > 0 {
+                    // Kill via launchd (we need root to kill system daemon)
+                    root.executeAsRoot(operation: "kill_amfid") { rc in
+                        RootExecutor.rcall(rc, "kill", UInt64(amfidPid), 9)
+                        return (true, "killed amfid pid=\(amfidPid)", UInt64(amfidPid))
+                    }
+                    emit("[deb] ✅ amfid killed (PID \(amfidPid))")
+                }
+            } else {
+                emit("[deb] ⚠️ amfid not found")
+            }
+        }
+        #endif
+        
+        // Step 2: Register immediately after amfid is dead (before it restarts ~2s)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.performRegistration(completion: completion)
+            }
         }
     }
     
