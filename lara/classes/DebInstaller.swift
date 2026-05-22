@@ -88,17 +88,37 @@ final class DebInstaller {
                 return
             }
             
-            // Step 5: CDHash + trust cache
-            // NOTE: Skip uicache — registering unsigned .app causes SpringBoard crash on respring
-            // Trust cache inject via MSM with simplified CDHash doesn't prevent AMFI kill
-            // Files are installed to /var/jb/ and accessible via built-in File Manager
+            // Step 5: CDHash + trust cache + uicache (proper CodeDirectory hash)
+            let files = self.parseTar(data: tarData)
             let executables = files.filter { !$0.isDirectory && self.isMachO($0.data) }
+            
             if !executables.isEmpty {
-                self.emit("[deb] Found \(executables.count) Mach-O binaries")
-                self.emit("[deb] ⚠️ App won't appear on Home Screen (trust cache limitation)")
-                self.emit("[deb] ℹ️ Files installed at /var/jb/ — accessible via File Manager")
+                self.emit("[deb] Found \(executables.count) Mach-O binaries — computing CDHash...")
+                let cdhashes = executables.compactMap { self.computeCDHash(data: $0.data, path: $0.path) }
+                
+                if !cdhashes.isEmpty {
+                    self.emit("[deb] Injecting \(cdhashes.count) CDHashes into trust cache...")
+                    self.injectTrustCacheBatch(cdhashes: cdhashes) {
+                        self.emit("[deb] ✅ Trust cache: \(cdhashes.count) hashes injected")
+                        
+                        let hasApp = files.contains { $0.path.contains(".app/Info.plist") }
+                        if hasApp {
+                            self.emit("[deb] Registering app...")
+                            self.runUicache {
+                                self.emit("[deb] ✅ Done — respring to see app")
+                                completion(true, count)
+                            }
+                        } else {
+                            completion(true, count)
+                        }
+                    }
+                } else {
+                    self.emit("[deb] ⚠️ No CDHashes computed (binaries may be unsigned)")
+                    completion(true, count)
+                }
+            } else {
+                completion(true, count)
             }
-            completion(true, count)
         }
     }
     
@@ -113,17 +133,134 @@ final class DebInstaller {
         return magic == 0xFEEDFACF || magic == 0xCFFAEDFE || magic == 0xCAFEBABE || magic == 0xBEBAFECA
     }
     
-    /// Compute CDHash (SHA256 truncated to 20 bytes) from Mach-O binary
-    /// CDHash = SHA256 of the Code Directory blob in the code signature
+    /// Compute CDHash (SHA256 of CodeDirectory blob) from Mach-O binary
+    /// Proper implementation: parse LC_CODE_SIGNATURE → SuperBlob → CodeDirectory → SHA256
     private func computeCDHash(data: Data, path: String) -> [UInt8]? {
         guard data.count > 32 else { return nil }
         
-        // For simplicity: compute SHA256 of entire binary, truncate to 20 bytes
-        // This is NOT the proper CDHash (which hashes CodeDirectory specifically)
-        // but with AMFI disabled, trust cache just needs a unique identifier
-        // Proper implementation would parse LC_CODE_SIGNATURE → find CodeDirectory → hash it
+        let magic = data.withUnsafeBytes { $0.load(as: UInt32.self) }
         
-        // SHA256 using CommonCrypto (available in iOS)
+        // Handle FAT binary — find arm64 slice
+        var sliceData = data
+        if magic == 0xCAFEBABE || magic == 0xBEBAFECA {
+            if let arm64Slice = extractArm64Slice(from: data) {
+                sliceData = arm64Slice
+            } else {
+                return nil
+            }
+        }
+        
+        // Parse Mach-O to find LC_CODE_SIGNATURE
+        guard sliceData.count > 32 else { return nil }
+        let sliceMagic = sliceData.withUnsafeBytes { $0.load(as: UInt32.self) }
+        guard sliceMagic == 0xFEEDFACF || sliceMagic == 0xCFFAEDFE else { return nil }
+        
+        let isSwapped = (sliceMagic == 0xCFFAEDFE)
+        
+        func read32(_ offset: Int) -> UInt32 {
+            let val = sliceData.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+            return isSwapped ? val.byteSwapped : val
+        }
+        
+        // mach_header_64: magic(4) + cputype(4) + cpusubtype(4) + filetype(4) + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4) = 32
+        let ncmds = Int(read32(16))
+        var cmdOffset = 32 // sizeof(mach_header_64)
+        
+        var csOffset: UInt32 = 0
+        var csSize: UInt32 = 0
+        
+        for _ in 0..<ncmds {
+            guard cmdOffset + 8 <= sliceData.count else { break }
+            let cmd = read32(cmdOffset)
+            let cmdsize = read32(cmdOffset + 4)
+            
+            // LC_CODE_SIGNATURE = 0x1D
+            if cmd == 0x1D && cmdOffset + 16 <= sliceData.count {
+                csOffset = read32(cmdOffset + 8)  // dataoff
+                csSize = read32(cmdOffset + 12)   // datasize
+                break
+            }
+            
+            cmdOffset += Int(cmdsize)
+        }
+        
+        guard csOffset > 0 && csSize > 8 else {
+            // No code signature — hash entire binary as fallback
+            return sha256Truncated(sliceData)
+        }
+        
+        // Parse SuperBlob at csOffset
+        let csStart = Int(csOffset)
+        guard csStart + Int(csSize) <= sliceData.count else { return sha256Truncated(sliceData) }
+        
+        let superBlobMagic = read32(csStart)
+        // CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
+        guard superBlobMagic == 0xFADE0CC0 || superBlobMagic == 0xC00CDEFA else {
+            return sha256Truncated(sliceData)
+        }
+        
+        let blobCount = read32(csStart + 8)
+        
+        // Find CodeDirectory (type=0, magic=0xFADE0C02)
+        for i in 0..<Int(blobCount) {
+            let indexOffset = csStart + 12 + i * 8
+            guard indexOffset + 8 <= sliceData.count else { break }
+            // let blobType = read32(indexOffset)
+            let blobOffset = read32(indexOffset + 4)
+            
+            let blobStart = csStart + Int(blobOffset)
+            guard blobStart + 8 <= sliceData.count else { continue }
+            
+            let blobMagic = read32(blobStart)
+            let blobLength = read32(blobStart + 4)
+            
+            // CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+            if blobMagic == 0xFADE0C02 {
+                let cdEnd = blobStart + Int(blobLength)
+                guard cdEnd <= sliceData.count else { continue }
+                
+                // CDHash = SHA256 of entire CodeDirectory blob
+                let cdData = sliceData[blobStart..<cdEnd]
+                return sha256Truncated(Data(cdData))
+            }
+        }
+        
+        // No CodeDirectory found — fallback
+        return sha256Truncated(sliceData)
+    }
+    
+    /// Extract arm64 slice from FAT binary
+    private func extractArm64Slice(from data: Data) -> Data? {
+        guard data.count > 8 else { return nil }
+        let magic = data.withUnsafeBytes { $0.load(as: UInt32.self) }
+        let isBE = (magic == 0xCAFEBABE) // FAT is big-endian
+        
+        func readFat32(_ offset: Int) -> UInt32 {
+            let val = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+            return isBE ? UInt32(bigEndian: val) : val
+        }
+        
+        let nfat = readFat32(4)
+        for i in 0..<Int(nfat) {
+            let archOffset = 8 + i * 20
+            guard archOffset + 20 <= data.count else { break }
+            let cputype = readFat32(archOffset)
+            let offset = readFat32(archOffset + 8)
+            let size = readFat32(archOffset + 12)
+            
+            // CPU_TYPE_ARM64 = 0x0100000C (16777228)
+            if cputype == 0x0100000C {
+                let start = Int(offset)
+                let end = start + Int(size)
+                guard end <= data.count else { return nil }
+                return Data(data[start..<end])
+            }
+        }
+        return nil
+    }
+    
+    /// SHA256 truncated to 20 bytes
+    private func sha256Truncated(_ data: Data) -> [UInt8] {
         var hash = [UInt8](repeating: 0, count: 32)
         data.withUnsafeBytes { buffer in
             var ctx = CC_SHA256_CTX()
@@ -131,8 +268,6 @@ final class DebInstaller {
             CC_SHA256_Update(&ctx, buffer.baseAddress, CC_LONG(data.count))
             CC_SHA256_Final(&hash, &ctx)
         }
-        
-        // Truncate to 20 bytes (trust cache entry format)
         return Array(hash.prefix(20))
     }
     
