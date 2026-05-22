@@ -165,6 +165,39 @@ struct PackageManagerView: View {
             
             // Only show repos and quick install after bootstrap
             if bootstrapReady {
+                // Debug experiments (isolate panic cause)
+                Section("Experiments") {
+                    Button(action: testRegisterDummy) {
+                        HStack {
+                            Image(systemName: "flask.fill").foregroundStyle(.yellow).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Test Register (dummy)").font(.subheadline.bold())
+                                Text("Fake bundle ID, no real files").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    Button(action: testRegisterReal) {
+                        HStack {
+                            Image(systemName: "flask.fill").foregroundStyle(.orange).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Test Register (real path)").font(.subheadline.bold())
+                                Text("/var/jb/Applications/Filza.app").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    Button(action: testSpawnBinary) {
+                        HStack {
+                            Image(systemName: "terminal.fill").foregroundStyle(.green).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Test Spawn Binary").font(.subheadline.bold())
+                                Text("posix_spawn Filza from launchd").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
                 // Repos
                 Section("Repositories") {
                     ForEach(repos) { repo in
@@ -637,5 +670,148 @@ struct PackageManagerView: View {
                 }
             }
         }
+    }
+    
+    // MARK: - Debug Experiments
+    
+    private func testRegisterDummy() {
+        installLog.append("[exp] Test Register DUMMY — fake bundle ID, no files...")
+        selectedTab = .queue
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
+            dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
+            
+            guard let wsClass = NSClassFromString("LSApplicationWorkspace") else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ LSApplicationWorkspace not found") }
+                return
+            }
+            
+            let sel = NSSelectorFromString("defaultWorkspace")
+            guard let method = class_getClassMethod(wsClass, sel) else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ defaultWorkspace not found") }
+                return
+            }
+            typealias WSFunc = @convention(c) (AnyClass, Selector) -> AnyObject?
+            let wsFn = unsafeBitCast(method_getImplementation(method), to: WSFunc.self)
+            guard let workspace = wsFn(wsClass, sel) else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ workspace nil") }
+                return
+            }
+            
+            // Dummy dictionary — fake path that doesn't exist
+            let dict: NSDictionary = [
+                "ApplicationType": "System",
+                "CFBundleIdentifier": "com.test.dummy.doesnotexist",
+                "Path": "/var/jb/Applications/DOESNOTEXIST.app",
+                "BundleNameIsLocalized": 1,
+                "CompatibilityState": 0,
+                "IsDeletable": 0,
+                "_LSBundlePlugins": [:] as [String: Any],
+            ]
+            
+            let regSel = NSSelectorFromString("registerApplicationDictionary:")
+            guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ registerApplicationDictionary not found") }
+                return
+            }
+            typealias RegFunc = @convention(c) (AnyObject, Selector, NSDictionary) -> Bool
+            let regFn = unsafeBitCast(method_getImplementation(regMethod), to: RegFunc.self)
+            let result = regFn(workspace, regSel, dict)
+            
+            DispatchQueue.main.async {
+                self.installLog.append("[exp] ✅ Dummy register returned: \(result)")
+                self.installLog.append("[exp] If you see this = register call itself doesn't panic")
+            }
+        }
+    }
+    
+    private func testRegisterReal() {
+        installLog.append("[exp] Test Register REAL — /var/jb/Applications/Filza.app...")
+        selectedTab = .queue
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
+            dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
+            
+            guard let wsClass = NSClassFromString("LSApplicationWorkspace") else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ LSApplicationWorkspace not found") }
+                return
+            }
+            
+            let sel = NSSelectorFromString("defaultWorkspace")
+            guard let method = class_getClassMethod(wsClass, sel) else { return }
+            typealias WSFunc = @convention(c) (AnyClass, Selector) -> AnyObject?
+            let wsFn = unsafeBitCast(method_getImplementation(method), to: WSFunc.self)
+            guard let workspace = wsFn(wsClass, sel) else { return }
+            
+            let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
+            
+            let dict: NSDictionary = [
+                "ApplicationType": "System",
+                "CFBundleIdentifier": "com.tigisoftware.Filza",
+                "CodeInfoIdentifier": "com.tigisoftware.Filza",
+                "Path": appPath,
+                "BundleNameIsLocalized": 1,
+                "CompatibilityState": 0,
+                "IsDeletable": 0,
+                "IsContainerized": 1,
+                "SignerOrganization": "Apple Inc.",
+                "SignatureVersion": 132352,
+                "SignerIdentity": "Apple iPhone OS Application Signing",
+                "IsAdHocSigned": true,
+                "LSInstallType": 1,
+                "_LSBundlePlugins": [:] as [String: Any],
+            ]
+            
+            let regSel = NSSelectorFromString("registerApplicationDictionary:")
+            guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else { return }
+            typealias RegFunc = @convention(c) (AnyObject, Selector, NSDictionary) -> Bool
+            let regFn = unsafeBitCast(method_getImplementation(regMethod), to: RegFunc.self)
+            let result = regFn(workspace, regSel, dict)
+            
+            DispatchQueue.main.async {
+                self.installLog.append("[exp] ✅ Real register returned: \(result)")
+                self.installLog.append("[exp] If you see this = register with real path doesn't panic")
+                self.installLog.append("[exp] If panic happened = SpringBoard crashed loading binary")
+            }
+        }
+    }
+    
+    private func testSpawnBinary() {
+        installLog.append("[exp] Test Spawn — posix_spawn Filza binary from launchd...")
+        selectedTab = .queue
+        
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "spawn_filza") { rc in
+            let mem = rc.trojanMem
+            let binPath = "/var/jb/Applications/Filza.app/Filza"
+            let binAddr = remote_alloc_str(rc, binPath)
+            
+            let argvBase = mem + 0x400
+            rc[argvBase].setValue64(binAddr)
+            rc[argvBase + 8].setValue64(0)
+            
+            let pidAddr = mem + 0x300
+            rc[pidAddr].setValue32(0)
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            
+            RootExecutor.rcall(rc, "free", binAddr)
+            
+            DispatchQueue.main.async {
+                self.installLog.append("[exp] posix_spawn ret=\(ret), pid=\(pid)")
+                if ret == 0 && pid != 0 {
+                    self.installLog.append("[exp] ✅ BINARY SPAWNED! PID=\(pid)")
+                    self.installLog.append("[exp] AMFI disable works for installed binaries!")
+                } else {
+                    self.installLog.append("[exp] ❌ Spawn failed (ret=\(ret))")
+                    self.installLog.append("[exp] 1=EPERM, 2=ENOENT, 13=EACCES")
+                }
+            }
+            return (ret == 0, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
+        }
+        #endif
     }
 }
