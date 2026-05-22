@@ -1503,6 +1503,82 @@ def detect_file_type(file_path: Path) -> str:
         
     return "unknown"
 
+def _extract_apfs_via_7z(apfs_image: Path, extract_dir: Path) -> list[Path]:
+    """
+    Extract files from APFS container using 7-Zip (supports APFS natively since v23).
+    Returns list of extracted Mach-O binary paths.
+    """
+    import shutil
+
+    # Find 7z executable
+    seven_z = shutil.which("7z")
+    if not seven_z:
+        for candidate in [r"C:\Program Files\7-Zip\7z.exe",
+                           r"C:\Program Files (x86)\7-Zip\7z.exe",
+                           "/usr/bin/7z", "/usr/local/bin/7z"]:
+            if Path(candidate).exists():
+                seven_z = candidate
+                break
+    if not seven_z:
+        print("[!] 7-Zip not found. Install 7-Zip to extract APFS containers.", file=sys.stderr)
+        return []
+
+    out_dir = extract_dir / f"{apfs_image.stem}_apfs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[*] Running 7z to extract APFS: {apfs_image.name} -> {out_dir.name}")
+    try:
+        result = subprocess.run(
+            [seven_z, "x", str(apfs_image), f"-o{out_dir}", "-y", "-bso0", "-bsp0"],
+            capture_output=True, text=True, timeout=600
+        )
+        if result.returncode != 0:
+            # Try with -t flag to force APFS type
+            result = subprocess.run(
+                [seven_z, "x", f"-tAPFS", str(apfs_image), f"-o{out_dir}", "-y", "-bso0", "-bsp0"],
+                capture_output=True, text=True, timeout=600
+            )
+    except subprocess.TimeoutExpired:
+        print("[!] 7z extraction timed out (>10 min)", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"[!] 7z execution failed: {e}", file=sys.stderr)
+        return []
+
+    # Scan extracted files for Mach-O binaries
+    macho_targets: list[Path] = []
+    macho_magic = {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe"}
+
+    # Walk extracted directory, check each file for Mach-O magic
+    file_count = 0
+    for root, dirs, files in os.walk(out_dir):
+        for fname in files:
+            fpath = Path(root) / fname
+            if not fpath.is_file():
+                continue
+            file_count += 1
+            try:
+                with open(fpath, "rb") as f:
+                    magic = f.read(4)
+                if magic in macho_magic:
+                    # Verify it's actually a valid Mach-O (not just random bytes)
+                    size = fpath.stat().st_size
+                    if size > 4096:  # Skip tiny files
+                        macho_targets.append(fpath)
+            except Exception:
+                continue
+
+    print(f"[+] 7z extracted {file_count} files, {len(macho_targets)} are Mach-O binaries")
+    if macho_targets:
+        # Print first 20 names
+        for m in macho_targets[:20]:
+            print(f"    - {m.name} ({m.stat().st_size:,} bytes)")
+        if len(macho_targets) > 20:
+            print(f"    ... and {len(macho_targets) - 20} more")
+
+    return macho_targets
+
+
 def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Optional[str] = None) -> list[Path]:
     file_type = detect_file_type(input_path)
     print(f"[*] Detected file type of '{input_path.name}': {file_type}")
@@ -1584,6 +1660,17 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
             
         koly = dmg_data[-512:]
         if koly[:4] != b"koly":
+            # Check if this is an APFS container (NXSB magic at offset 32)
+            is_apfs = len(dmg_data) > 36 and dmg_data[32:36] == b"NXSB"
+            del dmg_data  # Free 7GB from RAM immediately
+            
+            if is_apfs:
+                print("[*] APFS container detected. Extracting files via 7z...")
+                macho_targets = _extract_apfs_via_7z(input_path, extract_dir)
+                if macho_targets:
+                    return macho_targets
+                print("[!] 7z APFS extraction failed or yielded 0 files. Falling back to raw scan.")
+            
             print("[*] No standard DMG koly trailer found. Treating as raw disk image and scanning directly...")
             macho_targets = []
             carved_machos = scan_file_for_machos(input_path)
