@@ -708,6 +708,7 @@ class KeyDerivation:
         return derive_key(self.key_size, cluster_key, info)
 
 def extract_aea_symmetric_key(aea_data: bytes) -> Optional[bytes]:
+    """Extract AEA symmetric key from header. Accepts full file bytes OR just the header portion."""
     if len(aea_data) < 12:
         raise ValueError("AEA file is too short")
     magic = aea_data[:4]
@@ -717,10 +718,12 @@ def extract_aea_symmetric_key(aea_data: bytes) -> Optional[bytes]:
     auth_data_blob_size = int.from_bytes(aea_data[8:12], "little")
     if auth_data_blob_size == 0:
         raise ValueError("No auth data blob found in AEA")
+    
+    # Only need header + auth_data_blob for key extraction
+    if len(aea_data) < 12 + auth_data_blob_size:
+        raise ValueError("AEA data too short for auth_data_blob")
         
     auth_data_blob = aea_data[12:12+auth_data_blob_size]
-    if len(auth_data_blob) != auth_data_blob_size:
-        raise ValueError("Auth data blob size mismatch")
         
     fields = {}
     while len(auth_data_blob) > 0:
@@ -1231,11 +1234,18 @@ def detect_file_type(file_path: Path) -> str:
         
     if file_path.suffix.lower() == ".ipsw":
         return "ipsw"
-    if magic == b"AEA1" or file_path.suffix.lower() == ".aea":
+    # AEA magic check MUST come before DMG suffix check — iOS 18+ DMGs are AEA-wrapped
+    if magic == b"AEA1":
+        return "aea"
+    if file_path.suffix.lower() == ".aea":
         return "aea"
     if magic == b"AA01" or file_path.suffix.lower() in (".aar", ".aa"):
         return "apple_archive"
         
+    # Mach-O magic check before DMG (some extracted files have no extension)
+    if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+        return "macho"
+
     size = file_path.stat().st_size
     if size > 64:
         with open(file_path, "rb") as f:
@@ -1250,9 +1260,6 @@ def detect_file_type(file_path: Path) -> str:
             trailer = f.read(4)
             if trailer == b"koly":
                 return "dmg"
-                
-    if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
-        return "macho"
         
     return "unknown"
 
@@ -1275,23 +1282,35 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
                 
         if not symmetric_key:
             try:
-                aea_data = input_path.read_bytes()
-                symmetric_key = extract_aea_symmetric_key(aea_data)
+                # Only read header + auth_data_blob for key extraction (not entire file)
+                with open(input_path, "rb") as f:
+                    hdr = f.read(12)
+                    if len(hdr) == 12 and hdr[:4] == b"AEA1":
+                        auth_size = int.from_bytes(hdr[8:12], "little")
+                        auth_blob = f.read(auth_size)
+                        aea_header = hdr + auth_blob
+                    else:
+                        aea_header = hdr
+                symmetric_key = extract_aea_symmetric_key(aea_header)
                 if symmetric_key:
-                    print(f"[+] Automatically unwrapped AEA key: {base64.b64encode(symmetric_key).decode()}")
+                    print(f"[+] Automatically unwrapped AEA key from Apple WKMS: {base64.b64encode(symmetric_key).decode()}")
             except Exception as e:
                 print(f"[!] Automatic AEA key unwrapping failed: {e}", file=sys.stderr)
                 
         if not symmetric_key:
             print("[!] AEA symmetric key is missing or could not be unwrapped. Provide it with --aea-key.", file=sys.stderr)
+            print("[!] Required packages: pip install requests pyhpke", file=sys.stderr)
             return []
             
         try:
+            print(f"[*] Loading AEA file ({input_path.stat().st_size / (1024*1024):.1f} MB) for decryption...")
             aea_data = input_path.read_bytes()
             decrypted_data = AEADecrypter.decrypt(aea_data, symmetric_key)
+            del aea_data  # free memory immediately
             decrypted_path = extract_dir / (input_path.stem + ".decrypted")
             decrypted_path.write_bytes(decrypted_data)
-            print(f"[+] Decrypted AEA payload written to: {decrypted_path.name}")
+            del decrypted_data  # free memory
+            print(f"[+] Decrypted AEA payload written to: {decrypted_path.name} ({decrypted_path.stat().st_size / (1024*1024):.1f} MB)")
             return process_input_recursive(decrypted_path, extract_dir, aea_key_b64)
         except Exception as e:
             print(f"[!] AEA decryption failed: {e}", file=sys.stderr)
@@ -1445,9 +1464,11 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
                 all_names = z.namelist()
                 kernel_files = [n for n in all_names if "kernelcache" in n.lower()]
                 dmg_files = [n for n in all_names if n.lower().endswith(".dmg")]
+                aea_dmg_files = [n for n in all_names if n.lower().endswith(".dmg.aea")]
                 tc_files = [n for n in all_names if n.lower().endswith(".tc") or "trustcache" in n.lower()]
                 
-                print(f"[*] Found {len(kernel_files)} kernelcache(s), {len(dmg_files)} DMG(s), {len(tc_files)} trustcache(s) in IPSW.")
+                print(f"[*] Found {len(kernel_files)} kernelcache(s), {len(dmg_files)} DMG(s), "
+                      f"{len(aea_dmg_files)} AEA-wrapped DMG(s), {len(tc_files)} trustcache(s) in IPSW.")
                 
                 # Extract kernelcache(s)
                 for k in kernel_files:
@@ -1482,6 +1503,39 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
                     if dest_dmg.exists():
                         try:
                             dest_dmg.unlink()
+                        except Exception:
+                            pass
+
+                # ── AEA-wrapped DMGs (iOS 18+): these contain the actual rootfs ──
+                if aea_dmg_files and not macho_targets:
+                    # Only process AEA DMGs if regular DMGs yielded no Mach-O
+                    # (regular .dmg in iOS 18 are IMG4-wrapped, not directly usable)
+                    # Sort by size — largest is rootfs
+                    aea_infos = []
+                    for d in aea_dmg_files:
+                        info = z.getinfo(d)
+                        aea_infos.append((d, info.file_size))
+                    aea_infos.sort(key=lambda x: x[1], reverse=True)
+                    
+                    largest_aea, aea_size = aea_infos[0]
+                    dest_aea = out_sub_dir / Path(largest_aea).name
+                    print(f"[*] Extracting AEA-wrapped rootfs DMG: {largest_aea} ({aea_size / (1024*1024):.1f} MB)")
+                    print(f"    This is the real rootfs — will auto-decrypt via Apple WKMS...")
+                    
+                    # Stream-extract from zip to avoid double memory usage
+                    with open(dest_aea, "wb") as f_out:
+                        with z.open(largest_aea) as zf:
+                            import shutil
+                            shutil.copyfileobj(zf, f_out)
+                    
+                    # process_input_recursive will detect AEA1 magic → auto-decrypt → carve Mach-O
+                    aea_targets = process_input_recursive(dest_aea, extract_dir, aea_key_b64)
+                    macho_targets.extend(aea_targets)
+                    
+                    # Clean up
+                    if dest_aea.exists():
+                        try:
+                            dest_aea.unlink()
                         except Exception:
                             pass
                             
@@ -2731,8 +2785,10 @@ def parse_swift_deep(data:bytes, segs:dict, imported:list, exported:list) -> dic
                         "kind": kind,
                         "fields": fields,
                     })
-                off += 16 + n_fields*rec_sz
-                if off == 16: break  # no progress
+                step = 16 + n_fields*rec_sz
+                if step <= 0:
+                    break  # no progress, would infinite-loop
+                off += step
 
     result["available"] = found_any
 
