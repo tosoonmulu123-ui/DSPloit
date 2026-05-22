@@ -1276,24 +1276,8 @@ final class DebInstaller {
                 return
             }
             
-            // Create container via objc_msgSend (4-param selector)
-            var containerPath: String?
-            if let mcmClass = NSClassFromString("MCMAppDataContainer") {
-                let sel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
-                if let method = class_getClassMethod(mcmClass, sel) {
-                    let imp = method_getImplementation(method)
-                    typealias MCMFunc = @convention(c) (AnyClass, Selector, NSString, Bool, UnsafeMutablePointer<ObjCBool>?, UnsafeMutablePointer<NSError?>?) -> AnyObject?
-                    let fn = unsafeBitCast(imp, to: MCMFunc.self)
-                    
-                    var existed: ObjCBool = false
-                    var err: NSError?
-                    if let container = fn(mcmClass, sel, bundleID as NSString, true, &existed, &err) {
-                        if let url = container.perform(NSSelectorFromString("url"))?.takeUnretainedValue() as? URL {
-                            containerPath = url.path
-                        }
-                    }
-                }
-            }
+            // Create container
+            let containerPath = Self.createMCMContainer(bundleID: bundleID)
             
             // Build registration dictionary (from uicache source)
             var dict: [String: Any] = [
@@ -1340,6 +1324,25 @@ final class DebInstaller {
                 completion()
             }
         }
+    }
+    
+    // MARK: - MCM Container Helper
+    
+    /// Create MCMAppDataContainer via ObjC runtime (4-param selector)
+    private static func createMCMContainer(bundleID: String) -> String? {
+        guard let mcmClass = NSClassFromString("MCMAppDataContainer") else { return nil }
+        let sel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
+        guard let method = class_getClassMethod(mcmClass, sel) else { return nil }
+        let imp = method_getImplementation(method)
+        
+        typealias MCMFunc = @convention(c) (AnyClass, Selector, NSString, Bool, UnsafeMutablePointer<ObjCBool>?, UnsafeMutablePointer<NSError?>?) -> AnyObject?
+        let fn = unsafeBitCast(imp, to: MCMFunc.self)
+        
+        var existed: ObjCBool = false
+        var err: NSError?
+        guard let container = fn(mcmClass, sel, bundleID as NSString, true, &existed, &err) else { return nil }
+        guard let url = container.perform(NSSelectorFromString("url"))?.takeUnretainedValue() as? URL else { return nil }
+        return url.path
     }
     
     // MARK: - AMFI Enforcement Disable
