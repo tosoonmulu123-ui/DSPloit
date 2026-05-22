@@ -1245,112 +1245,13 @@ final class DebInstaller {
     
     // MARK: - UICache (register app to Home Screen)
     
-    /// Register app from /var/jb/Applications/ to Home Screen via LSApplicationWorkspace
-    /// Key insight: ApplicationType must be "System" for non-standard paths
-    /// Must be called from SpringBoard context (platform binary)
+    /// App registration disabled — causes SpringBoard crash (re-entrant notification loop)
+    /// Research needed: call from separate process or use different registration method
+    /// For now: files install to /var/jb/, accessible via built-in File Manager
     private func runUicache(completion: @escaping () -> Void) {
-        #if !DISABLE_REMOTECALL
-        guard let sb = mgr.sbProc else {
-            emit("[deb] ⚠️ SpringBoard RC not available")
-            completion()
-            return
-        }
-        
-        // Find .app bundles in installed files
-        // For now, try to register from /var/jb/Applications/
-        emit("[deb] Registering app via LSApplicationWorkspace...")
-        
-        // Load MobileContainerManager
-        let mcmPath = remote_alloc_str(sb, "/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager")
-        RootExecutor.rcall(sb, "dlopen", mcmPath, UInt64(RTLD_NOW))
-        RootExecutor.rcall(sb, "free", mcmPath)
-        
-        // Get LSApplicationWorkspace
-        let workspace = remote_getClass(sb, "LSApplicationWorkspace")
-        let defaultWS = remote_msg(sb, workspace, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
-        
-        guard defaultWS != 0 else {
-            emit("[deb] ⚠️ LSApplicationWorkspace not available")
-            completion()
-            return
-        }
-        
-        // Build registration dictionary
-        let dictClass = remote_getClass(sb, "NSMutableDictionary")
-        let dict = remote_msg(sb, dictClass, remote_sel(sb, "new"), 0, 0, 0, 0)
-        
-        guard dict != 0 else {
-            emit("[deb] ⚠️ Failed to create dictionary")
-            completion()
-            return
-        }
-        
-        let setObj = remote_sel(sb, "setObject:forKey:")
-        let nsStr = remote_getClass(sb, "NSString")
-        let strSel = remote_sel(sb, "stringWithUTF8String:")
-        let numClass = remote_getClass(sb, "NSNumber")
-        let numSel = remote_sel(sb, "numberWithInt:")
-        
-        // Helper to set string key-value
-        func setStr(_ value: String, forKey key: String) {
-            let v = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, value), 0, 0, 0)
-            let k = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, key), 0, 0, 0)
-            remote_msg(sb, dict, setObj, v, k, 0, 0)
-        }
-        
-        func setNum(_ value: Int, forKey key: String) {
-            let v = remote_msg(sb, numClass, numSel, UInt64(value), 0, 0, 0)
-            let k = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, key), 0, 0, 0)
-            remote_msg(sb, dict, setObj, v, k, 0, 0)
-        }
-        
-        // Set required keys
-        setStr("System", forKey: "ApplicationType")          // CRITICAL: must be "System"
-        setNum(1, forKey: "BundleNameIsLocalized")
-        setStr("com.tigisoftware.Filza", forKey: "CFBundleIdentifier")
-        setNum(0, forKey: "CompatibilityState")
-        setNum(0, forKey: "IsDeletable")
-        setStr("/var/jb/Applications/Filza.app", forKey: "Path")
-        
-        // Empty plugins dict
-        let emptyDict = remote_msg(sb, remote_getClass(sb, "NSDictionary"), remote_sel(sb, "dictionary"), 0, 0, 0, 0)
-        let pluginsKey = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, "_LSBundlePlugins"), 0, 0, 0)
-        remote_msg(sb, dict, setObj, emptyDict, pluginsKey, 0, 0)
-        
-        // Create app data container via MCMAppDataContainer
-        let mcmClass = remote_getClass(sb, "MCMAppDataContainer")
-        if mcmClass != 0 {
-            let bundleIDStr = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, "com.tigisoftware.Filza"), 0, 0, 0)
-            let container = remote_msg(sb, mcmClass,
-                remote_sel(sb, "containerWithIdentifier:createIfNecessary:existed:error:"),
-                bundleIDStr, 1, 0, 0)
-            
-            if container != 0 {
-                let containerURL = remote_msg(sb, container, remote_sel(sb, "url"), 0, 0, 0, 0)
-                if containerURL != 0 {
-                    let containerPath = remote_msg(sb, containerURL, remote_sel(sb, "path"), 0, 0, 0, 0)
-                    if containerPath != 0 {
-                        let containerKey = remote_msg(sb, nsStr, strSel, remote_alloc_str(sb, "Container"), 0, 0, 0)
-                        remote_msg(sb, dict, setObj, containerPath, containerKey, 0, 0)
-                        emit("[deb] ✅ App container created")
-                    }
-                }
-            }
-        }
-        
-        // Register!
-        let result = remote_msg(sb, defaultWS, remote_sel(sb, "registerApplicationDictionary:"), dict, 0, 0, 0)
-        
-        if result != 0 {
-            emit("[deb] ✅ App registered — should appear on Home Screen")
-        } else {
-            emit("[deb] ⚠️ registerApplicationDictionary returned nil/false")
-        }
-        
+        emit("[deb] ℹ️ Files installed to /var/jb/")
+        emit("[deb] ℹ️ Use File Manager to browse installed files")
         completion()
-        #else
-        completion()
-        #endif
     }
     
     // MARK: - AMFI Enforcement Disable
