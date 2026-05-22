@@ -161,8 +161,13 @@ struct ContentView: View {
     private var jailbreakButton: some View {
         #if !DISABLE_REMOTECALL
         Button(action: {
-            guard !jb.isRunning && !isJailbroken else { return }
+            guard !jb.isRunning else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            if isJailbroken {
+                // Re-jailbreak: reset state and run again
+                jb.isJailbroken = false
+                root.rootConfirmed = false
+            }
             jb.runFullChain()
         }) {
             HStack {
@@ -171,10 +176,10 @@ struct ContentView: View {
                     if jb.isRunning {
                         ProgressView().tint(.white)
                     } else {
-                        Image(systemName: isJailbroken ? "checkmark" : "bolt.fill")
+                        Image(systemName: isJailbroken ? "arrow.clockwise" : "bolt.fill")
                     }
                 }
-                Text(isJailbroken ? "Done" : (jb.isRunning ? "Working..." : "Jailbreak"))
+                Text(isJailbroken ? "Re-Jailbreak" : (jb.isRunning ? "Working..." : "Jailbreak"))
                     .fontWeight(.semibold)
                 Spacer()
             }
@@ -182,10 +187,10 @@ struct ContentView: View {
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isJailbroken ? Color.green : (jb.isRunning ? Color.blue : Color.accentColor))
+                    .fill(isJailbroken ? Color.orange : (jb.isRunning ? Color.blue : Color.accentColor))
             )
         }
-        .disabled(jb.isRunning || isJailbroken)
+        .disabled(jb.isRunning)
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .listRowBackground(Color.clear)
         #else
