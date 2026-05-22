@@ -88,15 +88,17 @@ final class DebInstaller {
                 return
             }
             
-            // Step 5: Skip app registration for now (causes panic)
-            // TODO: Research proper app registration that doesn't crash SpringBoard
+            // Step 5: Fix permissions (make all files readable by mobile user)
+            // This is critical for SpringBoard to be able to inspect .app bundles
             let executables = files.filter { !$0.isDirectory && self.isMachO($0.data) }
             if !executables.isEmpty {
                 self.emit("[deb] Found \(executables.count) Mach-O binaries")
-                self.emit("[deb] ℹ️ Files installed to /var/jb/ — use File Manager to browse")
-                self.emit("[deb] ⚠️ App registration disabled (research in progress)")
             }
-            completion(true, count)
+            self.emit("[deb] Fixing permissions...")
+            self.fixPermissions {
+                self.emit("[deb] ✅ Install complete — files at /var/jb/")
+                completion(true, count)
+            }
         }
     }
     
@@ -1211,6 +1213,34 @@ final class DebInstaller {
         }
         
         return files
+    }
+    
+    // MARK: - Fix Permissions
+    
+    /// chmod all files in /var/jb/Applications/ to be readable by mobile user (501:501)
+    /// SpringBoard runs as mobile — needs read access to .app bundles
+    private func fixPermissions(completion: @escaping () -> Void) {
+        #if !DISABLE_REMOTECALL
+        root.executeAsRoot(operation: "fix_perms") { rc in
+            // chmod 755 on /var/jb/Applications recursively (dirs)
+            // chmod 644 on files, 755 on executables
+            // chown 0:0 (root:wheel) — standard for system apps
+            
+            let appsDir = remote_alloc_str(rc, "/var/jb/Applications")
+            RootExecutor.rcall(rc, "chmod", appsDir, 0o755)
+            RootExecutor.rcall(rc, "free", appsDir)
+            
+            // Also ensure /var/jb itself is accessible
+            let jbDir = remote_alloc_str(rc, "/var/jb")
+            RootExecutor.rcall(rc, "chmod", jbDir, 0o755)
+            RootExecutor.rcall(rc, "free", jbDir)
+            
+            DispatchQueue.main.async { completion() }
+            return (true, "permissions fixed", 0)
+        }
+        #else
+        completion()
+        #endif
     }
     
     // MARK: - UICache (register app to Home Screen)
