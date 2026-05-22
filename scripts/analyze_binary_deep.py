@@ -1595,6 +1595,18 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
                 print("[*] Using user-provided AEA symmetric key.")
             except Exception as e:
                 print(f"[!] Invalid base64 key: {e}", file=sys.stderr)
+
+        # Try loading cached key (offline support)
+        key_cache_path = input_path.parent / ".aea_keys.json"
+        if not symmetric_key and key_cache_path.exists():
+            try:
+                cache = json.loads(key_cache_path.read_text(encoding="utf-8"))
+                cached_b64 = cache.get(input_path.name)
+                if cached_b64:
+                    symmetric_key = base64.b64decode(cached_b64)
+                    print(f"[+] Loaded cached AEA key for {input_path.name} (offline mode)")
+            except Exception:
+                pass
                 
         if not symmetric_key:
             try:
@@ -1610,6 +1622,16 @@ def process_input_recursive(input_path: Path, extract_dir: Path, aea_key_b64: Op
                 symmetric_key = extract_aea_symmetric_key(aea_header)
                 if symmetric_key:
                     print(f"[+] Automatically unwrapped AEA key from Apple WKMS: {base64.b64encode(symmetric_key).decode()}")
+                    # Cache key for offline use next time
+                    try:
+                        cache = {}
+                        if key_cache_path.exists():
+                            cache = json.loads(key_cache_path.read_text(encoding="utf-8"))
+                        cache[input_path.name] = base64.b64encode(symmetric_key).decode()
+                        key_cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+                        print(f"[+] Key cached to {key_cache_path.name} for offline use")
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[!] Automatic AEA key unwrapping failed: {e}", file=sys.stderr)
                 
