@@ -1265,11 +1265,20 @@ final class DebInstaller {
         
         let defaultWSSel = NSSelectorFromString("defaultWorkspace")
         guard wsClass.responds(to: defaultWSSel),
-              let wsUnmanaged = wsClass.perform(defaultWSSel),
-              let workspace = wsUnmanaged.takeUnretainedValue() as AnyObject?
+              let wsMethod = class_getClassMethod(wsClass, defaultWSSel)
         else {
             DispatchQueue.main.async {
-                self.emit("[deb] ⚠️ defaultWorkspace failed")
+                self.emit("[deb] ⚠️ defaultWorkspace not found")
+                completion()
+            }
+            return
+        }
+        typealias WSFunc = @convention(c) (AnyClass, Selector) -> AnyObject?
+        let wsImp = method_getImplementation(wsMethod)
+        let wsFn = unsafeBitCast(wsImp, to: WSFunc.self)
+        guard let workspace = wsFn(wsClass, defaultWSSel) else {
+            DispatchQueue.main.async {
+                self.emit("[deb] ⚠️ defaultWorkspace returned nil")
                 completion()
             }
             return
@@ -1365,8 +1374,14 @@ final class DebInstaller {
         var existed: ObjCBool = false
         var err: NSError?
         guard let container = fn(mcmClass, sel, bundleID as NSString, true, &existed, &err) else { return nil }
-        guard let url = container.perform(NSSelectorFromString("url"))?.takeUnretainedValue() as? URL else { return nil }
-        return url.path
+        
+        let urlSel = NSSelectorFromString("url")
+        guard let urlMethod = class_getInstanceMethod(type(of: container), urlSel) else { return nil }
+        typealias URLFunc = @convention(c) (AnyObject, Selector) -> AnyObject?
+        let urlImp = method_getImplementation(urlMethod)
+        let urlFn = unsafeBitCast(urlImp, to: URLFunc.self)
+        guard let urlObj = urlFn(container, urlSel) as? URL else { return nil }
+        return urlObj.path
     }
     
     // MARK: - AMFI Enforcement Disable
