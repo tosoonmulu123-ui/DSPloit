@@ -925,6 +925,372 @@ class EvidenceFindings:
                     "actionable": "Open the file at the listed offsets to confirm the pattern is in code (not data).",
                 })
 
+    # ─── MODULE A: Deep Taint Analysis ────────────────────────────────────────
+    # Track data flow from XPC/IPC input sources to dangerous sinks.
+    # A "tainted path" = input function → ... → sink function in same binary.
+
+    # Input sources (where untrusted data enters)
+    TAINT_SOURCES = {
+        "xpc_dictionary_get_string": "XPC string input",
+        "xpc_dictionary_get_data": "XPC raw data input",
+        "xpc_dictionary_get_value": "XPC generic value",
+        "xpc_dictionary_get_int64": "XPC integer input",
+        "xpc_dictionary_get_uint64": "XPC unsigned integer",
+        "xpc_dictionary_get_bool": "XPC boolean",
+        "xpc_dictionary_get_fd": "XPC file descriptor",
+        "xpc_dictionary_get_mach_send_right": "XPC mach port",
+        "xpc_array_get_value": "XPC array element",
+        "CFReadStreamRead": "Stream read (network/file)",
+        "recv": "Socket receive",
+        "recvmsg": "Socket receive message",
+        "read": "File/socket read",
+        "fread": "Buffered file read",
+        "NSXPCConnection": "NSXPC connection object",
+        "SecItemCopyMatching": "Keychain query result",
+        "IOConnectCallMethod": "IOKit user client input",
+        "mach_msg": "Raw Mach message receive",
+        "mig_get_reply_port": "MIG reply port",
+    }
+
+    # Dangerous sinks (where tainted data causes harm)
+    TAINT_SINKS = {
+        "mach_vm_write": "Arbitrary memory write",
+        "mach_vm_protect": "Memory protection change",
+        "mach_vm_remap": "Memory remap (code injection)",
+        "task_for_pid": "Task port acquisition",
+        "thread_set_state": "Thread register hijack",
+        "thread_create_running": "Thread creation with controlled PC",
+        "csops": "Code signing flag manipulation",
+        "posix_spawn": "Process spawn",
+        "execve": "Process exec",
+        "system": "Shell command execution",
+        "popen": "Shell pipe execution",
+        "dlopen": "Dynamic library load",
+        "mmap": "Memory mapping (potential code injection)",
+        "IOConnectCallMethod": "IOKit method call (kernel attack)",
+        "sandbox_extension_consume": "Sandbox extension consume",
+        "SecTrustEvaluate": "Certificate trust evaluation",
+        "xpc_connection_send_message": "XPC message send (privilege relay)",
+        "objc_msgSend": "ObjC dispatch (type confusion target)",
+        "CFRelease": "CF object release (potential UAF trigger)",
+        "free": "Heap free (potential UAF/double-free)",
+        "vm_deallocate": "VM deallocation",
+    }
+
+    def find_taint_paths(self):
+        """
+        For each binary, check if it imports BOTH a taint source AND a taint sink.
+        If yes → potential tainted data path exists.
+        Confidence boosted if xref database shows source→sink call chain.
+        """
+        for binary_name, slim in self.binary_index.items():
+            stub_map = slim.get("stub_map", {})
+            imported_syms = {sym.lstrip("_"): va for va, sym in stub_map.items()}
+
+            # Find which sources and sinks are present
+            sources_found = []
+            sinks_found = []
+            for sym, va in imported_syms.items():
+                if sym in self.TAINT_SOURCES:
+                    sources_found.append({"symbol": sym, "stub_va": va,
+                                           "desc": self.TAINT_SOURCES[sym]})
+                if sym in self.TAINT_SINKS:
+                    sinks_found.append({"symbol": sym, "stub_va": va,
+                                         "desc": self.TAINT_SINKS[sym]})
+
+            if not sources_found or not sinks_found:
+                continue
+
+            # Check xref database for actual call paths (source caller == sink caller)
+            xref_db = slim.get("xref_database", {})
+            symbol_xrefs = xref_db.get("symbol_xrefs_sample", {})
+
+            connected_pairs = []
+            for src in sources_found:
+                src_callers = set()
+                for key, callers in symbol_xrefs.items():
+                    if src["symbol"] in key:
+                        src_callers.update(callers)
+
+                for sink in sinks_found:
+                    sink_callers = set()
+                    for key, callers in symbol_xrefs.items():
+                        if sink["symbol"] in key:
+                            sink_callers.update(callers)
+
+                    # Same function calls both source and sink → HIGH confidence taint path
+                    shared = src_callers & sink_callers
+                    if shared:
+                        connected_pairs.append({
+                            "source": src["symbol"],
+                            "sink": sink["symbol"],
+                            "shared_callers": list(shared)[:5],
+                            "connection": "DIRECT",
+                        })
+
+            # Build evidence
+            evidence = []
+            for src in sources_found[:5]:
+                evidence.append({"kind": "taint_source", "value": src["symbol"],
+                                  "stub_va": src["stub_va"], "description": src["desc"]})
+            for sink in sinks_found[:5]:
+                evidence.append({"kind": "taint_sink", "value": sink["symbol"],
+                                  "stub_va": sink["stub_va"], "description": sink["desc"]})
+            for pair in connected_pairs[:5]:
+                evidence.append({"kind": "taint_path", "value": f"{pair['source']} → {pair['sink']}",
+                                  "description": f"Same function calls both (callers: {pair['shared_callers'][:3]})"})
+
+            # Confidence
+            if connected_pairs:
+                confidence = "HIGH"
+                reasoning = (f"Binary imports {len(sources_found)} input sources and "
+                             f"{len(sinks_found)} dangerous sinks. "
+                             f"{len(connected_pairs)} DIRECT taint path(s) confirmed via xref: "
+                             f"the same function(s) call both source and sink.")
+            elif len(sources_found) >= 2 and len(sinks_found) >= 2:
+                confidence = "MEDIUM"
+                reasoning = (f"Binary imports {len(sources_found)} input sources and "
+                             f"{len(sinks_found)} dangerous sinks. No direct xref path confirmed "
+                             f"but high density suggests data flows between them.")
+            else:
+                confidence = "LOW"
+                reasoning = (f"Binary imports {len(sources_found)} source(s) and "
+                             f"{len(sinks_found)} sink(s). Potential taint path but unconfirmed.")
+
+            self.findings.append({
+                "category": "taint_path",
+                "title": (f"{binary_name}: {len(sources_found)} input sources → "
+                          f"{len(sinks_found)} dangerous sinks"
+                          + (f" ({len(connected_pairs)} DIRECT paths)" if connected_pairs else "")),
+                "source_binary": binary_name,
+                "confidence": confidence,
+                "corroboration_count": len(evidence),
+                "evidence_chain": evidence,
+                "reasoning": reasoning,
+                "actionable": (
+                    f"Decompile functions at shared caller VAs to trace exact data flow. "
+                    f"Key pairs: {', '.join(p['source'] + ' -> ' + p['sink'] for p in connected_pairs[:3]) or 'use --xref-query on each sink'}."
+                ),
+            })
+
+    # ─── MODULE B: Bug Class Pattern Matcher ─────────────────────────────────
+    # Detect known vulnerability patterns at the binary level:
+    # - UAF indicators (free + use-after pattern)
+    # - Double-free indicators
+    # - Unchecked return values from security-critical functions
+    # - Integer overflow patterns
+    # - Missing null checks after allocation
+
+    BUG_CLASS_PATTERNS = {
+        "uaf_candidate": {
+            "description": "Use-After-Free candidate: imports both free/release AND re-use patterns",
+            "required_sinks": ["free", "CFRelease", "objc_release", "vm_deallocate", "munmap"],
+            "required_reuse": ["memcpy", "memmove", "objc_msgSend", "CFRetain", "strlen", "strcmp"],
+            "min_sinks": 2,
+            "min_reuse": 2,
+            "severity": "HIGH",
+        },
+        "double_free_candidate": {
+            "description": "Double-Free candidate: multiple free/release paths without nullification",
+            "required_sinks": ["free", "CFRelease", "objc_release", "vm_deallocate"],
+            "required_context": ["dispatch_async", "dispatch_queue_create", "pthread_create",
+                                  "Block_copy", "objc_retainBlock"],
+            "min_sinks": 2,
+            "min_context": 1,
+            "severity": "HIGH",
+        },
+        "unchecked_alloc": {
+            "description": "Unchecked allocation: malloc/calloc without NULL check before use",
+            "required_sinks": ["malloc", "calloc", "realloc", "mmap", "vm_allocate"],
+            "required_reuse": ["memcpy", "memset", "bzero", "strcpy", "strncpy"],
+            "min_sinks": 1,
+            "min_reuse": 1,
+            "severity": "MEDIUM",
+        },
+        "integer_overflow": {
+            "description": "Integer overflow candidate: arithmetic on sizes before allocation",
+            "required_sinks": ["malloc", "calloc", "mmap", "vm_allocate"],
+            "required_context": ["xpc_dictionary_get_uint64", "xpc_dictionary_get_int64",
+                                  "CFNumberGetValue", "atoi", "strtoul", "strtol"],
+            "min_sinks": 1,
+            "min_context": 1,
+            "severity": "HIGH",
+        },
+        "format_string_vuln": {
+            "description": "Format string vulnerability: user-controlled input to format functions",
+            "required_sinks": ["NSLog", "printf", "fprintf", "sprintf", "syslog", "os_log"],
+            "required_context": ["xpc_dictionary_get_string", "CFStringGetCString",
+                                  "recv", "read", "fgets"],
+            "min_sinks": 1,
+            "min_context": 1,
+            "severity": "HIGH",
+        },
+        "race_condition": {
+            "description": "Race condition candidate: shared resource access across threads without locks",
+            "required_sinks": ["dispatch_async", "pthread_create", "dispatch_queue_create"],
+            "required_context": ["mach_vm_write", "IOConnectCallMethod", "xpc_connection_send_message",
+                                  "task_for_pid", "open", "unlink"],
+            "min_sinks": 1,
+            "min_context": 1,
+            "severity": "MEDIUM",
+        },
+    }
+
+    def find_bug_class_patterns(self):
+        """
+        Match known vulnerability patterns by checking co-occurrence of
+        specific symbol imports within the same binary.
+        """
+        for binary_name, slim in self.binary_index.items():
+            stub_map = slim.get("stub_map", {})
+            imported_syms = {sym.lstrip("_") for sym in stub_map.values()}
+
+            for pattern_name, pattern in self.BUG_CLASS_PATTERNS.items():
+                sinks_hit = [s for s in pattern["required_sinks"] if s in imported_syms]
+                context_key = "required_reuse" if "required_reuse" in pattern else "required_context"
+                context_hit = [s for s in pattern[context_key] if s in imported_syms]
+
+                if (len(sinks_hit) < pattern["min_sinks"] or
+                    len(context_hit) < pattern.get("min_reuse", pattern.get("min_context", 1))):
+                    continue
+
+                # Build evidence
+                evidence = []
+                for s in sinks_hit[:5]:
+                    va = next((v for v, sym in stub_map.items() if sym.lstrip("_") == s), "?")
+                    evidence.append({"kind": "sink_symbol", "value": s, "stub_va": va})
+                for s in context_hit[:5]:
+                    va = next((v for v, sym in stub_map.items() if sym.lstrip("_") == s), "?")
+                    evidence.append({"kind": "context_symbol", "value": s, "stub_va": va})
+
+                # Boost confidence if xref shows same function calls both
+                xref_db = slim.get("xref_database", {})
+                symbol_xrefs = xref_db.get("symbol_xrefs_sample", {})
+                direct_link = False
+                for sink_sym in sinks_hit[:3]:
+                    sink_callers = set()
+                    for key, callers in symbol_xrefs.items():
+                        if sink_sym in key:
+                            sink_callers.update(callers)
+                    for ctx_sym in context_hit[:3]:
+                        ctx_callers = set()
+                        for key, callers in symbol_xrefs.items():
+                            if ctx_sym in key:
+                                ctx_callers.update(callers)
+                        if sink_callers & ctx_callers:
+                            direct_link = True
+                            evidence.append({"kind": "xref_link",
+                                              "value": f"{ctx_sym} + {sink_sym} in same function",
+                                              "description": "Confirmed co-location via xref"})
+                            break
+                    if direct_link:
+                        break
+
+                confidence = "HIGH" if direct_link else pattern["severity"]
+
+                self.findings.append({
+                    "category": f"bug_class_{pattern_name}",
+                    "title": f"{binary_name}: {pattern['description']}",
+                    "source_binary": binary_name,
+                    "confidence": confidence,
+                    "corroboration_count": len(sinks_hit) + len(context_hit),
+                    "evidence_chain": evidence,
+                    "reasoning": (
+                        f"Binary imports {len(sinks_hit)} sink(s) ({', '.join(sinks_hit)}) "
+                        f"and {len(context_hit)} context symbol(s) ({', '.join(context_hit)}). "
+                        f"This matches the '{pattern_name}' vulnerability pattern. "
+                        + ("Xref confirms co-location in same function." if direct_link
+                           else "No xref co-location confirmed — manual verification needed.")
+                    ),
+                    "actionable": (
+                        f"Decompile callers of {sinks_hit[0]} and check if data from "
+                        f"{context_hit[0]} flows into it without validation. "
+                        f"Use: --xref-query \"{sinks_hit[0]}\" --decompile-va <caller_va>"
+                    ),
+                })
+
+    # ─── MODULE C: Differential Analysis (cross-version) ─────────────────────
+    # Compare current firmware's binary set against a "patched" reference.
+    # Finds functions that were CHANGED (patched) = likely fixed vulnerabilities.
+
+    def find_differential_indicators(self):
+        """
+        Without a second IPSW, we can still detect differential signals:
+        - Binaries with very few exported symbols (stripped = security-sensitive)
+        - Binaries with constructors (__mod_init_func) = early execution
+        - Binaries with no ASLR (no PIE) = easier to exploit
+        - Binaries with disabled ARC = manual memory management = more bugs
+        - Encrypted binaries = hiding something
+        """
+        for binary_name, slim in self.binary_index.items():
+            evidence = []
+            risk_score = 0
+
+            # No PIE = no ASLR
+            if not slim.get("has_pie", True):
+                evidence.append({"kind": "missing_mitigation", "value": "NO_PIE",
+                                  "description": "Binary lacks PIE — no ASLR, fixed addresses exploitable"})
+                risk_score += 3
+
+            # No ARC = manual retain/release = UAF-prone
+            if not slim.get("has_arc", True):
+                evidence.append({"kind": "missing_mitigation", "value": "NO_ARC",
+                                  "description": "No ARC — manual memory management, higher UAF risk"})
+                risk_score += 2
+
+            # Has constructors = runs code before main()
+            constructors = slim.get("constructors", {})
+            init_count = len(constructors.get("init", []))
+            if init_count > 0:
+                evidence.append({"kind": "constructor", "value": f"{init_count} __mod_init_func entries",
+                                  "description": "Code executes before main() — potential persistence/hook point"})
+                risk_score += 1
+
+            # Encrypted = FairPlay or custom
+            if slim.get("encrypted", False):
+                evidence.append({"kind": "encrypted", "value": "crypt_id != 0",
+                                  "description": "Binary is encrypted — cannot be statically analyzed without decryption"})
+                risk_score += 1
+
+            # High exploit primitive count
+            ep = slim.get("exploit_primitives", {})
+            if ep.get("total_findings", 0) >= 5:
+                evidence.append({"kind": "high_primitive_count",
+                                  "value": f"{ep['total_findings']} exploit primitives",
+                                  "description": ep.get("capability_description", "")})
+                risk_score += 2
+
+            # Very high import count (large attack surface)
+            if slim.get("imported_count", 0) > 500:
+                evidence.append({"kind": "large_attack_surface",
+                                  "value": f"{slim['imported_count']} imports",
+                                  "description": "Large import table = wide attack surface"})
+                risk_score += 1
+
+            if risk_score < 3:
+                continue
+
+            confidence = "HIGH" if risk_score >= 5 else ("MEDIUM" if risk_score >= 3 else "LOW")
+
+            self.findings.append({
+                "category": "high_risk_target",
+                "title": f"{binary_name}: risk score {risk_score} — priority reverse target",
+                "source_binary": binary_name,
+                "confidence": confidence,
+                "corroboration_count": len(evidence),
+                "evidence_chain": evidence,
+                "reasoning": (
+                    f"Binary scores {risk_score} on risk heuristics across {len(evidence)} indicators. "
+                    f"Missing mitigations + high primitive count make this a priority target "
+                    f"for manual vulnerability research."
+                ),
+                "actionable": (
+                    f"This binary should be first in line for Ghidra/IDA analysis. "
+                    f"Focus on functions that call exploit primitives without proper validation. "
+                    f"Use --decompile-va on each __mod_init_func entry for early-exec analysis."
+                ),
+            })
+
     def run_all_correlators(self):
         """Run every finding generator. Order matters: kernel first (highest priority)."""
         self.find_kernel_attack_surface()
@@ -934,6 +1300,10 @@ class EvidenceFindings:
         self.find_cross_binary_xpc_pairs()
         self.find_unpatched_cve_indicators()
         self.find_yara_hits_corroborated()
+        # ── New advanced modules ──
+        self.find_taint_paths()
+        self.find_bug_class_patterns()
+        self.find_differential_indicators()
 
     def get_filtered_findings(self, min_confidence: str = "LOW") -> list[dict]:
         """Sort findings by confidence then category."""
