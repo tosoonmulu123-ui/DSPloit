@@ -118,6 +118,11 @@ final class RootExecutor: ObservableObject {
             return
         }
         
+        guard mgr.rcready else {
+            appendLog("[\(operation)] ❌ RC not ready — re-jailbreak required after respring")
+            return
+        }
+        
         // Prevent overlapping launchd connections — queue if busy
         if isExecuting {
             appendLog("[\(operation)] Queued — waiting for previous operation...")
