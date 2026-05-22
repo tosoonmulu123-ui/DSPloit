@@ -1291,14 +1291,25 @@ final class DebInstaller {
         let containerPath = Self.createMCMContainer(bundleID: bundleID)
         let dict = buildRegistrationDict(bundleID: bundleID, appPath: appPath, containerPath: containerPath)
         
+        // Call registerApplicationDictionary: via objc_msgSend (Swift 6 perform() is ambiguous)
         let regSel = NSSelectorFromString("registerApplicationDictionary:")
-        let result: Unmanaged<AnyObject>? = workspace.perform(regSel, with: dict)
+        typealias RegFunc = @convention(c) (AnyObject, Selector, NSDictionary) -> Bool
+        guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else {
+            DispatchQueue.main.async {
+                self.emit("[deb] ⚠️ registerApplicationDictionary not found")
+                completion()
+            }
+            return
+        }
+        let regImp = method_getImplementation(regMethod)
+        let regFn = unsafeBitCast(regImp, to: RegFunc.self)
+        let success = regFn(workspace, regSel, dict)
         
         DispatchQueue.main.async {
-            if result != nil {
+            if success {
                 self.emit("[deb] ✅ App registered — check Home Screen")
             } else {
-                self.emit("[deb] ⚠️ Registration returned nil")
+                self.emit("[deb] ⚠️ Registration returned false")
                 self.emit("[deb] ℹ️ Files installed at /var/jb/")
             }
             completion()
