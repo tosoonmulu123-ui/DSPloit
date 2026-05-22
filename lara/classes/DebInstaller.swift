@@ -88,37 +88,15 @@ final class DebInstaller {
                 return
             }
             
-            // Step 5: CDHash + trust cache + uicache (proper CodeDirectory hash)
-            let files = self.parseTar(data: tarData)
+            // Step 5: Skip app registration for now (causes panic)
+            // TODO: Research proper app registration that doesn't crash SpringBoard
             let executables = files.filter { !$0.isDirectory && self.isMachO($0.data) }
-            
             if !executables.isEmpty {
-                self.emit("[deb] Found \(executables.count) Mach-O binaries — computing CDHash...")
-                let cdhashes = executables.compactMap { self.computeCDHash(data: $0.data, path: $0.path) }
-                
-                if !cdhashes.isEmpty {
-                    self.emit("[deb] Injecting \(cdhashes.count) CDHashes into trust cache...")
-                    self.injectTrustCacheBatch(cdhashes: cdhashes) {
-                        self.emit("[deb] ✅ Trust cache: \(cdhashes.count) hashes injected")
-                        
-                        let hasApp = files.contains { $0.path.contains(".app/Info.plist") }
-                        if hasApp {
-                            self.emit("[deb] Registering app...")
-                            self.runUicache {
-                                self.emit("[deb] ✅ Done — respring to see app")
-                                completion(true, count)
-                            }
-                        } else {
-                            completion(true, count)
-                        }
-                    }
-                } else {
-                    self.emit("[deb] ⚠️ No CDHashes computed (binaries may be unsigned)")
-                    completion(true, count)
-                }
-            } else {
-                completion(true, count)
+                self.emit("[deb] Found \(executables.count) Mach-O binaries")
+                self.emit("[deb] ℹ️ Files installed to /var/jb/ — use File Manager to browse")
+                self.emit("[deb] ⚠️ App registration disabled (research in progress)")
             }
+            completion(true, count)
         }
     }
     
