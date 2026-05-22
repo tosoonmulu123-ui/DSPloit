@@ -1248,15 +1248,59 @@ final class DebInstaller {
         let workspace = remote_getClass(sb, "LSApplicationWorkspace")
         let defaultWS = remote_msg(sb, workspace, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
         
-        if defaultWS != 0 {
-            remote_msg(sb, defaultWS,
-                remote_sel(sb, "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:"),
-                1, 1, 1, 0)
-            emit("[deb] ✅ uicache triggered — respring to see app on Home Screen")
-        } else {
+        guard defaultWS != 0 else {
             emit("[deb] ⚠️ LSApplicationWorkspace not available")
+            completion()
+            return
         }
         
+        // Method 1: registerApplicationDictionary with explicit path
+        // Build NSDictionary with app info
+        let dictClass = remote_getClass(sb, "NSMutableDictionary")
+        let dict = remote_msg(sb, dictClass, remote_sel(sb, "new"), 0, 0, 0, 0)
+        
+        if dict != 0 {
+            // Set keys
+            let setObj = remote_sel(sb, "setObject:forKey:")
+            
+            // ApplicationType = "User"
+            let typeVal = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "User"), 0, 0, 0)
+            let typeKey = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "ApplicationType"), 0, 0, 0)
+            remote_msg(sb, dict, setObj, typeVal, typeKey, 0, 0)
+            
+            // Path = "/var/jb/Applications/Filza.app" (or whatever .app we installed)
+            let pathVal = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "/var/jb/Applications/Filza.app"), 0, 0, 0)
+            let pathKey = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "Path"), 0, 0, 0)
+            remote_msg(sb, dict, setObj, pathVal, pathKey, 0, 0)
+            
+            // CFBundleIdentifier = "com.tigisoftware.Filza"
+            let bundleVal = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "com.tigisoftware.Filza"), 0, 0, 0)
+            let bundleKey = remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), remote_alloc_str(sb, "CFBundleIdentifier"), 0, 0, 0)
+            remote_msg(sb, dict, setObj, bundleVal, bundleKey, 0, 0)
+            
+            // Register
+            remote_msg(sb, defaultWS, remote_sel(sb, "registerApplicationDictionary:"), dict, 0, 0, 0)
+            emit("[deb] ✅ registerApplicationDictionary called")
+        }
+        
+        // Method 2: Also try installApplication:withOptions:
+        let appPath = remote_alloc_str(sb, "/var/jb/Applications/Filza.app")
+        let nsURL = remote_msg(sb, remote_getClass(sb, "NSURL"), remote_sel(sb, "fileURLWithPath:"),
+            remote_msg(sb, remote_getClass(sb, "NSString"), remote_sel(sb, "stringWithUTF8String:"), appPath, 0, 0, 0), 0, 0, 0)
+        RootExecutor.rcall(sb, "free", appPath)
+        
+        if nsURL != 0 {
+            let emptyDict = remote_msg(sb, remote_getClass(sb, "NSDictionary"), remote_sel(sb, "dictionary"), 0, 0, 0, 0)
+            remote_msg(sb, defaultWS, remote_sel(sb, "installApplication:withOptions:error:"), nsURL, emptyDict, 0, 0)
+            emit("[deb] ✅ installApplication called")
+        }
+        
+        // Method 3: Rebuild databases
+        remote_msg(sb, defaultWS,
+            remote_sel(sb, "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:"),
+            1, 1, 1, 0)
+        
+        emit("[deb] ✅ uicache complete — respring to see app")
         completion()
         #else
         completion()
