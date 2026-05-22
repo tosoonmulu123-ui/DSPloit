@@ -74,9 +74,15 @@ final class DebInstaller {
             tarData = dataTar.data
         }
         
-        // Step 4: FAST PATH — extract to app temp dir (no RPC), then rename to /var/jb via 1 RPC
-        emit("[deb] Fast extract: writing to temp dir (no RPC)...")
-        extractToTempThenMove(tarData: tarData, name: name) { [weak self] success, count in
+        // Step 4: Install via batch write (proven: ~30s for Filza)
+        emit("[deb] Installing via batch write...")
+        let files = parseTar(data: tarData)
+        guard !files.isEmpty else {
+            emit("[deb] ❌ No files in tar")
+            completion(false, 0)
+            return
+        }
+        batchWriteFromTar(tarData: tarData, name: name) { [weak self] success, count in
             guard let self, success else {
                 completion(success, count)
                 return
