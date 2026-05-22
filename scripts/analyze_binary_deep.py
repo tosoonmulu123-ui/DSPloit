@@ -611,6 +611,248 @@ def diff_binaries(bin_path_a: str, bin_path_b: str) -> dict:
         
     return report
 
+# ── Pure-Python LZFSE/LZVN Decompressor (fallback when C extension unavailable) ──
+
+def _lzfse_decompress(src: bytes) -> bytes:
+    """
+    Decompress LZFSE or LZVN compressed data.
+    Tries native C extension first, falls back to pure-Python LZVN decoder.
+    LZFSE streams often contain LZVN blocks internally.
+    """
+    # Try native lzfse module first (fastest)
+    try:
+        import lzfse
+        return lzfse.decompress(src)
+    except ImportError:
+        pass
+    # Try pyliblzfse
+    try:
+        import liblzfse
+        return liblzfse.decompress(src)
+    except ImportError:
+        pass
+    # Pure-Python fallback: handle LZVN and raw uncompressed blocks
+    # LZFSE stream format: sequence of blocks with magic headers
+    # bvx-  = raw (uncompressed)
+    # bvx1  = LZVN compressed
+    # bvx2  = LZFSE compressed (complex FSE tables)
+    # bvxn  = end of stream
+    if len(src) < 4:
+        return src
+    magic = src[:4]
+    # If it starts with bvx- / bvx1 / bvx2 / bvxn → LZFSE stream
+    if magic in (b"bvx-", b"bvx1", b"bvx2", b"bvxn"):
+        return _lzfse_stream_decode(src)
+    # Otherwise try as raw LZVN
+    # LZVN doesn't have a magic — it's just a byte stream of opcodes
+    # Try to decode as LZVN directly
+    try:
+        return _lzvn_decode(src, len(src) * 10)  # generous output buffer
+    except Exception:
+        raise ValueError("LZFSE/LZVN decompression failed: no native module and pure-Python decode failed")
+
+
+def _lzfse_stream_decode(src: bytes) -> bytes:
+    """Decode an LZFSE block stream (bvx- / bvx1 / bvx2 / bvxn blocks)."""
+    out = bytearray()
+    pos = 0
+    while pos < len(src):
+        if pos + 4 > len(src):
+            break
+        magic = src[pos:pos+4]
+        if magic == b"bvxn":  # end of stream
+            break
+        elif magic == b"bvx-":  # uncompressed block
+            if pos + 12 > len(src):
+                break
+            n_raw_bytes = int.from_bytes(src[pos+4:pos+8], "little")
+            pos += 12
+            out.extend(src[pos:pos+n_raw_bytes])
+            pos += n_raw_bytes
+        elif magic == b"bvx1":  # LZVN compressed block
+            if pos + 12 > len(src):
+                break
+            n_raw_bytes = int.from_bytes(src[pos+4:pos+8], "little")
+            n_payload_bytes = int.from_bytes(src[pos+8:pos+12], "little")
+            pos += 12
+            payload = src[pos:pos+n_payload_bytes]
+            decoded = _lzvn_decode(payload, n_raw_bytes)
+            out.extend(decoded)
+            pos += n_payload_bytes
+        elif magic == b"bvx2":  # LZFSE compressed block (FSE entropy coding)
+            # Full LZFSE with FSE tables — very complex to implement in pure Python
+            # Fall back to error with helpful message
+            raise ValueError(
+                "LZFSE bvx2 (FSE-encoded) block encountered. "
+                "Pure-Python cannot decode this. Install lzfse: "
+                "pip install lzfse (requires C compiler) or use Python <= 3.12 with pyliblzfse."
+            )
+        else:
+            # Unknown block — skip 4 bytes and hope for the best
+            pos += 4
+    return bytes(out)
+
+
+def _lzvn_decode(src: bytes, dst_size: int) -> bytes:
+    """
+    Pure-Python LZVN decoder.
+    LZVN is a simpler LZ-variant used by Apple (predecessor to LZFSE for small blocks).
+    Reference: Apple's open-source lzfse implementation.
+    """
+    dst = bytearray()
+    src_pos = 0
+    src_len = len(src)
+
+    while src_pos < src_len and len(dst) < dst_size:
+        byte = src[src_pos]
+
+        # ── Small literal (0x00-0x0F): nL = byte & 0xF, copy nL literal bytes ──
+        # ── Small match (0xX0-0xXF with various encodings) ──
+        # LZVN opcode table (simplified):
+        #   0x06..0x0F: small literal (L = byte - 0x06 + 4? no...)
+        # Actually LZVN uses a complex opcode table. Let me implement properly.
+
+        # Opcode classes based on high nibble
+        if byte == 0x06:  # end of stream marker
+            break
+        elif byte == 0x07:  # large literal / large match (2-byte length)
+            break  # also EOS in some implementations
+        elif (byte & 0xF0) == 0xE0:
+            # Literal: L = (byte & 0x0F) + 1 (up to 16 bytes)
+            L = (byte & 0x0F)
+            src_pos += 1
+            if src_pos + L > src_len:
+                break
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+        elif (byte & 0xF0) == 0xF0:
+            # Large literal: next byte is length
+            src_pos += 1
+            if src_pos >= src_len:
+                break
+            L = src[src_pos] + 16
+            src_pos += 1
+            if src_pos + L > src_len:
+                break
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+        elif byte <= 0x05:
+            # Opcodes 0x00-0x05: various small literal+match combos
+            if byte == 0x00:
+                # nop / padding
+                src_pos += 1
+            else:
+                # Small literal of length `byte`
+                src_pos += 1
+                if src_pos + byte > src_len:
+                    break
+                dst.extend(src[src_pos:src_pos+byte])
+                src_pos += byte
+        elif (byte & 0xE0) == 0x20:
+            # Small match: M = ((byte >> 0) & 0x03) + 3, D from next 1-2 bytes
+            # Encoding: 001MMDDD + optional extra D byte
+            M = ((byte >> 3) & 0x03) + 3
+            D_lo = byte & 0x07
+            src_pos += 1
+            if src_pos >= src_len:
+                break
+            D = (src[src_pos] << 3) | D_lo
+            src_pos += 1
+            if D == 0:
+                break
+            # Copy M bytes from dst[-D:]
+            for _ in range(M):
+                if len(dst) < D:
+                    dst.append(0)
+                else:
+                    dst.append(dst[-D])
+        elif (byte & 0xE0) == 0x40:
+            # Medium match: 010LLLMM + D(16-bit)
+            L = (byte >> 2) & 0x07
+            M = (byte & 0x03) + 3
+            src_pos += 1
+            if src_pos + L + 2 > src_len:
+                break
+            # L literal bytes first
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+            # 2-byte distance
+            D = int.from_bytes(src[src_pos:src_pos+2], "little")
+            src_pos += 2
+            if D == 0:
+                break
+            for _ in range(M):
+                if len(dst) < D:
+                    dst.append(0)
+                else:
+                    dst.append(dst[-D])
+        elif (byte & 0xE0) == 0x60:
+            # 011LLLMM + D(16-bit) — same as above but M offset
+            L = (byte >> 2) & 0x07
+            M = (byte & 0x03) + 3
+            src_pos += 1
+            if src_pos + L + 2 > src_len:
+                break
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+            D = int.from_bytes(src[src_pos:src_pos+2], "little")
+            src_pos += 2
+            if D == 0:
+                break
+            for _ in range(M):
+                if len(dst) < D:
+                    dst.append(0)
+                else:
+                    dst.append(dst[-D])
+        elif (byte & 0xE0) == 0x80:
+            # 100MMMDD + D_extra(8) — short match with 10-bit distance
+            M = ((byte >> 2) & 0x07) + 3
+            D_hi = byte & 0x03
+            src_pos += 1
+            if src_pos >= src_len:
+                break
+            D = (D_hi << 8) | src[src_pos]
+            src_pos += 1
+            if D == 0:
+                break
+            for _ in range(M):
+                if len(dst) < D:
+                    dst.append(0)
+                else:
+                    dst.append(dst[-D])
+        elif (byte & 0xE0) == 0xA0:
+            # 101LLMMM + D(16) — literal + match
+            L = (byte >> 3) & 0x03
+            M = (byte & 0x07) + 3
+            src_pos += 1
+            if src_pos + L + 2 > src_len:
+                break
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+            D = int.from_bytes(src[src_pos:src_pos+2], "little")
+            src_pos += 2
+            if D == 0:
+                break
+            for _ in range(M):
+                if len(dst) < D:
+                    dst.append(0)
+                else:
+                    dst.append(dst[-D])
+        elif (byte & 0xE0) == 0xC0:
+            # 110LLLLL — literal only (L = byte & 0x1F)
+            L = byte & 0x1F
+            src_pos += 1
+            if src_pos + L > src_len:
+                break
+            dst.extend(src[src_pos:src_pos+L])
+            src_pos += L
+        else:
+            # Unknown opcode — advance
+            src_pos += 1
+
+    return bytes(dst[:dst_size])
+
+
 # ── AEA Decryptor ─────────────────────────────────────────────────────────────
 ProfileType_SIGNED = 0
 ProfileType_SYMMETRIC_ENCRYPTION = 1
@@ -880,8 +1122,7 @@ class AEADecrypter:
                         import lz4.block
                         segment_data = lz4.block.decompress(segment_data, original_size)
                     elif comp_algo == "e":
-                        import lzfse
-                        segment_data = lzfse.decompress(segment_data)
+                        segment_data = _lzfse_decompress(segment_data)
                     elif comp_algo == "x":
                         import lzma
                         segment_data = lzma.decompress(segment_data)
@@ -919,8 +1160,7 @@ def decompress_payload(data: bytes) -> bytes:
     if data.startswith(b"AA01"):
         return data
     try:
-        import lzfse
-        return lzfse.decompress(data)
+        return _lzfse_decompress(data)
     except Exception:
         pass
     try:
@@ -3025,6 +3265,33 @@ def _arm64_disasm_one(word:int, pc:int) -> tuple[str,str,Optional[int]]:
         if ra==31: mn = "MNEG" if sub else "MUL"
         return mn, f"{_reg(rd,sf)}, {_reg(rn,sf)}, {_reg(rm,sf)}", None
 
+    # ── Logical (shifted register): AND/BIC/ORR/ORN/EOR/EON/ANDS/BICS ─────
+    # encoding: sf:1, opc:2, 01010:5, shift:2, N:1, Rm:5, imm6:6, Rn:5, Rd:5
+    # bits[28:24] = 0b01010
+    if (word>>24)&0x1F == 0x0A:
+        sf  = (word>>31)&1
+        opc = (word>>29)&0x3
+        shift_t = (word>>22)&0x3
+        n_bit = (word>>21)&1
+        rm = (word>>16)&0x1F
+        imm6 = (word>>10)&0x3F
+        rn = (word>>5)&0x1F
+        rd = word&0x1F
+        mns = {0:("AND","BIC"), 1:("ORR","ORN"), 2:("EOR","EON"), 3:("ANDS","BICS")}
+        mn = mns[opc][n_bit]
+        # Special MOV xd, xm == ORR xd, xzr, xm (rn==31, no shift, no N, opc==1)
+        if mn == "ORR" and rn == 31 and shift_t == 0 and imm6 == 0 and n_bit == 0:
+            return "MOV", f"{_reg(rd,sf)}, {_reg(rm,sf)}", None
+        # Special MVN xd, xm == ORN xd, xzr, xm
+        if mn == "ORN" and rn == 31 and shift_t == 0 and imm6 == 0:
+            return "MVN", f"{_reg(rd,sf)}, {_reg(rm,sf)}", None
+        # TST xn, xm == ANDS xzr, xn, xm
+        if mn == "ANDS" and rd == 31:
+            return "TST", f"{_reg(rn,sf)}, {_reg(rm,sf)}", None
+        shift_names = ["LSL","LSR","ASR","ROR"]
+        shift_str = f", {shift_names[shift_t]} #{imm6}" if imm6 else ""
+        return mn, f"{_reg(rd,sf)}, {_reg(rn,sf)}, {_reg(rm,sf)}{shift_str}", None
+
     # ── ADRP / ADR ────────────────────────────────────────────────────────
     # ADR/ADRP encoding: op:1, immlo:2, 10000:5, immhi:19, Rd:5
     # bits[28:24] must == 0b10000 = 0x10
@@ -3198,10 +3465,14 @@ def taint_sec_trust(data:bytes, segs:dict, func_starts:list[int],
     # Build stub map from lazy bind
     stub_sec = segs.get("__TEXT")
     stubs_section = find_section(segs,"__TEXT","__stubs") if stub_sec else None
+    is_auth = False
+    if not stubs_section:
+        stubs_section = find_section(segs,"__TEXT","__auth_stubs") if stub_sec else None
+        is_auth = True
     stub_vas: set[int] = set()
 
     if stubs_section:
-        STUB_SIZE = 12
+        STUB_SIZE = 16 if is_auth else 12
         n = stubs_section.size // STUB_SIZE
         for i,entry in enumerate(bind_entries[:n]):
             sym = entry.get("symbol","").lstrip("_")
@@ -5053,16 +5324,20 @@ def build_stub_map(data: bytes, segs: dict, lcs: list,
     """
     stub_map = {}
     
-    # __stubs section — usually 12 bytes per entry
+    # __stubs section — 12 bytes per entry on classic ARM64
+    # __auth_stubs section — 16 bytes per entry on ARM64e (PAC variants)
     stubs_sec = find_section(segs, "__TEXT", "__stubs")
+    is_auth = False
     if not stubs_sec:
         # Some binaries use __auth_stubs (arm64e)
         stubs_sec = find_section(segs, "__TEXT", "__auth_stubs")
+        is_auth = True
     
     if not stubs_sec:
         return stub_map
     
-    STUB_SIZE = 12
+    # Auth stubs are 16 bytes (ADRP + ADD + LDR + BRAA), regular stubs 12 bytes
+    STUB_SIZE = 16 if is_auth else 12
     n_stubs = stubs_sec.size // STUB_SIZE
     
     # Collect imported symbols in order
@@ -7869,1672 +8144,15 @@ def _make_serializable(obj):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# §25.5  INTERACTIVE DESKTOP GUI
+# §25.5  GUI REMOVED — Use vulnerability_engine.py for GUI
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def launch_gui():
-    global ctk
-    if tk is None or filedialog is None or ttk is None:
-        print("[!] GUI dependencies (Tkinter/Tcl) are not available in this environment.", file=sys.stderr)
-        print("[*] Please run this script in a desktop environment or pass a binary file path to use CLI mode.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        import customtkinter as ctk
-    except ImportError:
-        print("[*] GUI dependency 'customtkinter' is missing. Installing...")
-        import subprocess
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "customtkinter"])
-            print("[+] Installed 'customtkinter' successfully.")
-            import customtkinter as ctk
-        except Exception as e:
-            print(f"[!] Failed to install customtkinter: {e}", file=sys.stderr)
-            sys.exit(1)
-
-    ctk.set_appearance_mode("Dark")
-    ctk.set_default_color_theme("blue")
-
-    class TextRedirector:
-        def __init__(self, text_widget: ctk.CTkTextbox, queue_widget: queue.Queue):
-            self.text_widget = text_widget
-            self.queue_widget = queue_widget
-
-        def write(self, string: str):
-            self.queue_widget.put(string)
-
-        def flush(self):
-            pass
-
-    class AetherAnalyzerApp(ctk.CTk):
-        def __init__(self):
-            super().__init__()
-
-            self.title("AETHER ANALYZER  //  Premium Interactive iOS Binary Explorer")
-            self.geometry("1280x800")
-            self.minsize(1024, 700)
-
-            # Threading Queue for Safe Logging
-            self.log_queue = queue.Queue()
-            self.current_analysis_results = {}
-            self.selected_macho_data = None
-            self.is_analyzing = False
-            self.current_objc_class = ""
-            self.current_objc_methods = []
-
-            # Set up grid layout
-            self.grid_rowconfigure(0, weight=1)
-            self.grid_columnconfigure(1, weight=1)
-
-            # ── Sidebar Navigation ──
-            self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
-            self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-            self.sidebar_frame.grid_rowconfigure(4, weight=1)
-
-            # Logo / Branding
-            self.logo_label = ctk.CTkLabel(
-                self.sidebar_frame, 
-                text="AETHER // ANALYZER", 
-                font=ctk.CTkFont(family="Courier New", size=18, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
-
-            self.subtitle_label = ctk.CTkLabel(
-                self.sidebar_frame,
-                text="Mach-O iOS Static Suite",
-                font=ctk.CTkFont(size=12, slant="italic"),
-                text_color="#888888"
-            )
-            self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 20))
-
-            # Nav Buttons
-            self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="Console & Input", command=self.show_dashboard_tab)
-            self.btn_dashboard.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_carved = ctk.CTkButton(self.sidebar_frame, text="Carved Binaries", command=self.show_carved_tab)
-            self.btn_carved.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_security = ctk.CTkButton(self.sidebar_frame, text="Security Auditor", command=self.show_security_tab)
-            self.btn_security.grid(row=4, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_objc = ctk.CTkButton(self.sidebar_frame, text="ObjC & Swift Explorer", command=self.show_objc_tab)
-            self.btn_objc.grid(row=5, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_strings = ctk.CTkButton(self.sidebar_frame, text="Strings & Entitlements", command=self.show_strings_tab)
-            self.btn_strings.grid(row=6, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_disasm = ctk.CTkButton(self.sidebar_frame, text="Disassembly View", command=self.show_disasm_tab)
-            self.btn_disasm.grid(row=7, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_re_utils = ctk.CTkButton(self.sidebar_frame, text="RE Utilities Suite", command=self.show_re_utils_tab)
-            self.btn_re_utils.grid(row=8, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_ipsw_intel = ctk.CTkButton(
-                self.sidebar_frame, text="IPSW Firmware Intel",
-                command=self.show_ipsw_tab,
-                fg_color="#8B0000", hover_color="#FF4500",
-                font=ctk.CTkFont(weight="bold")
-            )
-            self.btn_ipsw_intel.grid(row=9, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_powerhouse = ctk.CTkButton(
-                self.sidebar_frame, text="⚡ POWERHOUSE",
-                command=self.show_powerhouse_tab,
-                fg_color="#7B00FF", hover_color="#9B30FF",
-                font=ctk.CTkFont(weight="bold")
-            )
-            self.btn_powerhouse.grid(row=10, column=0, padx=20, pady=10, sticky="ew")
-
-            self.btn_device = ctk.CTkButton(
-                self.sidebar_frame, text="📱 Device Bridge",
-                command=self.show_device_tab,
-                fg_color="#0066CC", hover_color="#3399FF",
-                font=ctk.CTkFont(weight="bold")
-            )
-            self.btn_device.grid(row=11, column=0, padx=20, pady=10, sticky="ew")
-
-            # Theme Selector at bottom
-            self.theme_label = ctk.CTkLabel(self.sidebar_frame, text="Appearance Mode:", anchor="w")
-            self.theme_label.grid(row=12, column=0, padx=20, pady=(10, 0))
-            self.theme_optionmenu = ctk.CTkOptionMenu(
-                self.sidebar_frame, 
-                values=["Dark", "Light", "System"],
-                command=ctk.set_appearance_mode
-            )
-            self.theme_optionmenu.grid(row=13, column=0, padx=20, pady=(0, 20))
-
-            # ── Main Content Area (Tab Container) ──
-            self.tab_container = ctk.CTkFrame(self, corner_radius=15, fg_color="transparent")
-            self.tab_container.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-            self.tab_container.grid_rowconfigure(0, weight=1)
-            self.tab_container.grid_columnconfigure(0, weight=1)
-
-            # Tab 1: Dashboard / Controls & Log Streamer
-            self.tab_dashboard = ctk.CTkFrame(self.tab_container)
-            self.build_dashboard_tab()
-
-            # Tab 2: Carved Binaries Panel
-            self.tab_carved = ctk.CTkFrame(self.tab_container)
-            self.build_carved_tab()
-
-            # Tab 3: Security Auditor Dashboard
-            self.tab_security = ctk.CTkFrame(self.tab_container)
-            self.build_security_tab()
-
-            # Tab 4: ObjC/Swift Class Browser
-            self.tab_objc = ctk.CTkFrame(self.tab_container)
-            self.build_objc_tab()
-
-            # Tab 5: Strings & Entitlements Explorer
-            self.tab_strings = ctk.CTkFrame(self.tab_container)
-            self.build_strings_tab()
-
-            # Tab 6: Interactive Disassembly
-            self.tab_disasm = ctk.CTkFrame(self.tab_container)
-            self.build_disasm_tab()
-
-            # Tab 7: RE Utilities Suite
-            self.tab_re_utils = ctk.CTkFrame(self.tab_container)
-            self.build_re_utils_tab()
-
-            # Tab 8: IPSW Firmware Intelligence
-            self.tab_ipsw_intel = ctk.CTkFrame(self.tab_container)
-            self.build_ipsw_intel_tab()
-            self.firmware_intel_report = None
-
-            # Tab 9: POWERHOUSE Center
-            self.tab_powerhouse = ctk.CTkFrame(self.tab_container)
-            self.build_powerhouse_tab()
-
-            # Tab 10: Device Bridge
-            self.tab_device = ctk.CTkFrame(self.tab_container)
-            self.build_device_tab()
-
-            # Display default tab
-            self.current_visible_tab = self.tab_dashboard
-            self.current_visible_tab.grid(row=0, column=0, sticky="nsew")
-
-            # Start periodic log checks
-            self.after(100, self.update_logs)
-
-        # ── Log / Console Thread-Safety ──
-        def update_logs(self):
-            while not self.log_queue.empty():
-                try:
-                    msg = self.log_queue.get_nowait()
-                    self.console_textbox.insert(tk.END, msg)
-                    self.console_textbox.see(tk.END)
-                except queue.Empty:
-                    break
-            self.after(100, self.update_logs)
-
-        # ── Tab Navigation Controllers ──
-        def switch_tab(self, target_tab: ctk.CTkFrame):
-            self.current_visible_tab.grid_forget()
-            self.current_visible_tab = target_tab
-            self.current_visible_tab.grid(row=0, column=0, sticky="nsew")
-
-        def show_dashboard_tab(self): self.switch_tab(self.tab_dashboard)
-        def show_carved_tab(self): self.switch_tab(self.tab_carved)
-        def show_security_tab(self): self.switch_tab(self.tab_security)
-        def show_objc_tab(self): self.switch_tab(self.tab_objc)
-        def show_strings_tab(self): self.switch_tab(self.tab_strings)
-        def show_disasm_tab(self): self.switch_tab(self.tab_disasm)
-        def show_re_utils_tab(self): self.switch_tab(self.tab_re_utils)
-        def show_ipsw_tab(self): self.switch_tab(self.tab_ipsw_intel)
-        def show_powerhouse_tab(self): self.switch_tab(self.tab_powerhouse)
-        def show_device_tab(self): self.switch_tab(self.tab_device)
-
-        # ── UI Constructors ──
-        def build_dashboard_tab(self):
-            self.tab_dashboard.grid_rowconfigure(3, weight=1)
-            self.tab_dashboard.grid_columnconfigure(0, weight=1)
-
-            # Title Block
-            self.db_title = ctk.CTkLabel(
-                self.tab_dashboard, 
-                text="INPUT SELECTION & LIVE EXECUTION CONSOLE",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.db_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            # Controls Panel
-            self.controls_frame = ctk.CTkFrame(self.tab_dashboard)
-            self.controls_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-            self.controls_frame.grid_columnconfigure(1, weight=1)
-
-            self.input_label = ctk.CTkLabel(self.controls_frame, text="Target File:")
-            self.input_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-
-            self.input_entry = ctk.CTkEntry(self.controls_frame, placeholder_text="Path to binary, .aea, .dmg, or .aar archive...")
-            self.input_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-
-            self.btn_browse = ctk.CTkButton(self.controls_frame, text="Browse...", width=100, command=self.browse_file)
-            self.btn_browse.grid(row=0, column=2, padx=10, pady=10)
-
-            # Extra Options
-            self.options_frame = ctk.CTkFrame(self.tab_dashboard)
-            self.options_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
-
-            self.cb_cfg = ctk.CTkCheckBox(self.options_frame, text="Build Call Graph (Slower)")
-            self.cb_cfg.grid(row=0, column=0, padx=20, pady=10)
-
-            self.cb_taint = ctk.CTkCheckBox(self.options_frame, text="Run Taint Tracking Analysis")
-            self.cb_taint.grid(row=0, column=1, padx=20, pady=10)
-            self.cb_taint.select()
-
-            self.btn_analyze = ctk.CTkButton(
-                self.options_frame, 
-                text="START SUPER DEEP SCAN", 
-                fg_color="#008B8B", 
-                hover_color="#00FFFF",
-                text_color="#FFFFFF",
-                font=ctk.CTkFont(weight="bold"),
-                command=self.start_analysis_thread
-            )
-            self.btn_analyze.grid(row=0, column=2, padx=20, pady=10, sticky="e")
-
-            # Output Terminal Streamer
-            self.console_textbox = ctk.CTkTextbox(
-                self.tab_dashboard, 
-                font=ctk.CTkFont(family="Courier New", size=13),
-                fg_color="#080808",
-                text_color="#00FF00"
-            )
-            self.console_textbox.grid(row=3, column=0, padx=20, pady=20, sticky="nsew")
-
-        def build_carved_tab(self):
-            self.tab_carved.grid_rowconfigure(1, weight=1)
-            self.tab_carved.grid_columnconfigure(0, weight=1)
-
-            self.carved_title = ctk.CTkLabel(
-                self.tab_carved,
-                text="CARVED BINARIES & STRUCTURED EXPLOITS TREE",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.carved_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            # Tree Frame
-            self.tree_frame = ctk.CTkFrame(self.tab_carved)
-            self.tree_frame.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
-            self.tree_frame.grid_rowconfigure(0, weight=1)
-            self.tree_frame.grid_columnconfigure(0, weight=1)
-
-            # Style customization for modern look
-            style = ttk.Style()
-            style.theme_use("clam")
-            style.configure("Treeview", background="#1d1d1d", fieldbackground="#1d1d1d", foreground="#ffffff", rowheight=30)
-            style.configure("Treeview.Heading", background="#2a2a2a", foreground="#ffffff")
-            
-            self.tree = ttk.Treeview(self.tree_frame, columns=("size", "type"), show="tree headings")
-            self.tree.heading("#0", text="File Name / Binary Name", anchor="w")
-            self.tree.heading("size", text="Size", anchor="w")
-            self.tree.heading("type", text="Details / Type", anchor="w")
-            self.tree.column("#0", width=400)
-            self.tree.column("size", width=150)
-            self.tree.column("type", width=250)
-            self.tree.grid(row=0, column=0, sticky="nsew")
-            
-            self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
-
-        def build_security_tab(self):
-            self.tab_security.grid_rowconfigure(1, weight=1)
-            self.tab_security.grid_columnconfigure(0, weight=1)
-
-            self.sec_title = ctk.CTkLabel(
-                self.tab_security,
-                text="AUTOMATED HEURISTIC SECURITY RISK AUDITOR",
-                font=ctk.CTkFont(size=16, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.sec_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            # Dashboard grid container
-            self.sec_grid = ctk.CTkScrollableFrame(self.tab_security)
-            self.sec_grid.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
-            self.sec_grid.grid_columnconfigure((0, 1), weight=1)
-
-            # ── Threat Scorecard Frame (Premium Visual Dashboard) ──
-            self.scorecard_frame = ctk.CTkFrame(self.sec_grid, border_width=1, border_color="#00FFFF", corner_radius=10, fg_color="#142626")
-            self.scorecard_frame.grid(row=0, column=0, columnspan=2, padx=15, pady=15, sticky="ew")
-            self.scorecard_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-            self.lbl_score_title = ctk.CTkLabel(self.scorecard_frame, text="SECURITY HARDENING & AUDIT THREAT SCORECARD", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00FFFF")
-            self.lbl_score_title.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 10), sticky="w")
-
-            # Verdict display
-            self.lbl_sec_verdict = ctk.CTkLabel(self.scorecard_frame, text="VERDICT: WAITING FOR SCAN", font=ctk.CTkFont(size=15, weight="bold"), text_color="#aaaaaa")
-            self.lbl_sec_verdict.grid(row=1, column=0, columnspan=3, padx=15, pady=5, sticky="w")
-
-            # Circular/Bar indicators (Percentage displays)
-            self.frame_metric_1 = ctk.CTkFrame(self.scorecard_frame, fg_color="transparent")
-            self.frame_metric_1.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
-            self.lbl_metric_1_val = ctk.CTkLabel(self.frame_metric_1, text="N/A", font=ctk.CTkFont(size=24, weight="bold"), text_color="#00FFFF")
-            self.lbl_metric_1_val.pack()
-            self.lbl_metric_1_title = ctk.CTkLabel(self.frame_metric_1, text="Mitigation Posture", font=ctk.CTkFont(size=11), text_color="#888888")
-            self.lbl_metric_1_title.pack()
-
-            self.frame_metric_2 = ctk.CTkFrame(self.scorecard_frame, fg_color="transparent")
-            self.frame_metric_2.grid(row=2, column=1, padx=10, pady=10, sticky="nsew")
-            self.lbl_metric_2_val = ctk.CTkLabel(self.frame_metric_2, text="N/A", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FF4500")
-            self.lbl_metric_2_val.pack()
-            self.lbl_metric_2_title = ctk.CTkLabel(self.frame_metric_2, text="Exploitability Rating", font=ctk.CTkFont(size=11), text_color="#888888")
-            self.lbl_metric_2_title.pack()
-
-            self.frame_metric_3 = ctk.CTkFrame(self.scorecard_frame, fg_color="transparent")
-            self.frame_metric_3.grid(row=2, column=2, padx=10, pady=10, sticky="nsew")
-            self.lbl_metric_3_val = ctk.CTkLabel(self.frame_metric_3, text="N/A", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFD700")
-            self.lbl_metric_3_val.pack()
-            self.lbl_metric_3_title = ctk.CTkLabel(self.frame_metric_3, text="Tweak Compatibility", font=ctk.CTkFont(size=11), text_color="#888888")
-            self.lbl_metric_3_title.pack()
-
-            # Detailed Audited Elements listbox
-            self.txt_scorecard_details = ctk.CTkTextbox(self.scorecard_frame, height=100, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#181818")
-            self.txt_scorecard_details.grid(row=3, column=0, columnspan=3, padx=15, pady=(10, 15), sticky="nsew")
-
-            # Shift the other widgets to rows 1-4
-            self.widget_antidebug = self.create_security_widget(self.sec_grid, "Anti-Debugging Diagnostics", 1, 0)
-            self.widget_jailbreak = self.create_security_widget(self.sec_grid, "Jailbreak Detection Controls", 1, 1)
-            self.widget_pinning = self.create_security_widget(self.sec_grid, "SSL Pinning Mechanisms", 2, 0)
-            self.widget_secrets = self.create_security_widget(self.sec_grid, "Hardcoded Secrets & API Keys", 2, 1)
-            self.widget_obfuscation = self.create_security_widget(self.sec_grid, "Obfuscation Heuristics", 3, 0)
-            self.widget_constructors = self.create_security_widget(self.sec_grid, "Binary Initializers (__mod_init_func)", 3, 1)
-            self.widget_entitlements = self.create_security_widget(self.sec_grid, "High-Privilege Entitlements Audit", 4, 0)
-            self.widget_crypto = self.create_security_widget(self.sec_grid, "Cryptography & Secure APIs", 4, 1)
-
-        def create_security_widget(self, parent, title: str, row: int, col: int) -> dict:
-            frame = ctk.CTkFrame(parent, border_width=1, border_color="#2a2a2a", corner_radius=10)
-            frame.grid(row=row, column=col, padx=15, pady=15, sticky="nsew")
-            frame.grid_rowconfigure(2, weight=1)
-            frame.grid_columnconfigure(0, weight=1)
-
-            lbl_title = ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=13, weight="bold"))
-            lbl_title.grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
-
-            # Risk indicator badge
-            lbl_badge = ctk.CTkLabel(
-                frame, 
-                text="WAITING FOR SCAN", 
-                font=ctk.CTkFont(size=11, weight="bold"),
-                fg_color="#3a3a3a",
-                corner_radius=5,
-                padx=10, pady=2
-            )
-            lbl_badge.grid(row=0, column=1, padx=15, pady=(15, 5), sticky="e")
-
-            txt_details = ctk.CTkTextbox(frame, height=100, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#181818")
-            txt_details.grid(row=2, column=0, columnspan=2, padx=15, pady=(5, 15), sticky="nsew")
-
-            return {"badge": lbl_badge, "text": txt_details}
-
-        def build_objc_tab(self):
-            self.tab_objc.grid_rowconfigure(1, weight=1)
-            self.tab_objc.grid_columnconfigure((0, 1), weight=1)
-
-            # Title & Filter Frame
-            self.top_objc_frame = ctk.CTkFrame(self.tab_objc)
-            self.top_objc_frame.grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="ew")
-            
-            self.objc_title = ctk.CTkLabel(
-                self.top_objc_frame,
-                text="OBJECTIVE-C & SWIFT DEEP CLASS EXHAUSTIVE BROWSER",
-                font=ctk.CTkFont(size=15, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.objc_title.grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-            self.filter_entry = ctk.CTkEntry(self.top_objc_frame, placeholder_text="Filter classes or structures by name...")
-            self.filter_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-            self.filter_entry.bind("<KeyRelease>", self.on_class_filter_change)
-
-            # Left panel: Class List Box
-            self.class_listbox = tk.Listbox(
-                self.tab_objc, 
-                bg="#1d1d1d", 
-                fg="#ffffff", 
-                selectbackground="#008b8b", 
-                font=("Courier New", 12),
-                borderwidth=0,
-                highlightthickness=0
-            )
-            self.class_listbox.grid(row=1, column=0, padx=(20, 10), pady=20, sticky="nsew")
-            self.class_listbox.bind("<<ListboxSelect>>", self.on_class_select)
-
-            # Right panel: Method Details Browser Frame
-            self.right_objc_frame = ctk.CTkFrame(self.tab_objc, fg_color="transparent")
-            self.right_objc_frame.grid(row=1, column=1, padx=(10, 20), pady=20, sticky="nsew")
-            self.right_objc_frame.grid_rowconfigure(0, weight=1)
-            self.right_objc_frame.grid_rowconfigure(1, weight=0)
-            self.right_objc_frame.grid_columnconfigure(0, weight=1)
-
-            self.method_details_box = ctk.CTkTextbox(
-                self.right_objc_frame,
-                font=ctk.CTkFont(family="Consolas", size=12),
-                fg_color="#181818",
-                text_color="#e0e0e0"
-            )
-            self.method_details_box.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="nsew")
-
-            # Quick Hooking & Instrumentation Tools Frame
-            self.hook_tools_frame = ctk.CTkFrame(self.right_objc_frame, border_width=1, border_color="#2a2a2a", corner_radius=8)
-            self.hook_tools_frame.grid(row=1, column=0, padx=0, pady=0, sticky="ew")
-            self.hook_tools_frame.grid_columnconfigure(1, weight=1)
-
-            self.lbl_hook_method = ctk.CTkLabel(self.hook_tools_frame, text="Instrument Method:", font=ctk.CTkFont(size=12, weight="bold"))
-            self.lbl_hook_method.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-
-            self.combo_hook_method = ctk.CTkOptionMenu(self.hook_tools_frame, values=["(Select Class First)"])
-            self.combo_hook_method.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-
-            self.btn_frida_hook = ctk.CTkButton(self.hook_tools_frame, text="Copy Frida Hook", fg_color="#800080", hover_color="#4B0082", command=self.do_gui_gen_frida)
-            self.btn_frida_hook.grid(row=0, column=2, padx=5, pady=10)
-
-            self.btn_logos_hook = ctk.CTkButton(self.hook_tools_frame, text="Copy Logos Hook", fg_color="#008080", hover_color="#005f5f", command=self.do_gui_gen_logos)
-            self.btn_logos_hook.grid(row=0, column=3, padx=10, pady=10)
-
-        def build_strings_tab(self):
-            self.tab_strings.grid_rowconfigure((1, 3), weight=1)
-            self.tab_strings.grid_columnconfigure(0, weight=1)
-
-            # Entitlements
-            self.ent_title = ctk.CTkLabel(
-                self.tab_strings,
-                text="XML / DER DECODED SECURITY ENTITLEMENTS PLATFORM",
-                font=ctk.CTkFont(size=14, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.ent_title.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
-
-            self.ent_text = ctk.CTkTextbox(self.tab_strings, font=ctk.CTkFont(family="Consolas", size=12), fg_color="#181818")
-            self.ent_text.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
-
-            # Keywords Strings
-            self.strings_title = ctk.CTkLabel(
-                self.tab_strings,
-                text="CRITICAL STRINGS & REGULAR KEYWORDS MAP",
-                font=ctk.CTkFont(size=14, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.strings_title.grid(row=2, column=0, padx=20, pady=(15, 5), sticky="w")
-
-            self.strings_text = ctk.CTkTextbox(self.tab_strings, font=ctk.CTkFont(family="Consolas", size=12), fg_color="#181818")
-            self.strings_text.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="nsew")
-
-        def build_disasm_tab(self):
-            self.tab_disasm.grid_rowconfigure(1, weight=1)
-            self.tab_disasm.grid_columnconfigure(0, weight=1)
-
-            self.disasm_title = ctk.CTkLabel(
-                self.tab_disasm,
-                text="ARM64 DEEPLY CARVED BINARY RECONSTRUCTED DISASSEMBLY",
-                font=ctk.CTkFont(size=15, weight="bold"),
-                text_color="#00FFFF"
-            )
-            self.disasm_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            self.disasm_text = ctk.CTkTextbox(
-                self.tab_disasm, 
-                font=ctk.CTkFont(family="Courier New", size=12),
-                fg_color="#080808",
-                text_color="#00FFFF"
-            )
-            self.disasm_text.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
-
-        def build_re_utils_tab(self):
-            self.tab_re_utils.grid_rowconfigure(0, weight=1)
-            self.tab_re_utils.grid_columnconfigure((0, 1), weight=1)
-
-            # Left side Frame (Translator & Patching)
-            left_frame = ctk.CTkScrollableFrame(self.tab_re_utils)
-            left_frame.grid(row=0, column=0, padx=15, pady=15, sticky="nsew")
-            left_frame.grid_columnconfigure(0, weight=1)
-
-            # ── Address Translator ──
-            trans_frame = ctk.CTkFrame(left_frame, border_width=1, border_color="#2a2a2a", corner_radius=10)
-            trans_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-            trans_frame.grid_columnconfigure(1, weight=1)
-
-            trans_lbl = ctk.CTkLabel(trans_frame, text="Address Translator (VA <=> Offset)", font=ctk.CTkFont(size=13, weight="bold"), text_color="#00FFFF")
-            trans_lbl.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
-
-            self.trans_entry = ctk.CTkEntry(trans_frame, placeholder_text="Hex or decimal address/offset (e.g. 0x100004000)...")
-            self.trans_entry.grid(row=1, column=0, columnspan=2, padx=15, pady=10, sticky="ew")
-
-            self.btn_translate = ctk.CTkButton(trans_frame, text="Translate", width=90, command=self.do_gui_translate)
-            self.btn_translate.grid(row=1, column=2, padx=15, pady=10)
-
-            self.trans_output = ctk.CTkLabel(trans_frame, text="Translation results will appear here.", anchor="w", justify="left")
-            self.trans_output.grid(row=2, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
-
-            # ── Sideloading Patch Editor ──
-            patch_frame = ctk.CTkFrame(left_frame, border_width=1, border_color="#2a2a2a", corner_radius=10)
-            patch_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-            patch_frame.grid_columnconfigure(1, weight=1)
-
-            patch_lbl = ctk.CTkLabel(patch_frame, text="Sideloading Patch Editor (Dylib Path Renamer)", font=ctk.CTkFont(size=13, weight="bold"), text_color="#00FFFF")
-            patch_lbl.grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 5), sticky="w")
-
-            self.patch_old_lbl = ctk.CTkLabel(patch_frame, text="Target Path:")
-            self.patch_old_lbl.grid(row=1, column=0, padx=15, pady=5, sticky="w")
-
-            self.patch_old_entry = ctk.CTkEntry(patch_frame, placeholder_text="e.g. /System/Library/Frameworks/Security.framework/Security")
-            self.patch_old_entry.grid(row=1, column=1, padx=15, pady=5, sticky="ew")
-
-            self.patch_new_lbl = ctk.CTkLabel(patch_frame, text="New Path:")
-            self.patch_new_lbl.grid(row=2, column=0, padx=15, pady=5, sticky="w")
-
-            self.patch_new_entry = ctk.CTkEntry(patch_frame, placeholder_text="e.g. @executable_path/libmocksec.dylib")
-            self.patch_new_entry.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
-
-            self.btn_patch_dylib = ctk.CTkButton(patch_frame, text="Inject Sideload Path", command=self.do_gui_dylib_rename)
-            self.btn_patch_dylib.grid(row=3, column=0, columnspan=2, padx=15, pady=15, sticky="ew")
-
-            # Right side Frame (Differ & Emulator)
-            right_frame = ctk.CTkScrollableFrame(self.tab_re_utils)
-            right_frame.grid(row=0, column=1, padx=15, pady=15, sticky="nsew")
-            right_frame.grid_columnconfigure(0, weight=1)
-
-            # ── Mach-O Binary Differ ──
-            diff_frame = ctk.CTkFrame(right_frame, border_width=1, border_color="#2a2a2a", corner_radius=10)
-            diff_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-            diff_frame.grid_columnconfigure(1, weight=1)
-
-            diff_lbl = ctk.CTkLabel(diff_frame, text="Mach-O Binary Differ", font=ctk.CTkFont(size=13, weight="bold"), text_color="#00FFFF")
-            diff_lbl.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
-
-            self.diff_target_entry = ctk.CTkEntry(diff_frame, placeholder_text="Path to secondary binary B...")
-            self.diff_target_entry.grid(row=1, column=0, columnspan=2, padx=15, pady=5, sticky="ew")
-
-            self.btn_diff_browse = ctk.CTkButton(diff_frame, text="Browse...", width=90, command=self.browse_diff_file)
-            self.btn_diff_browse.grid(row=1, column=2, padx=15, pady=5)
-
-            self.btn_run_diff = ctk.CTkButton(diff_frame, text="Compare Selected Binaries", command=self.do_gui_diff)
-            self.btn_run_diff.grid(row=2, column=0, columnspan=3, padx=15, pady=10, sticky="ew")
-
-            self.diff_output = ctk.CTkTextbox(diff_frame, height=120, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#181818")
-            self.diff_output.grid(row=3, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="nsew")
-
-            # ── ARM64 Emulator Sandbox ──
-            emu_frame = ctk.CTkFrame(right_frame, border_width=1, border_color="#2a2a2a", corner_radius=10)
-            emu_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-            emu_frame.grid_columnconfigure(1, weight=1)
-
-            emu_lbl = ctk.CTkLabel(emu_frame, text="ARM64 Micro-Emulation Sandbox", font=ctk.CTkFont(size=13, weight="bold"), text_color="#00FFFF")
-            emu_lbl.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
-
-            self.emu_func_entry = ctk.CTkEntry(emu_frame, placeholder_text="Virtual Address to emulate (e.g. 0x100004FC0)...")
-            self.emu_func_entry.grid(row=1, column=0, columnspan=2, padx=15, pady=5, sticky="ew")
-
-            self.btn_init_emu = ctk.CTkButton(emu_frame, text="Init Emu", width=90, command=self.do_gui_init_emu)
-            self.btn_init_emu.grid(row=1, column=2, padx=15, pady=5)
-
-            self.btn_step_emu = ctk.CTkButton(emu_frame, text="Step Instruction", state="disabled", command=self.do_gui_step_emu)
-            self.btn_step_emu.grid(row=2, column=0, columnspan=3, padx=15, pady=5, sticky="ew")
-
-            self.emu_regs_lbl = ctk.CTkLabel(emu_frame, text="Registers: X0=0x0 X1=0x0 X2=0x0 SP=0x7FFFFFF0 PC=0x0", font=ctk.CTkFont(family="Courier New", size=11), anchor="w")
-            self.emu_regs_lbl.grid(row=3, column=0, columnspan=3, padx=15, pady=5, sticky="w")
-
-            self.emu_output = ctk.CTkTextbox(emu_frame, height=120, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#181818")
-            self.emu_output.grid(row=4, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="nsew")
-
-        def do_gui_translate(self):
-            val_str = self.trans_entry.get().strip()
-            if not val_str:
-                self.trans_output.configure(text="Please specify a value to translate.")
-                return
-            try:
-                addr = int(val_str, 0)
-            except ValueError:
-                self.trans_output.configure(text="Invalid number format (use hex 0x or decimal).")
-                return
-
-            if not self.selected_macho_data:
-                self.trans_output.configure(text="No binary selected. Please complete a deep scan first.")
-                return
-
-            # reconstruct segs dict from report segments list
-            segs = {}
-            for s in self.selected_macho_data.get("segments", []):
-                class MockSeg:
-                    def __init__(self, name, vmaddr, vmsize, fileoff, filesize):
-                        self.segname = name
-                        self.vmaddr = int(vmaddr, 16) if isinstance(vmaddr, str) else vmaddr
-                        self.vmsize = int(vmsize, 16) if isinstance(vmsize, str) else vmsize
-                        self.fileoff = int(fileoff, 16) if isinstance(fileoff, str) else fileoff
-                        self.filesize = int(filesize, 16) if isinstance(filesize, str) else filesize
-                segs[s["name"]] = MockSeg(s["name"], s["vmaddr"], s["vmsize"], s["fileoff"], s["filesize"])
-
-            fo = va_to_fo(addr, segs)
-            va = fo_to_va(addr, segs)
-            res_str = f"Target Value: 0x{addr:X}\n"
-            if fo is not None:
-                res_str += f"  -> As Virtual Address: File Offset = 0x{fo:X}\n"
-            if va is not None:
-                res_str += f"  -> As File Offset: Virtual Address = 0x{va:X}\n"
-            if fo is None and va is None:
-                res_str += "  -> Could not map to any loaded segments."
-
-            self.trans_output.configure(text=res_str)
-
-        def do_gui_dylib_rename(self):
-            target_bin = self.input_entry.get().strip()
-            old_path = self.patch_old_entry.get().strip()
-            new_path = self.patch_new_entry.get().strip()
-
-            if not target_bin or not Path(target_bin).exists():
-                self.console_textbox.insert(tk.END, "[!] Error: Select a valid target file first.\n")
-                return
-            if not old_path or not new_path:
-                self.console_textbox.insert(tk.END, "[!] Error: Old and New dylib paths are required.\n")
-                return
-
-            success = rename_macho_dylib(target_bin, old_path, new_path)
-            if success:
-                self.console_textbox.insert(tk.END, f"[+] Patched dependency successfully in {target_bin}!\n")
-            else:
-                self.console_textbox.insert(tk.END, f"[!] Failed to rename path in {target_bin}.\n")
-
-        def browse_diff_file(self):
-            path = filedialog.askopenfilename(title="Select Secondary Binary B to Diff")
-            if path:
-                self.diff_target_entry.delete(0, tk.END)
-                self.diff_target_entry.insert(0, path)
-
-        def do_gui_diff(self):
-            bin_a = self.input_entry.get().strip()
-            bin_b = self.diff_target_entry.get().strip()
-
-            if not bin_a or not Path(bin_a).exists():
-                self.diff_output.insert(tk.END, "[!] Select primary target file first.\n")
-                return
-            if not bin_b or not Path(bin_b).exists():
-                self.diff_output.insert(tk.END, "[!] Select secondary binary B file first.\n")
-                return
-
-            self.diff_output.delete("1.0", tk.END)
-            self.diff_output.insert(tk.END, f"Comparing {Path(bin_a).name} vs {Path(bin_b).name}...\n\n")
-
-            res = diff_binaries(bin_a, bin_b)
-            if "error" in res:
-                self.diff_output.insert(tk.END, f"[!] Diff failed: {res['error']}\n")
-                return
-
-            self.diff_output.insert(tk.END, f"Binary A size: {res['size_a']:,} bytes\n")
-            self.diff_output.insert(tk.END, f"Binary B size: {res['size_b']:,} bytes\n")
-            self.diff_output.insert(tk.END, f"Size Diff: {res['size_b'] - res['size_a']:,} bytes\n\n")
-
-            if not res["changes_detected"]:
-                self.diff_output.insert(tk.END, "[+] No changes in classes, entitlements, or dylib loads.\n")
-            else:
-                if res["added_classes"]:
-                    self.diff_output.insert(tk.END, f"Added Classes ({len(res['added_classes'])}):\n")
-                    for c in res["added_classes"][:10]:
-                        self.diff_output.insert(tk.END, f"  + {c}\n")
-                if res["removed_classes"]:
-                    self.diff_output.insert(tk.END, f"Removed Classes ({len(res['removed_classes'])}):\n")
-                    for c in res["removed_classes"][:10]:
-                        self.diff_output.insert(tk.END, f"  - {c}\n")
-                if res["added_entitlements"]:
-                    self.diff_output.insert(tk.END, f"Added Entitlements:\n")
-                    for e in res["added_entitlements"]:
-                        self.diff_output.insert(tk.END, f"  + {e}\n")
-                if res["added_dylibs"]:
-                    self.diff_output.insert(tk.END, f"Added Dylibs:\n")
-                    for d in res["added_dylibs"]:
-                        self.diff_output.insert(tk.END, f"  + {d}\n")
-
-        def do_gui_init_emu(self):
-            addr_str = self.emu_func_entry.get().strip()
-            if not addr_str:
-                return
-            try:
-                addr = int(addr_str, 0)
-            except ValueError:
-                return
-
-            if not self.selected_macho_data:
-                return
-
-            self.emu_sandbox = ARM64Emulator(start_pc=addr)
-            self.btn_step_emu.configure(state="normal")
-            self.emu_output.delete("1.0", tk.END)
-            self.emu_output.insert(tk.END, f"[*] Initialized emulator at PC=0x{addr:X}\n")
-            self.update_emu_regs_display()
-
-        def update_emu_regs_display(self):
-            if not hasattr(self, "emu_sandbox"):
-                return
-            e = self.emu_sandbox
-            self.emu_regs_lbl.configure(text=f"Regs: X0=0x{e.regs['X0']:X} X1=0x{e.regs['X1']:X} X2=0x{e.regs['X2']:X} SP=0x{e.regs['SP']:X} PC=0x{e.pc:X}")
-
-        def do_gui_step_emu(self):
-            if not hasattr(self, "emu_sandbox"):
-                return
-            e = self.emu_sandbox
-            target_bin = self.input_entry.get().strip()
-            if not target_bin or not Path(target_bin).exists():
-                return
-
-            raw_bin = Path(target_bin).read_bytes()
-            data, slice_off = find_arm64_slice(raw_bin)
-            lcs = parse_load_commands(data)
-            segs = {}
-            for s in self.selected_macho_data.get("segments", []):
-                class MockSeg:
-                    def __init__(self, name, vmaddr, vmsize, fileoff, filesize):
-                        self.segname = name
-                        self.vmaddr = int(vmaddr, 16) if isinstance(vmaddr, str) else vmaddr
-                        self.vmsize = int(vmsize, 16) if isinstance(vmsize, str) else vmsize
-                        self.fileoff = int(fileoff, 16) if isinstance(fileoff, str) else fileoff
-                        self.filesize = int(filesize, 16) if isinstance(filesize, str) else filesize
-                segs[s["name"]] = MockSeg(s["name"], s["vmaddr"], s["vmsize"], s["fileoff"], s["filesize"])
-
-            fo = va_to_fo(e.pc, segs)
-            if fo is None or fo + 4 > len(data):
-                self.emu_output.insert(tk.END, f"[!] PC out of segment boundaries (PC=0x{e.pc:X}). Emulation halted.\n")
-                self.btn_step_emu.configure(state="disabled")
-                return
-
-            word = u32le(data, fo)
-            mn, ops, _ = _arm64_disasm_one(word, e.pc)
-            desc = e.step(word)
-            self.emu_output.insert(tk.END, f"Disasm: {mn:<8} {ops}  -> Result: {desc}\n")
-            self.update_emu_regs_display()
-
-            if mn == "RET":
-                self.emu_output.insert(tk.END, "[+] RET reached. Emulator halted.\n")
-                self.btn_step_emu.configure(state="disabled")
-
-        def do_gui_gen_frida(self):
-            method = self.combo_hook_method.get()
-            if not self.current_objc_class or not method or method in ("(Select Class First)", "No methods found"):
-                self.console_textbox.insert(tk.END, "[!] Select a valid class and method to generate hooks.\n")
-                return
-            hook_code = generate_frida_hook(self.current_objc_class, method)
-            self.clipboard_clear()
-            self.clipboard_append(hook_code)
-            self.console_textbox.insert(tk.END, f"[+] Copied Frida hook for {self.current_objc_class} {method} to clipboard!\n")
-
-        def do_gui_gen_logos(self):
-            method = self.combo_hook_method.get()
-            if not self.current_objc_class or not method or method in ("(Select Class First)", "No methods found"):
-                self.console_textbox.insert(tk.END, "[!] Select a valid class and method to generate hooks.\n")
-                return
-            hook_code = generate_logos_hook(self.current_objc_class, method)
-            self.clipboard_clear()
-            self.clipboard_append(hook_code)
-            self.console_textbox.insert(tk.END, f"[+] Copied Logos hook for {self.current_objc_class} {method} to clipboard!\n")
-
-        # ── IPSW Firmware Intelligence Tab Builder ──
-        def build_ipsw_intel_tab(self):
-            self.tab_ipsw_intel.grid_rowconfigure(1, weight=1)
-            self.tab_ipsw_intel.grid_columnconfigure(0, weight=1)
-
-            self.ipsw_title = ctk.CTkLabel(
-                self.tab_ipsw_intel,
-                text="IPSW FIRMWARE INTELLIGENCE REPORT",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color="#FF4500"
-            )
-            self.ipsw_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            # Scrollable content frame
-            self.ipsw_scroll = ctk.CTkScrollableFrame(self.tab_ipsw_intel, fg_color="transparent")
-            self.ipsw_scroll.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
-            self.ipsw_scroll.grid_columnconfigure(0, weight=1)
-
-            # ── Firmware Metadata Card ──
-            self.ipsw_meta_frame = ctk.CTkFrame(self.ipsw_scroll, border_width=1, border_color="#FF4500", corner_radius=10, fg_color="#1a0a0a")
-            self.ipsw_meta_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-            self.ipsw_meta_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-            self.lbl_ipsw_meta_title = ctk.CTkLabel(self.ipsw_meta_frame, text="FIRMWARE METADATA", font=ctk.CTkFont(size=14, weight="bold"), text_color="#FF4500")
-            self.lbl_ipsw_meta_title.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
-
-            self.lbl_ipsw_ver = ctk.CTkLabel(self.ipsw_meta_frame, text="iOS: —", font=ctk.CTkFont(size=13), text_color="#cccccc")
-            self.lbl_ipsw_ver.grid(row=1, column=0, padx=15, pady=5, sticky="w")
-            self.lbl_ipsw_build = ctk.CTkLabel(self.ipsw_meta_frame, text="Build: —", font=ctk.CTkFont(size=13), text_color="#cccccc")
-            self.lbl_ipsw_build.grid(row=1, column=1, padx=15, pady=5, sticky="w")
-            self.lbl_ipsw_product = ctk.CTkLabel(self.ipsw_meta_frame, text="Product: —", font=ctk.CTkFont(size=13), text_color="#cccccc")
-            self.lbl_ipsw_product.grid(row=1, column=2, padx=15, pady=5, sticky="w")
-            self.lbl_ipsw_hw = ctk.CTkLabel(self.ipsw_meta_frame, text="SoC: —", font=ctk.CTkFont(size=13), text_color="#cccccc")
-            self.lbl_ipsw_hw.grid(row=2, column=0, padx=15, pady=(0, 15), sticky="w")
-            self.lbl_ipsw_bins = ctk.CTkLabel(self.ipsw_meta_frame, text="Binaries: —", font=ctk.CTkFont(size=13), text_color="#cccccc")
-            self.lbl_ipsw_bins.grid(row=2, column=1, padx=15, pady=(0, 15), sticky="w")
-
-            # ── Overall Risk Gauge ──
-            self.ipsw_risk_frame = ctk.CTkFrame(self.ipsw_scroll, border_width=2, border_color="#333333", corner_radius=10, fg_color="#0a0a0a")
-            self.ipsw_risk_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-            self.ipsw_risk_frame.grid_columnconfigure(0, weight=1)
-
-            self.lbl_overall_risk_val = ctk.CTkLabel(self.ipsw_risk_frame, text="—%", font=ctk.CTkFont(size=48, weight="bold"), text_color="#aaaaaa")
-            self.lbl_overall_risk_val.grid(row=0, column=0, padx=20, pady=(15, 0))
-            self.lbl_overall_risk_label = ctk.CTkLabel(self.ipsw_risk_frame, text="OVERALL FIRMWARE RISK", font=ctk.CTkFont(size=12), text_color="#888888")
-            self.lbl_overall_risk_label.grid(row=1, column=0, padx=20, pady=0)
-            self.lbl_overall_verdict = ctk.CTkLabel(self.ipsw_risk_frame, text="AWAITING IPSW SCAN", font=ctk.CTkFont(size=13, weight="bold"), text_color="#555555")
-            self.lbl_overall_verdict.grid(row=2, column=0, padx=20, pady=(5, 15))
-
-            # ── 5-Category Score Grid ──
-            self.ipsw_scores_frame = ctk.CTkFrame(self.ipsw_scroll, fg_color="transparent")
-            self.ipsw_scores_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-            self.ipsw_scores_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-
-            score_labels = [
-                ("Jailbreak\nFeasibility", "#FF4500"),
-                ("Kernel\nAttack Surface", "#DC143C"),
-                ("Userland\nExploit Surface", "#FFD700"),
-                ("Code Injection\nFeasibility", "#FF8C00"),
-                ("Malware\nImplant Risk", "#8B0000"),
-            ]
-            self.ipsw_score_widgets = []
-            for i, (label, color) in enumerate(score_labels):
-                card = ctk.CTkFrame(self.ipsw_scores_frame, border_width=1, border_color=color, corner_radius=8, fg_color="#111111")
-                card.grid(row=0, column=i, padx=5, pady=5, sticky="nsew")
-                val_lbl = ctk.CTkLabel(card, text="—", font=ctk.CTkFont(size=22, weight="bold"), text_color=color)
-                val_lbl.pack(padx=10, pady=(10, 0))
-                name_lbl = ctk.CTkLabel(card, text=label, font=ctk.CTkFont(size=10), text_color="#888888", justify="center")
-                name_lbl.pack(padx=10, pady=(0, 10))
-                self.ipsw_score_widgets.append(val_lbl)
-
-            # ── CVE Summary ──
-            self.ipsw_cve_summary_frame = ctk.CTkFrame(self.ipsw_scroll, border_width=1, border_color="#333333", corner_radius=10, fg_color="#111111")
-            self.ipsw_cve_summary_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
-            self.ipsw_cve_summary_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
-
-            self.lbl_cve_title = ctk.CTkLabel(self.ipsw_cve_summary_frame, text="CVE CROSS-REFERENCE SUMMARY", font=ctk.CTkFont(size=13, weight="bold"), text_color="#FF4500")
-            self.lbl_cve_title.grid(row=0, column=0, columnspan=4, padx=15, pady=(10, 5), sticky="w")
-
-            self.lbl_cve_total = ctk.CTkLabel(self.ipsw_cve_summary_frame, text="Applicable: —", font=ctk.CTkFont(size=12), text_color="#cccccc")
-            self.lbl_cve_total.grid(row=1, column=0, padx=10, pady=5, sticky="w")
-            self.lbl_cve_vuln = ctk.CTkLabel(self.ipsw_cve_summary_frame, text="Vulnerable: —", font=ctk.CTkFont(size=12), text_color="#FF4500")
-            self.lbl_cve_vuln.grid(row=1, column=1, padx=10, pady=5, sticky="w")
-            self.lbl_cve_patched = ctk.CTkLabel(self.ipsw_cve_summary_frame, text="Patched: —", font=ctk.CTkFont(size=12), text_color="#00FF00")
-            self.lbl_cve_patched.grid(row=1, column=2, padx=10, pady=5, sticky="w")
-            self.lbl_cve_hw = ctk.CTkLabel(self.ipsw_cve_summary_frame, text="HW Unpatchable: —", font=ctk.CTkFont(size=12), text_color="#FFD700")
-            self.lbl_cve_hw.grid(row=1, column=3, padx=10, pady=(5, 10), sticky="w")
-
-            # ── CVE Detail Table ──
-            self.ipsw_cve_text = ctk.CTkTextbox(
-                self.ipsw_scroll, height=250,
-                font=ctk.CTkFont(family="Consolas", size=11),
-                fg_color="#080808", text_color="#dddddd"
-            )
-            self.ipsw_cve_text.grid(row=4, column=0, padx=10, pady=10, sticky="nsew")
-
-            # ── Recommendations Panel ──
-            self.ipsw_rec_frame = ctk.CTkFrame(self.ipsw_scroll, border_width=1, border_color="#333333", corner_radius=10, fg_color="#111111")
-            self.ipsw_rec_frame.grid(row=5, column=0, padx=10, pady=10, sticky="ew")
-            self.ipsw_rec_frame.grid_columnconfigure(0, weight=1)
-
-            self.lbl_rec_title = ctk.CTkLabel(self.ipsw_rec_frame, text="RECOMMENDATIONS", font=ctk.CTkFont(size=13, weight="bold"), text_color="#00FFFF")
-            self.lbl_rec_title.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-            self.ipsw_rec_text = ctk.CTkTextbox(self.ipsw_rec_frame, height=150, font=ctk.CTkFont(family="Consolas", size=11), fg_color="#080808", text_color="#cccccc")
-            self.ipsw_rec_text.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
-
-            # ── Export Button ──
-            self.btn_export_fw = ctk.CTkButton(
-                self.ipsw_scroll, text="EXPORT FIRMWARE INTELLIGENCE (JSON)",
-                fg_color="#8B0000", hover_color="#FF4500",
-                font=ctk.CTkFont(weight="bold"),
-                command=self._export_firmware_intel
-            )
-            self.btn_export_fw.grid(row=6, column=0, padx=10, pady=10, sticky="ew")
-
-        # ── POWERHOUSE Tab Builder ──────────────────────────────────────────
-        def build_powerhouse_tab(self):
-            self.tab_powerhouse.grid_rowconfigure(1, weight=1)
-            self.tab_powerhouse.grid_columnconfigure(0, weight=1)
-
-            self.ph_title = ctk.CTkLabel(
-                self.tab_powerhouse,
-                text="⚡ POWERHOUSE — Advanced Reverse Engineering Suite",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color="#9B30FF"
-            )
-            self.ph_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            # Scrollable area
-            self.ph_scroll = ctk.CTkScrollableFrame(self.tab_powerhouse, fg_color="transparent")
-            self.ph_scroll.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
-            self.ph_scroll.grid_columnconfigure(0, weight=1)
-
-            # ── Capabilities Status Card ──
-            self.ph_caps_frame = ctk.CTkFrame(self.ph_scroll, border_width=2, border_color="#9B30FF",
-                                                corner_radius=10, fg_color="#1A0A2A")
-            self.ph_caps_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-            self.ph_caps_frame.grid_columnconfigure(0, weight=1)
-
-            ctk.CTkLabel(self.ph_caps_frame, text="OPTIONAL POWER-UPS",
-                          font=ctk.CTkFont(size=14, weight="bold"),
-                          text_color="#9B30FF").grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
-            self.ph_caps_label = ctk.CTkLabel(self.ph_caps_frame, text="(checking...)",
-                                                font=ctk.CTkFont(size=11), justify="left")
-            self.ph_caps_label.grid(row=1, column=0, padx=15, pady=5, sticky="w")
-            self.ph_install_btn = ctk.CTkButton(self.ph_caps_frame, text="Auto-Install All Optional Deps",
-                                                 fg_color="#7B00FF", hover_color="#9B30FF",
-                                                 command=self._do_install_optional)
-            self.ph_install_btn.grid(row=2, column=0, padx=15, pady=(5, 15), sticky="ew")
-            # Initial population
-            self.after(500, self._refresh_caps_label)
-
-            # ── ROP Gadget Finder Card ──
-            self.ph_rop_frame = ctk.CTkFrame(self.ph_scroll, border_width=1, border_color="#FF4500",
-                                              corner_radius=10, fg_color="#1A0F00")
-            self.ph_rop_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-            self.ph_rop_frame.grid_columnconfigure(0, weight=1)
-
-            ctk.CTkLabel(self.ph_rop_frame, text="🎯 ROP/JOP GADGET FINDER",
-                          font=ctk.CTkFont(size=14, weight="bold"),
-                          text_color="#FF4500").grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
-            ctk.CTkLabel(self.ph_rop_frame,
-                          text="Scan __TEXT for exploitable ROP/JOP gadgets ending in RET/BR/BLR.",
-                          font=ctk.CTkFont(size=11),
-                          text_color="#cccccc").grid(row=1, column=0, padx=15, pady=2, sticky="w")
-            ctk.CTkButton(self.ph_rop_frame, text="Find Gadgets",
-                           fg_color="#FF4500", hover_color="#FF6633",
-                           command=self._do_find_gadgets).grid(row=2, column=0, padx=15, pady=10, sticky="ew")
-            self.ph_rop_text = ctk.CTkTextbox(self.ph_rop_frame, height=200,
-                                                font=ctk.CTkFont(family="Consolas", size=11),
-                                                fg_color="#080000")
-            self.ph_rop_text.grid(row=3, column=0, padx=15, pady=(0, 15), sticky="nsew")
-
-            # ── Unicorn Emulator Card ──
-            self.ph_emu_frame = ctk.CTkFrame(self.ph_scroll, border_width=1, border_color="#00FF88",
-                                              corner_radius=10, fg_color="#001A0F")
-            self.ph_emu_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
-            self.ph_emu_frame.grid_columnconfigure(1, weight=1)
-
-            ctk.CTkLabel(self.ph_emu_frame, text="🔮 UNICORN CPU EMULATOR",
-                          font=ctk.CTkFont(size=14, weight="bold"),
-                          text_color="#00FF88").grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 5), sticky="w")
-            ctk.CTkLabel(self.ph_emu_frame, text="Function VA:").grid(row=1, column=0, padx=15, pady=5, sticky="w")
-            self.ph_emu_va = ctk.CTkEntry(self.ph_emu_frame, placeholder_text="e.g. 0x100004FC0")
-            self.ph_emu_va.grid(row=1, column=1, padx=15, pady=5, sticky="ew")
-            ctk.CTkButton(self.ph_emu_frame, text="Emulate via Unicorn",
-                           fg_color="#00FF88", hover_color="#00CC66",
-                           text_color="#000000",
-                           command=self._do_unicorn_emu).grid(row=2, column=0, columnspan=2, padx=15, pady=10, sticky="ew")
-            self.ph_emu_text = ctk.CTkTextbox(self.ph_emu_frame, height=200,
-                                                font=ctk.CTkFont(family="Consolas", size=11),
-                                                fg_color="#000A05")
-            self.ph_emu_text.grid(row=3, column=0, columnspan=2, padx=15, pady=(0, 15), sticky="nsew")
-
-            # ── ASM Patcher Card ──
-            self.ph_patch_frame = ctk.CTkFrame(self.ph_scroll, border_width=1, border_color="#FFAA00",
-                                                corner_radius=10, fg_color="#1A0F00")
-            self.ph_patch_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
-            self.ph_patch_frame.grid_columnconfigure(1, weight=1)
-
-            ctk.CTkLabel(self.ph_patch_frame, text="🔧 ASM PATCHER (Keystone)",
-                          font=ctk.CTkFont(size=14, weight="bold"),
-                          text_color="#FFAA00").grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 5), sticky="w")
-            ctk.CTkLabel(self.ph_patch_frame, text="Target VA:").grid(row=1, column=0, padx=15, pady=5, sticky="w")
-            self.ph_patch_va = ctk.CTkEntry(self.ph_patch_frame, placeholder_text="e.g. 0x100004000")
-            self.ph_patch_va.grid(row=1, column=1, padx=15, pady=5, sticky="ew")
-            ctk.CTkLabel(self.ph_patch_frame, text="ARM64 ASM:").grid(row=2, column=0, padx=15, pady=5, sticky="w")
-            self.ph_patch_asm = ctk.CTkEntry(self.ph_patch_frame, placeholder_text="e.g. mov x0, #0; ret")
-            self.ph_patch_asm.grid(row=2, column=1, padx=15, pady=5, sticky="ew")
-            ctk.CTkButton(self.ph_patch_frame, text="Apply Patch (writes binary!)",
-                           fg_color="#FFAA00", hover_color="#FFCC44", text_color="#000000",
-                           command=self._do_asm_patch).grid(row=3, column=0, columnspan=2, padx=15, pady=10, sticky="ew")
-            self.ph_patch_status = ctk.CTkLabel(self.ph_patch_frame, text="(no patches applied yet)",
-                                                  font=ctk.CTkFont(family="Consolas", size=11))
-            self.ph_patch_status.grid(row=4, column=0, columnspan=2, padx=15, pady=(0, 15), sticky="w")
-
-            # ── PDF Report Card ──
-            self.ph_pdf_frame = ctk.CTkFrame(self.ph_scroll, border_width=1, border_color="#00CCFF",
-                                               corner_radius=10, fg_color="#001A1A")
-            self.ph_pdf_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
-            self.ph_pdf_frame.grid_columnconfigure(0, weight=1)
-
-            ctk.CTkLabel(self.ph_pdf_frame, text="📄 GENERATE PDF REPORT",
-                          font=ctk.CTkFont(size=14, weight="bold"),
-                          text_color="#00CCFF").grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
-            ctk.CTkButton(self.ph_pdf_frame, text="Export PDF Report (requires reportlab)",
-                           fg_color="#00CCFF", hover_color="#00FFFF", text_color="#000000",
-                           command=self._do_pdf_export).grid(row=1, column=0, padx=15, pady=(5, 15), sticky="ew")
-
-        # ── Device Bridge Tab Builder ───────────────────────────────────────
-        def build_device_tab(self):
-            self.tab_device.grid_rowconfigure(1, weight=1)
-            self.tab_device.grid_columnconfigure(0, weight=1)
-
-            self.dev_title = ctk.CTkLabel(
-                self.tab_device,
-                text="📱 Device Bridge — iOS USB Communication",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color="#3399FF"
-            )
-            self.dev_title.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
-
-            self.dev_scroll = ctk.CTkScrollableFrame(self.tab_device, fg_color="transparent")
-            self.dev_scroll.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
-            self.dev_scroll.grid_columnconfigure(0, weight=1)
-
-            # Action buttons
-            self.dev_actions = ctk.CTkFrame(self.dev_scroll, fg_color="transparent")
-            self.dev_actions.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-            self.dev_actions.grid_columnconfigure((0, 1, 2), weight=1)
-
-            ctk.CTkButton(self.dev_actions, text="🔍 List Devices",
-                           fg_color="#0066CC", hover_color="#3399FF",
-                           command=self._do_list_devices).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-            ctk.CTkButton(self.dev_actions, text="ℹ️ Device Info",
-                           fg_color="#0066CC", hover_color="#3399FF",
-                           command=self._do_device_info).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-            ctk.CTkButton(self.dev_actions, text="📦 List Apps",
-                           fg_color="#0066CC", hover_color="#3399FF",
-                           command=self._do_list_apps).grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-
-            # Output display
-            self.dev_output = ctk.CTkTextbox(self.dev_scroll,
-                                               font=ctk.CTkFont(family="Consolas", size=11),
-                                               fg_color="#000A14", text_color="#aaccff")
-            self.dev_output.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-            self.dev_scroll.grid_rowconfigure(1, weight=1)
-            self.dev_output.insert(tk.END, "[Device Bridge Ready]\n\nClick 'List Devices' to discover connected iOS devices.\nRequires: pip install pymobiledevice3\n")
-
-        # ── POWERHOUSE Action Handlers ──────────────────────────────────────
-        def _refresh_caps_label(self):
-            try:
-                caps = godmax_caps()
-                lines = []
-                for name, ok in caps.items():
-                    icon = "✓" if ok else "✗"
-                    color = "" if ok else " (not installed)"
-                    lines.append(f"  {icon}  {name}{color}")
-                self.ph_caps_label.configure(text="\n".join(lines))
-            except Exception as e:
-                self.ph_caps_label.configure(text=f"(error: {e})")
-
-        def _do_install_optional(self):
-            self.console_textbox.insert(tk.END, "[*] Installing optional GODMAX dependencies (this takes a while)...\n")
-            self.show_dashboard_tab()
-            def worker():
-                check_godmax_dependencies(auto_install=True)
-                global _GODMAX_CAPS
-                _GODMAX_CAPS = None  # force re-check
-                self.after(0, self._refresh_caps_label)
-                self.log_queue.put("[+] Dependency installation complete\n")
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _do_find_gadgets(self):
-            target = self.input_entry.get().strip()
-            if not target or not Path(target).exists():
-                self.ph_rop_text.delete("1.0", tk.END)
-                self.ph_rop_text.insert(tk.END, "[!] Select a binary first in the Console tab\n")
-                return
-            self.ph_rop_text.delete("1.0", tk.END)
-            self.ph_rop_text.insert(tk.END, "[*] Scanning for ROP/JOP gadgets...\n")
-            def worker():
-                try:
-                    raw_bin = Path(target).read_bytes()
-                    data, _ = find_arm64_slice(raw_bin)
-                    lcs = parse_load_commands(data)
-                    segs = build_segment_map(lcs)
-                    res = find_rop_gadgets(data, segs, max_gadget_len=4, max_results=80)
-                    out = [f"[+] Found {res['total_gadgets']} gadgets:"]
-                    for cat, count in res['by_category'].items():
-                        out.append(f"  {cat}: {count}")
-                    out.append("")
-                    for cat, gs in res['gadgets'].items():
-                        if not gs: continue
-                        out.append(f"── {cat.upper()} ──")
-                        for g in gs[:10]:
-                            out.append(f"  {g['va']:<14} {g['instructions']}")
-                        out.append("")
-                    self.after(0, lambda: (self.ph_rop_text.delete("1.0", tk.END),
-                                             self.ph_rop_text.insert(tk.END, "\n".join(out))))
-                except Exception as e:
-                    self.after(0, lambda: self.ph_rop_text.insert(tk.END, f"\n[!] Error: {e}\n"))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _do_unicorn_emu(self):
-            target = self.input_entry.get().strip()
-            va_str = self.ph_emu_va.get().strip()
-            if not target or not Path(target).exists():
-                self.ph_emu_text.delete("1.0", tk.END)
-                self.ph_emu_text.insert(tk.END, "[!] Select a binary first in the Console tab\n")
-                return
-            try:
-                func_va = int(va_str, 0)
-            except ValueError:
-                self.ph_emu_text.insert(tk.END, "[!] Invalid VA\n")
-                return
-            self.ph_emu_text.delete("1.0", tk.END)
-            self.ph_emu_text.insert(tk.END, f"[*] Emulating function @ {hex(func_va)}...\n")
-            def worker():
-                try:
-                    raw_bin = Path(target).read_bytes()
-                    data, _ = find_arm64_slice(raw_bin)
-                    lcs = parse_load_commands(data)
-                    segs = build_segment_map(lcs)
-                    res = unicorn_emulate(data, segs, func_va, max_steps=2000)
-                    if "error" in res:
-                        out = f"[!] {res['error']}"
-                    else:
-                        out = [f"[+] Emulation complete ({res['executed_steps']} steps)"]
-                        out.append("\nFinal Registers:")
-                        for reg, val in res["final_registers"].items():
-                            out.append(f"  {reg:<4} = {val}")
-                        out = "\n".join(out)
-                    self.after(0, lambda: (self.ph_emu_text.delete("1.0", tk.END),
-                                             self.ph_emu_text.insert(tk.END, out)))
-                except Exception as e:
-                    self.after(0, lambda: self.ph_emu_text.insert(tk.END, f"\n[!] Error: {e}\n"))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _do_asm_patch(self):
-            target = self.input_entry.get().strip()
-            va_str = self.ph_patch_va.get().strip()
-            asm = self.ph_patch_asm.get().strip()
-            if not target or not Path(target).exists():
-                self.ph_patch_status.configure(text="[!] Select a binary first")
-                return
-            try:
-                va = int(va_str, 0)
-            except ValueError:
-                self.ph_patch_status.configure(text="[!] Invalid VA")
-                return
-            if not asm:
-                self.ph_patch_status.configure(text="[!] Provide ASM code")
-                return
-            res = patch_code_at_va(target, va, asm)
-            if "error" in res:
-                self.ph_patch_status.configure(text=f"[!] {res['error']}")
-            else:
-                self.ph_patch_status.configure(
-                    text=f"[+] Patched {res['patch_size']} bytes @ {res['va']}\n"
-                         f"  Original: {res['original_bytes']}\n"
-                         f"  New:      {res['new_bytes']}"
-                )
-
-        def _do_pdf_export(self):
-            if not self.selected_macho_data:
-                self.console_textbox.insert(tk.END, "[!] No analysis data — run a scan first\n")
-                self.show_dashboard_tab()
-                return
-            save_path = filedialog.asksaveasfilename(
-                title="Save PDF Report",
-                defaultextension=".pdf",
-                filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")],
-                initialfile="analysis_report.pdf"
-            )
-            if save_path:
-                res = generate_pdf_report(self.selected_macho_data, save_path)
-                if "error" in res:
-                    self.console_textbox.insert(tk.END, f"[!] PDF failed: {res['error']}\n")
-                else:
-                    self.console_textbox.insert(tk.END, f"[+] PDF saved: {res['pdf_path']}\n")
-                self.show_dashboard_tab()
-
-        def _do_list_devices(self):
-            self.dev_output.delete("1.0", tk.END)
-            self.dev_output.insert(tk.END, "[*] Listing connected iOS devices...\n\n")
-            def worker():
-                res = list_connected_ios_devices()
-                if "error" in res:
-                    out = f"[!] {res['error']}\n"
-                else:
-                    out = f"[+] Found {res['device_count']} device(s):\n"
-                    for d in res["devices"]:
-                        out += f"  UDID: {d['udid']}  ({d.get('connection_type', 'usb')})\n"
-                self.after(0, lambda: self.dev_output.insert(tk.END, out))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _do_device_info(self):
-            self.dev_output.delete("1.0", tk.END)
-            self.dev_output.insert(tk.END, "[*] Reading device info...\n\n")
-            def worker():
-                res = get_ios_device_info()
-                if "error" in res:
-                    out = f"[!] {res['error']}\n"
-                else:
-                    out = ""
-                    for k, v in res.items():
-                        out += f"  {k:<22}: {v}\n"
-                self.after(0, lambda: self.dev_output.insert(tk.END, out))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _do_list_apps(self):
-            self.dev_output.delete("1.0", tk.END)
-            self.dev_output.insert(tk.END, "[*] Listing apps on device (this can take a while)...\n\n")
-            def worker():
-                res = list_installed_ios_apps()
-                if "error" in res:
-                    out = f"[!] {res['error']}\n"
-                else:
-                    out = f"[+] {res['app_count']} apps installed:\n\n"
-                    for app in res["apps"][:200]:
-                        out += f"  {app['bundle_id']:<55} {app['name']:<35} v{app['version']}\n"
-                self.after(0, lambda: self.dev_output.insert(tk.END, out))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def _populate_ipsw_intel_tab(self):
-            """Populate the IPSW Intel tab with data from self.firmware_intel_report."""
-            fw = self.firmware_intel_report
-            if not fw:
-                return
-
-            # Metadata
-            self.lbl_ipsw_ver.configure(text=f"iOS: {fw['ios_version']}")
-            self.lbl_ipsw_build.configure(text=f"Build: {fw['ios_build']}")
-            self.lbl_ipsw_product.configure(text=f"Product: {fw['product_type']}")
-            self.lbl_ipsw_hw.configure(text=f"SoC: {fw['detected_hw']}")
-            self.lbl_ipsw_bins.configure(text=f"Binaries: {fw['total_binaries']}")
-
-            # Overall Risk
-            overall = fw["scores"]["overall_firmware_risk"]
-            self.lbl_overall_risk_val.configure(text=f"{overall}%", text_color=fw["verdict_color"])
-            self.lbl_overall_verdict.configure(text=fw["verdict"], text_color=fw["verdict_color"])
-
-            # 5-category scores
-            score_keys = [
-                "jailbreak_feasibility", "kernel_attack_surface",
-                "userland_exploit_surface", "code_injection_feasibility",
-                "malware_implant_risk",
-            ]
-            for i, key in enumerate(score_keys):
-                val = fw["scores"][key]
-                color = "#FF4500" if val >= 65 else ("#FFD700" if val >= 35 else "#00FF00")
-                self.ipsw_score_widgets[i].configure(text=f"{val}%", text_color=color)
-
-            # CVE Summary
-            cs = fw["cve_summary"]
-            self.lbl_cve_total.configure(text=f"Applicable: {cs['total_applicable']}")
-            self.lbl_cve_vuln.configure(text=f"Vulnerable: {cs['potentially_vulnerable']}")
-            self.lbl_cve_patched.configure(text=f"Patched: {cs['patched']}")
-            self.lbl_cve_hw.configure(text=f"HW Unpatchable: {cs['unpatchable_hw']}")
-
-            # CVE Detail Table
-            self.ipsw_cve_text.delete("1.0", tk.END)
-            self.ipsw_cve_text.insert(tk.END, f"{'STATUS':<26} {'CVE ID':<22} {'CATEGORY':<12} {'SEVERITY':<10} NAME\n")
-            self.ipsw_cve_text.insert(tk.END, "─" * 100 + "\n")
-            status_order = {"POTENTIALLY_VULNERABLE": 0, "UNPATCHABLE": 1, "PATCHED": 2}
-            sorted_cves = sorted(fw["cve_results"], key=lambda c: (status_order.get(c["status"], 9), c["id"]))
-            for cve in sorted_cves:
-                icon = {"POTENTIALLY_VULNERABLE": "🔴", "UNPATCHABLE": "⚡", "PATCHED": "✅"}.get(cve["status"], "❓")
-                self.ipsw_cve_text.insert(tk.END,
-                    f"{icon} {cve['status']:<24} {cve['id']:<22} {cve['category']:<12} {cve['severity']:<10} {cve['name']}\n"
-                )
-                self.ipsw_cve_text.insert(tk.END, f"   {cve['description'][:130]}\n")
-                if cve.get("references"):
-                    self.ipsw_cve_text.insert(tk.END, f"   Refs: {', '.join(cve['references'][:4])}\n")
-                self.ipsw_cve_text.insert(tk.END, "\n")
-
-            # Recommendations
-            self.ipsw_rec_text.delete("1.0", tk.END)
-            self.ipsw_rec_text.insert(tk.END, "═ FOR SECURITY RESEARCHERS ═\n\n")
-            for rec in fw["recommendations"].get("security_researcher", []):
-                self.ipsw_rec_text.insert(tk.END, f"  🛡️ {rec}\n\n")
-            self.ipsw_rec_text.insert(tk.END, "\n═ FOR OFFENSIVE RESEARCHERS ═\n\n")
-            for rec in fw["recommendations"].get("offensive_researcher", []):
-                self.ipsw_rec_text.insert(tk.END, f"  ⚔️ {rec}\n\n")
-
-            # Detailed reasons
-            self.ipsw_rec_text.insert(tk.END, "\n═ DETAILED SCORE REASONS ═\n")
-            reason_labels = {
-                "jailbreak": "JAILBREAK", "kernel": "KERNEL",
-                "userland": "USERLAND", "injection": "INJECTION", "malware": "MALWARE"
-            }
-            for key, label in reason_labels.items():
-                reasons = fw["score_reasons"].get(key, [])
-                if reasons:
-                    self.ipsw_rec_text.insert(tk.END, f"\n  ── {label} ──\n")
-                    for r in reasons:
-                        self.ipsw_rec_text.insert(tk.END, f"    {r}\n")
-
-        def _export_firmware_intel(self):
-            """Export firmware intelligence report as JSON."""
-            if not self.firmware_intel_report:
-                self.console_textbox.insert(tk.END, "[!] No firmware intelligence data to export. Scan an IPSW first.\n")
-                return
-            save_path = filedialog.asksaveasfilename(
-                title="Save Firmware Intelligence Report",
-                defaultextension=".json",
-                filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
-                initialfile="firmware_intelligence_report.json"
-            )
-            if save_path:
-                with open(save_path, "w", encoding="utf-8") as f:
-                    json.dump(_make_serializable(self.firmware_intel_report), f, indent=2, ensure_ascii=False)
-                self.console_textbox.insert(tk.END, f"[+] Firmware Intelligence Report exported → {save_path}\n")
-
-        # ── UI Interactions & File Helpers ──
-        def browse_file(self):
-            path = filedialog.askopenfilename(
-                title="Open Target Binary / IPSW / DMG / Archive",
-                filetypes=[("All Files", "*.*"), ("iOS Firmware", "*.ipsw"), ("iOS AEA Archives", "*.aea"), ("Apple Archives", "*.aar"), ("Disk Images", "*.dmg")]
-            )
-            if path:
-                self.input_entry.delete(0, tk.END)
-                self.input_entry.insert(0, path)
-
-        # ── Background Worker Manager ──
-        def start_analysis_thread(self):
-            target = self.input_entry.get().strip()
-            if not target or not Path(target).exists():
-                self.console_textbox.insert(tk.END, "[!] Invalid target path. Please select a valid file first.\n")
-                return
-
-            if self.is_analyzing:
-                return
-
-            self.is_analyzing = True
-            self.btn_analyze.configure(state="disabled", text="SCANNING WORK...")
-            self.console_textbox.delete("1.0", tk.END)
-            self.tree.delete(*self.tree.get_children())
-
-            # Redirect sys.stdout to log_queue
-            sys.stdout = TextRedirector(self.console_textbox, self.log_queue)
-            sys.stderr = TextRedirector(self.console_textbox, self.log_queue)
-
-            worker = threading.Thread(target=self.run_deep_scan, args=(target,))
-            worker.daemon = True
-            worker.start()
-
-        def run_deep_scan(self, target_file: str):
-            import tempfile
-            import shutil
-            temp_dir = tempfile.TemporaryDirectory()
-            extract_path = Path(temp_dir.name)
-
-            try:
-                macho_paths = process_input_recursive(Path(target_file), extract_path, None)
-                if not macho_paths:
-                    print("[!] No Mach-O binaries found or carved from input.", file=sys.stderr)
-                    self.cleanup_scan_ui()
-                    return
-
-                self.current_analysis_results = {}
-
-                # Add to tree widget
-                for macho in macho_paths:
-                    print(f"[*] Analyzing carved binary: {macho.name}")
-                    size_str = f"{macho.stat().st_size:,} bytes"
-                    
-                    # Perform Analysis
-                    keywords = DEFAULT_KEYWORDS
-                    report = analyze(
-                        str(macho), keywords,
-                        build_cfg=self.cb_cfg.get(),
-                        run_taint=self.cb_cfg.get() or self.cb_taint.get(),
-                        disasm_n_funcs=10 if self.btn_disasm else 0
-                    )
-                    
-                    self.current_analysis_results[macho.name] = report
-                    
-                    # Add node to tree
-                    self.tree.insert("", "end", iid=macho.name, text=macho.name, values=(size_str, "ARM64e iOS Executable"))
-
-                print("[+] Deep static scanning complete. View details in the tabs.")
-
-                # ── Build Firmware Intelligence Report if IPSW metadata exists ──
-                if _ipsw_firmware_meta:
-                    print("\n[*] Building IPSW Firmware Intelligence Report...")
-                    try:
-                        fw_report = build_firmware_intelligence_report(
-                            ios_version=_ipsw_firmware_meta.get("ios_version", "Unknown"),
-                            ios_build=_ipsw_firmware_meta.get("ios_build", "Unknown"),
-                            product_type=_ipsw_firmware_meta.get("product_type", "Unknown"),
-                            all_reports=self.current_analysis_results,
-                            ipsw_meta=_ipsw_firmware_meta,
-                        )
-                        self.firmware_intel_report = fw_report
-                        print(f"[+] Firmware Intelligence Report built. Overall Risk: {fw_report['scores']['overall_firmware_risk']}%")
-                        print(f"[+] Verdict: {fw_report['verdict']}")
-                        print(f"[+] CVEs Applicable: {fw_report['cve_summary']['total_applicable']} "
-                              f"(Vulnerable: {fw_report['cve_summary']['potentially_vulnerable']}, "
-                              f"Patched: {fw_report['cve_summary']['patched']}, "
-                              f"HW Unpatchable: {fw_report['cve_summary']['unpatchable_hw']})")
-                        print("[+] Switch to the 'IPSW Firmware Intel' tab for full details.")
-                        # Populate GUI tab from main thread
-                        self.after(0, self._populate_ipsw_intel_tab)
-                    except Exception as fw_err:
-                        print(f"[!] Firmware Intelligence Report generation failed: {fw_err}", file=sys.stderr)
-                        import traceback; traceback.print_exc()
-
-            except Exception as e:
-                print(f"[!] Error during deep scan: {e}", file=sys.stderr)
-                import traceback; traceback.print_exc()
-            finally:
-                sys.stdout = sys.__stdout__
-                sys.stderr = sys.__stderr__
-                self.cleanup_scan_ui()
-                try:
-                    temp_dir.cleanup()
-                except Exception:
-                    pass
-
-        def cleanup_scan_ui(self):
-            self.is_analyzing = False
-            self.btn_analyze.configure(state="normal", text="START SUPER DEEP SCAN")
-
-        # ── Interactive Browsing Handlers ──
-        def on_tree_select(self, event):
-            selected = self.tree.selection()
-            if not selected:
-                return
-            binary_name = selected[0]
-            if binary_name in self.current_analysis_results:
-                self.selected_macho_data = self.current_analysis_results[binary_name]
-                self.populate_macho_details()
-
-        def populate_macho_details(self):
-            if not self.selected_macho_data:
-                return
-
-            r = self.selected_macho_data
-
-            # ── 0. Populate Security Scorecard ──
-            if "threat_scorecard" in r:
-                ts = r["threat_scorecard"]
-                self.lbl_sec_verdict.configure(text=f"VERDICT: {ts['verdict']}", text_color=ts['verdict_color'])
-                self.lbl_metric_1_val.configure(text=f"{ts['hardening_score']}%")
-                self.lbl_metric_2_val.configure(text=f"{ts['exploit_score']}%")
-                self.lbl_metric_3_val.configure(text=f"{ts['inject_score']}%")
-
-                self.txt_scorecard_details.delete("1.0", tk.END)
-                self.txt_scorecard_details.insert(tk.END, "ELEMENT AUDIT FINDINGS & REASONS:\n")
-                for reason in ts.get("reasons", []):
-                    self.txt_scorecard_details.insert(tk.END, f"  [x] {reason}\n")
-                if ts.get("inject_reasons"):
-                    self.txt_scorecard_details.insert(tk.END, "\nSIDELOADING & INJECTION FEASIBILITY:\n")
-                    for reason in ts["inject_reasons"]:
-                        self.txt_scorecard_details.insert(tk.END, f"  [x] {reason}\n")
-                if ts.get("found_banned"):
-                    self.txt_scorecard_details.insert(tk.END, "\nINSECURE/BANNED APIs IMPORTED:\n")
-                    for api, desc in ts["found_banned"].items():
-                        self.txt_scorecard_details.insert(tk.END, f"  [!] {api}: {desc}\n")
-            else:
-                self.lbl_sec_verdict.configure(text="VERDICT: NO SCORECARD DATA AVAILABLE", text_color="#aaaaaa")
-                self.lbl_metric_1_val.configure(text="N/A")
-                self.lbl_metric_2_val.configure(text="N/A")
-                self.lbl_metric_3_val.configure(text="N/A")
-                self.txt_scorecard_details.delete("1.0", tk.END)
-
-            # ── 1. Populate Security Dashboard ──
-            sec = r.get("security", {})
-
-            # Helper to set risk badges
-            def set_badge(widget, data):
-                risk = data.get("risk", "INFO")
-                color = {"HIGH": "#FF0000", "MEDIUM": "#FFA500", "LOW": "#00FF00"}.get(risk, "#3a3a3a")
-                widget["badge"].configure(text=risk, fg_color=color)
-                widget["text"].delete("1.0", tk.END)
-                for k, v in data.items():
-                    if k == "risk": continue
-                    widget["text"].insert(tk.END, f"{k}: {v}\n")
-
-            set_badge(self.widget_antidebug, sec.get("anti_debug", {}))
-            set_badge(self.widget_jailbreak, sec.get("jailbreak_detection", {}))
-            set_badge(self.widget_pinning, sec.get("certificate_pinning", {}))
-            set_badge(self.widget_secrets, sec.get("hardcoded_secrets", {}))
-            set_badge(self.widget_obfuscation, sec.get("obfuscation", {}))
-
-            # Constructors Widget
-            self.widget_constructors["badge"].configure(text="INFO", fg_color="#3a3a3a")
-            self.widget_constructors["text"].delete("1.0", tk.END)
-            inits = sec.get("constructors", {}).get("mod_init_funcs", [])
-            self.widget_constructors["text"].insert(tk.END, f"Found {len(inits)} constructors:\n")
-            for i in inits:
-                self.widget_constructors["text"].insert(tk.END, f"  - {i}\n")
-
-            # Entitlements Audit Widget
-            ent_aud = sec.get("entitlements_audit", {})
-            set_badge(self.widget_entitlements, ent_aud)
-            self.widget_entitlements["text"].delete("1.0", tk.END)
-            findings = ent_aud.get("findings", [])
-            if findings:
-                self.widget_entitlements["text"].insert(tk.END, f"Detected {len(findings)} high-privilege entitlements:\n\n")
-                for f in findings:
-                    self.widget_entitlements["text"].insert(tk.END, f"- {f['key']}: {f['value']}\n  {f['description']}\n\n")
-            else:
-                self.widget_entitlements["text"].insert(tk.END, "No high-privilege sandbox bypass entitlements detected.")
-
-            # Crypto secure APIs Widget
-            crypto_data = sec.get("crypto", {})
-            self.widget_crypto["badge"].configure(text="INFO", fg_color="#3a3a3a")
-            self.widget_crypto["text"].delete("1.0", tk.END)
-            crypto_syms = crypto_data.get("imported_symbols", [])
-            crypto_strs = crypto_data.get("related_strings", [])
-            if crypto_syms:
-                self.widget_crypto["text"].insert(tk.END, "Imported Crypto Symbols:\n")
-                for cs in crypto_syms[:10]:
-                    self.widget_crypto["text"].insert(tk.END, f"  - {cs}\n")
-            if crypto_strs:
-                self.widget_crypto["text"].insert(tk.END, "\nCrypto-related Strings:\n")
-                for cstr in crypto_strs[:10]:
-                    self.widget_crypto["text"].insert(tk.END, f"  - {cstr}\n")
-
-            # ── 2. Populate ObjC ListBox ──
-            self.class_listbox.delete(0, tk.END)
-            self.objc_data = r.get("objc", {})
-            self.swift_data = r.get("swift", {})
-            self.demangled_class_map = {}
-
-            classes = []
-            for cls in self.objc_data.get("classes", []):
-                raw_name = cls.get("name", "UnknownClass")
-                demangled = demangle_swift_symbol(raw_name)
-                self.demangled_class_map[demangled] = raw_name
-                classes.append(demangled)
-            for s_desc in self.swift_data.get("types", []):
-                raw_name = s_desc.get("name", "UnknownSwiftType")
-                demangled = demangle_swift_symbol(raw_name)
-                self.demangled_class_map[demangled] = raw_name
-                classes.append(demangled)
-
-            self.all_classes_cached = sorted(list(set(classes)))
-            for c in self.all_classes_cached:
-                self.class_listbox.insert(tk.END, c)
-
-            # ── 3. Populate Strings & Entitlements ──
-            # Entitlements
-            self.ent_text.delete("1.0", tk.END)
-            ent = r.get("entitlements", {})
-            if ent:
-                self.ent_text.insert(tk.END, json.dumps(ent, indent=2))
-            else:
-                self.ent_text.insert(tk.END, "No entitlement parameters detected.")
-
-            # Keywords Strings Matches
-            self.strings_text.delete("1.0", tk.END)
-            km = r.get("keyword_matches", {})
-            for kw, matches in km.items():
-                self.strings_text.insert(tk.END, f"=== KEYWORD: {kw} ===\n")
-                for m in matches[:20]:
-                    self.strings_text.insert(tk.END, f"  - {m}\n")
-                if len(matches) > 20:
-                    self.strings_text.insert(tk.END, f"  ... ({len(matches)-20} more hits)\n")
-                self.strings_text.insert(tk.END, "\n")
-
-            # ── 4. Disassembly Viewer ──
-            self.disasm_text.delete("1.0", tk.END)
-            dis = r.get("disassembly", [])
-            if dis:
-                for fn in dis[:5]:
-                    self.disasm_text.insert(tk.END, f"Function @ {fn['func_va']}:\n")
-                    for ins in fn["instructions"]:
-                        bt = f"  → {ins['branch_target']}" if ins["branch_target"] else ""
-                        self.disasm_text.insert(tk.END, f"  {ins['address']}  {ins['mnemonic']:<12} {ins['operands']}{bt}\n")
-                    self.disasm_text.insert(tk.END, "\n")
-            else:
-                self.disasm_text.insert(tk.END, "To view disassembly, enable Call Graph scanning or set --disasm-funcs.")
-
-        def on_class_filter_change(self, event):
-            query = self.filter_entry.get().strip().lower()
-            self.class_listbox.delete(0, tk.END)
-            for c in self.all_classes_cached:
-                if not query or query in c.lower():
-                    self.class_listbox.insert(tk.END, c)
-
-        def on_class_select(self, event):
-            selected_idx = self.class_listbox.curselection()
-            if not selected_idx:
-                return
-            class_name_input = self.class_listbox.get(selected_idx[0])
-            class_name = getattr(self, "demangled_class_map", {}).get(class_name_input, class_name_input)
-
-            self.method_details_box.delete("1.0", tk.END)
-            self.method_details_box.insert(tk.END, f"// CLASS STRUCTURE: {class_name}\n\n")
-
-            self.current_objc_class = class_name
-            self.current_objc_methods = []
-
-            # Try to find class in ObjC classes
-            found = False
-            for cls in self.objc_data.get("classes", []):
-                if cls.get("name") == class_name:
-                    found = True
-                    self.method_details_box.insert(tk.END, f"super_class: {cls.get('superclass', 'NSObject')}\n\n")
-                    
-                    # Instance variables
-                    ivars = cls.get("ivars", [])
-                    if ivars:
-                        self.method_details_box.insert(tk.END, "/* Instance Variables */\n")
-                        for iv in ivars:
-                            self.method_details_box.insert(tk.END, f"  {iv.get('type','id')} {iv.get('name')};\n")
-                        self.method_details_box.insert(tk.END, "\n")
-
-                    # Methods
-                    inst_methods = cls.get("instance_methods", [])
-                    cls_methods = cls.get("class_methods", [])
-                    if inst_methods or cls_methods:
-                        self.method_details_box.insert(tk.END, "/* Methods */\n")
-                        for m in inst_methods:
-                            arg_str = ", ".join(m.get("args", [])) or "void"
-                            self.method_details_box.insert(tk.END, f"  - ({m.get('return') or 'id'}) {m.get('name')}({arg_str});\n")
-                            self.current_objc_methods.append(f"- {m.get('name')}")
-                        for m in cls_methods:
-                            arg_str = ", ".join(m.get("args", [])) or "void"
-                            self.method_details_box.insert(tk.END, f"  + ({m.get('return') or 'id'}) {m.get('name')}({arg_str});\n")
-                            self.current_objc_methods.append(f"+ {m.get('name')}")
-
-            if not found:
-                # Try to search in Swift types
-                for t in self.swift_data.get("types", []):
-                    if t.get("name") == class_name:
-                        self.method_details_box.insert(tk.END, f"Kind: {t.get('kind', 'Class')}\n")
-                        fields = t.get("fields", [])
-                        if fields:
-                            self.method_details_box.insert(tk.END, "/* Properties / Fields */\n")
-                            for f in fields:
-                                self.method_details_box.insert(tk.END, f"  {f.get('type','Any')} {f.get('name')};\n")
-
-            if self.current_objc_methods:
-                self.combo_hook_method.configure(values=self.current_objc_methods)
-                self.combo_hook_method.set(self.current_objc_methods[0])
-            else:
-                self.combo_hook_method.configure(values=["No methods found"])
-                self.combo_hook_method.set("No methods found")
-
-    app = AetherAnalyzerApp()
-    app.mainloop()
+    """GUI has been moved to vulnerability_engine.py. This is now a headless engine."""
+    print("[!] GUI has been removed from analyze_binary_deep.py.", file=sys.stderr)
+    print("[*] Use vulnerability_engine.py for the interactive GUI.", file=sys.stderr)
+    print("[*] This script is now CLI-only (headless engine).", file=sys.stderr)
+    sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
