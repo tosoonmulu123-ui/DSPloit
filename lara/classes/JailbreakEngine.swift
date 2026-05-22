@@ -352,9 +352,6 @@ final class JailbreakEngine: ObservableObject {
             self.appendLog("🎉 Jailbreak complete!")
             UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-            // Register installed apps (if any exist in /var/jb/Applications/)
-            self.registerInstalledApps()
-
             // Kernelcache + XPF
             DispatchQueue.global(qos: .utility).async {
                 self.appendLog("Fetching kernelcache for XPF offsets...")
@@ -368,41 +365,6 @@ final class JailbreakEngine: ObservableObject {
                     }
                 }
             }
-        }
-    }
-    
-    /// After jailbreak, scan /var/jb/Applications/ and register any .app bundles
-    /// This makes installed apps appear on Home Screen (AMFI is now disabled)
-    private func registerInstalledApps() {
-        guard let sb = mgr.sbProc else { return }
-        
-        // Check if /var/jb/Applications exists
-        root.executeAsRoot(operation: "scan_apps") { rc in
-            let appsDir = remote_alloc_str(rc, "/var/jb/Applications")
-            let exists = RootExecutor.rcall(rc, "access", appsDir, 0) == 0
-            RootExecutor.rcall(rc, "free", appsDir)
-            
-            if !exists {
-                // No apps installed — skip
-                return (true, "no apps dir", 0)
-            }
-            
-            // Trigger uicache via SpringBoard
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
-                self.appendLog("Registering installed apps...")
-                
-                let workspace = remote_getClass(sb, "LSApplicationWorkspace")
-                let defaultWS = remote_msg(sb, workspace, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
-                
-                if defaultWS != 0 {
-                    remote_msg(sb, defaultWS,
-                        remote_sel(sb, "_LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user:"),
-                        1, 1, 1, 0)
-                    self.appendLog("✅ App databases rebuilt — apps should appear")
-                }
-            }
-            
-            return (true, "apps dir exists", 1)
         }
     }
     
