@@ -452,7 +452,7 @@ final class DebInstaller {
                 RootExecutor.rcall(rc, "free", pathAddr)
                 totalWritten += written
                 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     self.emit("[deb] Chunk \(callIndex)/\(totalCalls) (\(totalWritten)/\(totalSize))")
                     writeNext()
                 }
@@ -786,7 +786,7 @@ final class DebInstaller {
             let file = batch[0]
             emit("[deb] Large: \(file.path) (\(file.data.count / 1024)KB)")
             writeLargeFile(path: "/var/jb/\(file.path)", data: file.data, mode: file.mode) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     self.writeBatchSequentially(batches: batches, index: index + 1, installed: installed + 1, startTime: startTime, completion: completion)
                 }
             }
@@ -840,8 +840,8 @@ final class DebInstaller {
             emit("[deb] Batch \(index)/\(batches.count) — ~\(remMin)m \(remSec)s left")
         }
         
-        // 2.5s delay between batches
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+        // 1.5s delay between batches (proven safe: 2MB write takes ~0.5s)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             self.writeBatchSequentially(batches: batches, index: index + 1, installed: installed + batch.count, startTime: startTime, completion: completion)
         }
         #else
@@ -1308,3 +1308,4 @@ final class DebInstaller {
         emit("[deb] ✅ AMFI disabled (\(count)/10)")
     }
 }
+

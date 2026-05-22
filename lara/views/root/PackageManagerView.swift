@@ -727,7 +727,7 @@ struct PackageManagerView: View {
     }
     
     private func testRegisterReal() {
-        installLog.append("[exp] Test Register REAL — /var/jb/Applications/Filza.app...")
+        installLog.append("[exp] Test Register REAL — with MCM container + full dict...")
         selectedTab = .queue
         
         DispatchQueue.global(qos: .userInitiated).async {
@@ -747,70 +747,127 @@ struct PackageManagerView: View {
             
             let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
             
-            let dict: NSDictionary = [
+            // Create MCM container
+            var containerPath: String?
+            if let mcmClass = NSClassFromString("MCMAppDataContainer") {
+                let mcmSel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
+                if let mcmMethod = class_getClassMethod(mcmClass, mcmSel) {
+                    typealias MCMFunc = @convention(c) (AnyClass, Selector, NSString, Bool, UnsafeMutablePointer<ObjCBool>?, UnsafeMutablePointer<NSError?>?) -> AnyObject?
+                    let mcmFn = unsafeBitCast(method_getImplementation(mcmMethod), to: MCMFunc.self)
+                    var existed: ObjCBool = false
+                    var err: NSError?
+                    if let container = mcmFn(mcmClass, mcmSel, "com.tigisoftware.Filza" as NSString, true, &existed, &err) {
+                        let urlSel = NSSelectorFromString("url")
+                        if let urlMethod = class_getInstanceMethod(type(of: container), urlSel) {
+                            typealias URLFunc = @convention(c) (AnyObject, Selector) -> AnyObject?
+                            let urlFn = unsafeBitCast(method_getImplementation(urlMethod), to: URLFunc.self)
+                            if let url = urlFn(container, urlSel) as? URL {
+                                containerPath = url.path
+                            }
+                        }
+                    }
+                }
+            }
+            
+            DispatchQueue.main.async {
+                self.installLog.append("[exp] Container: \(containerPath ?? "nil")")
+            }
+            
+            // Full dictionary from uicache source
+            var dict: [String: Any] = [
                 "ApplicationType": "System",
+                "BundleNameIsLocalized": 1,
                 "CFBundleIdentifier": "com.tigisoftware.Filza",
                 "CodeInfoIdentifier": "com.tigisoftware.Filza",
-                "Path": appPath,
-                "BundleNameIsLocalized": 1,
                 "CompatibilityState": 0,
                 "IsDeletable": 0,
                 "IsContainerized": 1,
+                "Path": appPath,
                 "SignerOrganization": "Apple Inc.",
                 "SignatureVersion": 132352,
                 "SignerIdentity": "Apple iPhone OS Application Signing",
                 "IsAdHocSigned": true,
                 "LSInstallType": 1,
+                "HasMIDBasedSINF": 0,
+                "MissingSINF": 0,
+                "FamilyID": 0,
+                "IsOnDemandInstallCapable": 0,
                 "_LSBundlePlugins": [:] as [String: Any],
             ]
             
+            if let cp = containerPath {
+                dict["Container"] = cp
+                dict["EnvironmentVariables"] = [
+                    "CFFIXED_USER_HOME": cp,
+                    "HOME": cp,
+                    "TMPDIR": (cp as NSString).appendingPathComponent("tmp")
+                ]
+            }
+            
             let regSel = NSSelectorFromString("registerApplicationDictionary:")
-            guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else { return }
+            guard let regMethod = class_getInstanceMethod(type(of: workspace), regSel) else {
+                DispatchQueue.main.async { self.installLog.append("[exp] ❌ registerApplicationDictionary not found") }
+                return
+            }
             typealias RegFunc = @convention(c) (AnyObject, Selector, NSDictionary) -> Bool
             let regFn = unsafeBitCast(method_getImplementation(regMethod), to: RegFunc.self)
-            let result = regFn(workspace, regSel, dict)
+            let result = regFn(workspace, regSel, dict as NSDictionary)
             
             DispatchQueue.main.async {
                 self.installLog.append("[exp] ✅ Real register returned: \(result)")
-                self.installLog.append("[exp] If you see this = register with real path doesn't panic")
-                self.installLog.append("[exp] If panic happened = SpringBoard crashed loading binary")
+                if result {
+                    self.installLog.append("[exp] 🎉 REGISTRATION SUCCESS! Check Home Screen!")
+                } else {
+                    self.installLog.append("[exp] Register returned false — lsd rejected")
+                }
             }
         }
     }
     
     private func testSpawnBinary() {
-        installLog.append("[exp] Test Spawn — posix_spawn Filza binary from launchd...")
+        installLog.append("[exp] Test Spawn — chmod + posix_spawn Filza binary from launchd...")
         selectedTab = .queue
         
         #if !DISABLE_REMOTECALL
-        root.executeAsRoot(operation: "spawn_filza") { rc in
-            let mem = rc.trojanMem
-            let binPath = "/var/jb/Applications/Filza.app/Filza"
-            let binAddr = remote_alloc_str(rc, binPath)
-            
-            let argvBase = mem + 0x400
-            rc[argvBase].setValue64(binAddr)
-            rc[argvBase + 8].setValue64(0)
-            
-            let pidAddr = mem + 0x300
-            rc[pidAddr].setValue32(0)
-            
-            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
-            let pid = rc[pidAddr].value32()
-            
-            RootExecutor.rcall(rc, "free", binAddr)
-            
-            DispatchQueue.main.async {
-                self.installLog.append("[exp] posix_spawn ret=\(ret), pid=\(pid)")
-                if ret == 0 && pid != 0 {
-                    self.installLog.append("[exp] ✅ BINARY SPAWNED! PID=\(pid)")
-                    self.installLog.append("[exp] AMFI disable works for installed binaries!")
-                } else {
-                    self.installLog.append("[exp] ❌ Spawn failed (ret=\(ret))")
-                    self.installLog.append("[exp] 1=EPERM, 2=ENOENT, 13=EACCES")
+        // First chmod the binary to ensure it's executable
+        root.executeAsRoot(operation: "chmod_spawn") { rc in
+            let binPath = remote_alloc_str(rc, "/var/jb/Applications/Filza.app/Filza")
+            RootExecutor.rcall(rc, "chmod", binPath, 0o755)
+            RootExecutor.rcall(rc, "free", binPath)
+            return (true, "chmod done", 0)
+        }
+        
+        // Then spawn after chmod completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            self.root.executeAsRoot(operation: "spawn_filza") { rc in
+                let mem = rc.trojanMem
+                let binPath = "/var/jb/Applications/Filza.app/Filza"
+                let binAddr = remote_alloc_str(rc, binPath)
+                
+                let argvBase = mem + 0x400
+                rc[argvBase].setValue64(binAddr)
+                rc[argvBase + 8].setValue64(0)
+                
+                let pidAddr = mem + 0x300
+                rc[pidAddr].setValue32(0)
+                
+                let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
+                let pid = rc[pidAddr].value32()
+                
+                RootExecutor.rcall(rc, "free", binAddr)
+                
+                DispatchQueue.main.async {
+                    self.installLog.append("[exp] posix_spawn ret=\(ret), pid=\(pid)")
+                    if ret == 0 && pid != 0 {
+                        self.installLog.append("[exp] ✅ BINARY SPAWNED! PID=\(pid)")
+                        self.installLog.append("[exp] AMFI disable works for installed binaries!")
+                    } else {
+                        self.installLog.append("[exp] ❌ Spawn failed (ret=\(ret))")
+                        self.installLog.append("[exp] 1=EPERM, 2=ENOENT, 13=EACCES")
+                    }
                 }
+                return (ret == 0, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
             }
-            return (ret == 0, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
         }
         #endif
     }
