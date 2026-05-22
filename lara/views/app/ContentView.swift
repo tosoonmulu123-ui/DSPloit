@@ -82,17 +82,19 @@ struct ContentView: View {
                     }
                 }
                 
-                // Info (after jailbreak, collapsed)
-                if isJailbroken {
-                    Section("Info") {
-                        LabeledContent("Status") {
-                            Text("Active until reboot")
-                                .font(.subheadline)
+                // Success banner
+                if isJailbroken && !jb.isRunning {
+                    Section {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
-                        }
-                        LabeledContent("Access Level") {
-                            Text("Full Root")
-                                .font(.subheadline)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Jailbreak Active")
+                                    .font(.subheadline.bold())
+                                Text("Full root access. Use Re-Jailbreak after respring/reboot.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
