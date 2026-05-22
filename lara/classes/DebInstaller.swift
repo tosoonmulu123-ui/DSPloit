@@ -1255,11 +1255,21 @@ final class DebInstaller {
         dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
         dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
         
-        guard let wsClass = NSClassFromString("LSApplicationWorkspace"),
-              let workspace = wsClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue()
-        else {
+        guard let wsClass = NSClassFromString("LSApplicationWorkspace") else {
             DispatchQueue.main.async {
                 self.emit("[deb] ⚠️ LSApplicationWorkspace not available")
+                completion()
+            }
+            return
+        }
+        
+        let defaultWSSel = NSSelectorFromString("defaultWorkspace")
+        guard wsClass.responds(to: defaultWSSel),
+              let wsUnmanaged = wsClass.perform(defaultWSSel),
+              let workspace = wsUnmanaged.takeUnretainedValue() as AnyObject?
+        else {
+            DispatchQueue.main.async {
+                self.emit("[deb] ⚠️ defaultWorkspace failed")
                 completion()
             }
             return
