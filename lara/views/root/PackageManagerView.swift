@@ -182,7 +182,7 @@ struct PackageManagerView: View {
                             Image(systemName: "flask.fill").foregroundStyle(.orange).frame(width: 24)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Test Register (real path)").font(.subheadline.bold())
-                                Text("/var/jb/Applications/Filza.app").font(.caption).foregroundStyle(.secondary)
+                                Text("No MCM container (safe)").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                         }
@@ -192,7 +192,17 @@ struct PackageManagerView: View {
                             Image(systemName: "terminal.fill").foregroundStyle(.green).frame(width: 24)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Test Spawn Binary").font(.subheadline.bold())
-                                Text("posix_spawn Filza from launchd").font(.caption).foregroundStyle(.secondary)
+                                Text("chmod + posix_spawn Filza").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    Button(action: testDiskImageRegister) {
+                        HStack {
+                            Image(systemName: "opticaldiscdrive.fill").foregroundStyle(.purple).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Test DiskImage Register").font(.subheadline.bold())
+                                Text("Simulate DDI app registration path").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                         }
@@ -831,6 +841,88 @@ struct PackageManagerView: View {
                     }
                 }
                 return (ret == 0, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
+            }
+        }
+        #endif
+    }
+    
+    // MARK: - Experiment: DiskImage Registration Path
+    
+    private func testDiskImageRegister() {
+        installLog.append("[exp] Test: copy to /var/containers/Bundle/Application/<UUID>/ + registerApplication:")
+        selectedTab = .queue
+        
+        #if !DISABLE_REMOTECALL
+        // Key insight: lsd only accepts paths in /var/containers/Bundle/Application/<UUID>/
+        // NOT /var/jb/Applications/. We need to symlink/move there first.
+        
+        let uuid = UUID().uuidString
+        let containerBase = "/var/containers/Bundle/Application/\(uuid)"
+        let destPath = "\(containerBase)/Filza.app"
+        let srcPath = "/var/jb/Applications/Filza.app"
+        
+        installLog.append("[exp] Creating container: \(containerBase)")
+        installLog.append("[exp] Symlinking \(srcPath) → \(destPath)")
+        
+        // Step 1: Create UUID directory and symlink via launchd
+        root.executeAsRoot(operation: "create_container") { rc in
+            // mkdir -p /var/containers/Bundle/Application/<UUID>
+            let dirAddr = remote_alloc_str(rc, containerBase)
+            RootExecutor.rcall(rc, "mkdir", dirAddr, 0o755)
+            RootExecutor.rcall(rc, "free", dirAddr)
+            
+            // symlink /var/jb/Applications/Filza.app → /var/containers/Bundle/Application/<UUID>/Filza.app
+            let srcAddr = remote_alloc_str(rc, srcPath)
+            let dstAddr = remote_alloc_str(rc, destPath)
+            let ret = RootExecutor.rcall(rc, "symlink", srcAddr, dstAddr)
+            RootExecutor.rcall(rc, "free", srcAddr)
+            RootExecutor.rcall(rc, "free", dstAddr)
+            
+            DispatchQueue.main.async {
+                self.installLog.append("[exp] symlink ret=\(ret) (0=success)")
+            }
+            return (ret == 0, "symlink created", ret)
+        }
+        
+        // Step 2: After symlink created, call registerApplication: from SpringBoard
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            guard let sb = dspmgr.shared.sbProc else {
+                self.installLog.append("[exp] ❌ SpringBoard RC not available")
+                return
+            }
+            
+            self.installLog.append("[exp] Calling registerApplication: with container path...")
+            
+            let wsClass = remote_getClass(sb, "LSApplicationWorkspace")
+            let defaultWS = remote_msg(sb, wsClass, remote_sel(sb, "defaultWorkspace"), 0, 0, 0, 0)
+            
+            guard defaultWS != 0 else {
+                self.installLog.append("[exp] ❌ defaultWorkspace nil")
+                return
+            }
+            
+            // Create NSURL for container path
+            let nsStr = remote_getClass(sb, "NSString")
+            let pathStr = remote_msg(sb, nsStr, remote_sel(sb, "stringWithUTF8String:"),
+                remote_alloc_str(sb, destPath), 0, 0, 0)
+            let nsURL = remote_getClass(sb, "NSURL")
+            let urlObj = remote_msg(sb, nsURL, remote_sel(sb, "fileURLWithPath:"), pathStr, 0, 0, 0)
+            
+            guard urlObj != 0 else {
+                self.installLog.append("[exp] ❌ NSURL creation failed")
+                return
+            }
+            
+            // registerApplication:(NSURL*)
+            let regResult = remote_msg(sb, defaultWS, remote_sel(sb, "registerApplication:"), urlObj, 0, 0, 0)
+            self.installLog.append("[exp] registerApplication: returned \(regResult)")
+            
+            if regResult != 0 {
+                self.installLog.append("[exp] ✅ SUCCESS! App should appear on Home Screen!")
+            } else {
+                self.installLog.append("[exp] ⚠️ returned 0 — trying _LSPrivateSyncWithMobileInstallation...")
+                remote_msg(sb, defaultWS, remote_sel(sb, "_LSPrivateSyncWithMobileInstallation"), 0, 0, 0, 0)
+                self.installLog.append("[exp] Sync called")
             }
         }
         #endif
