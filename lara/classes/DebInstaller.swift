@@ -1276,12 +1276,17 @@ final class DebInstaller {
                 return
             }
             
-            // Create container
+            // Create container via NSInvocation (4-param selector)
             var containerPath: String?
             if let mcmClass = NSClassFromString("MCMAppDataContainer") {
                 let sel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
                 if mcmClass.responds(to: sel) {
-                    if let container = mcmClass.perform(sel, with: bundleID, with: NSNumber(value: true))?.takeUnretainedValue() {
+                    let method = mcmClass.method(for: sel)
+                    typealias MCMFunc = @convention(c) (AnyClass, Selector, NSString, Bool, UnsafeMutablePointer<ObjCBool>?, UnsafeMutablePointer<NSError?>?) -> AnyObject?
+                    let impl = unsafeBitCast(method, to: MCMFunc.self)
+                    var existed: ObjCBool = false
+                    var error: NSError?
+                    if let container = impl(mcmClass, sel, bundleID as NSString, true, &existed, &error) {
                         if let url = container.perform(NSSelectorFromString("url"))?.takeUnretainedValue() as? URL {
                             containerPath = url.path
                         }
