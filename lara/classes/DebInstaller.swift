@@ -88,15 +88,12 @@ final class DebInstaller {
                 return
             }
             
-            // Step 5: Fix permissions (make all files readable by mobile user)
-            // This is critical for SpringBoard to be able to inspect .app bundles
-            let executables = files.filter { !$0.isDirectory && self.isMachO($0.data) }
-            if !executables.isEmpty {
-                self.emit("[deb] Found \(executables.count) Mach-O binaries")
-            }
-            self.emit("[deb] Fixing permissions...")
-            self.fixPermissions {
-                self.emit("[deb] ✅ Install complete — files at /var/jb/")
+            // Step 5: Register app if .app bundle found
+            let files = self.parseTar(data: tarData)
+            let hasApp = files.contains { $0.path.contains(".app/Info.plist") }
+            if hasApp {
+                self.runUicache { completion(true, count) }
+            } else {
                 completion(true, count)
             }
         }
@@ -1245,13 +1242,98 @@ final class DebInstaller {
     
     // MARK: - UICache (register app to Home Screen)
     
-    /// App registration disabled — causes SpringBoard crash (re-entrant notification loop)
-    /// Research needed: call from separate process or use different registration method
-    /// For now: files install to /var/jb/, accessible via built-in File Manager
+    /// Register app from DSPloit app process (NOT SpringBoard) to avoid re-entrant crash
+    /// SpringBoard receives notification externally = safe
     private func runUicache(completion: @escaping () -> Void) {
-        emit("[deb] ℹ️ Files installed to /var/jb/")
-        emit("[deb] ℹ️ Use File Manager to browse installed files")
-        completion()
+        emit("[deb] Registering app from DSPloit process...")
+        
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            // dlopen private frameworks in our app process
+            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW)
+            dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW)
+            
+            // Get LSApplicationWorkspace
+            guard let wsClass = NSClassFromString("LSApplicationWorkspace"),
+                  let workspace = wsClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue() else {
+                DispatchQueue.main.async {
+                    self.emit("[deb] ⚠️ LSApplicationWorkspace not available")
+                    completion()
+                }
+                return
+            }
+            
+            // Resolve symlinks
+            let appPath = ("/var/jb/Applications/Filza.app" as NSString).resolvingSymlinksInPath
+            let infoPlistPath = (appPath as NSString).appendingPathComponent("Info.plist")
+            
+            guard let infoPlist = NSDictionary(contentsOfFile: infoPlistPath) as? [String: Any],
+                  let bundleID = infoPlist["CFBundleIdentifier"] as? String else {
+                DispatchQueue.main.async {
+                    self.emit("[deb] ⚠️ No Info.plist at \(appPath)")
+                    self.emit("[deb] ℹ️ Files installed — use File Manager to browse")
+                    completion()
+                }
+                return
+            }
+            
+            // Create container
+            var containerPath: String?
+            if let mcmClass = NSClassFromString("MCMAppDataContainer") {
+                let sel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
+                if mcmClass.responds(to: sel) {
+                    if let container = mcmClass.perform(sel, with: bundleID, with: NSNumber(value: true))?.takeUnretainedValue() {
+                        if let url = container.perform(NSSelectorFromString("url"))?.takeUnretainedValue() as? URL {
+                            containerPath = url.path
+                        }
+                    }
+                }
+            }
+            
+            // Build registration dictionary (from uicache source)
+            var dict: [String: Any] = [
+                "ApplicationType": "System",
+                "BundleNameIsLocalized": 1,
+                "CFBundleIdentifier": bundleID,
+                "CodeInfoIdentifier": bundleID,
+                "CompatibilityState": 0,
+                "IsDeletable": 0,
+                "IsContainerized": 1,
+                "Path": appPath,
+                "SignerOrganization": "Apple Inc.",
+                "SignatureVersion": 132352,
+                "SignerIdentity": "Apple iPhone OS Application Signing",
+                "IsAdHocSigned": true,
+                "LSInstallType": 1,
+                "HasMIDBasedSINF": 0,
+                "MissingSINF": 0,
+                "FamilyID": 0,
+                "IsOnDemandInstallCapable": 0,
+                "_LSBundlePlugins": [String: Any](),
+            ]
+            
+            if let cp = containerPath {
+                dict["Container"] = cp
+                dict["EnvironmentVariables"] = [
+                    "CFFIXED_USER_HOME": cp,
+                    "HOME": cp,
+                    "TMPDIR": (cp as NSString).appendingPathComponent("tmp")
+                ]
+            }
+            
+            // Register!
+            let regSel = NSSelectorFromString("registerApplicationDictionary:")
+            let result = workspace.perform(regSel, with: dict as NSDictionary)
+            
+            DispatchQueue.main.async {
+                if result != nil {
+                    self.emit("[deb] ✅ App registered — check Home Screen")
+                } else {
+                    self.emit("[deb] ⚠️ Registration returned nil (may need platform entitlement)")
+                    self.emit("[deb] ℹ️ Files installed at /var/jb/")
+                }
+                completion()
+            }
+        }
     }
     
     // MARK: - AMFI Enforcement Disable
