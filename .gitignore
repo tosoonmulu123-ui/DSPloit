@@ -11,3 +11,9 @@ iPhone11,8_18.2_22C152_Restore/*
 extracted/*
 ios18.2_rootfs_binaries.txt
 WRITEUP.md
+aea1_temp/
+aea_kinnay_temp/
+aeota_temp/
+walkthrough/
+scripts/__pycache__/
+*.pyc
