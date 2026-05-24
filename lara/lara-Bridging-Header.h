@@ -9,8 +9,10 @@
 
 #import "darksword.h"
 #import "offsets.h"
+#import "offsets_xpf.h"
 #import "utils.h"
 #import "persistence.h"
+#import "persistence_v2.h"
 #import "TrustCacheInjector.h"
 #import "vnode.h"
 #import "apfs.h"

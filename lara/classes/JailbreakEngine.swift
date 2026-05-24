@@ -86,8 +86,27 @@ final class JailbreakEngine: ObservableObject {
             return
         }
         
+        // Try fast recovery from persisted KRW state (skip full exploit)
+        if krw_persist_has_state() {
+            appendLog("Found persisted KRW state — attempting fast recovery...")
+            if krw_persist_try_recover() {
+                appendLog("✅ KRW recovered from persistence (skipped exploit)")
+                progress = 0.25
+                step2_initialize()
+                return
+            }
+            appendLog("⚠️ Persistence recovery failed — running full exploit")
+        }
+        
         state = .exploiting
         offsets_init()
+        
+        // Try dynamic offset resolution via XPF (works on any iOS build)
+        if offsets_resolve_dynamic() {
+            appendLog("✅ Offsets resolved dynamically via XPF")
+        } else {
+            appendLog("ℹ️ Using hardcoded offsets (XPF unavailable)")
+        }
         
         // Multi-exploit selector: pick best exploit for this device/iOS
         let selectedExploit = exploit_select_best()
@@ -468,6 +487,18 @@ final class JailbreakEngine: ObservableObject {
             self.isRunning = false
             self.appendLog("🎉 Jailbreak complete!")
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            
+            // Save KRW state for fast recovery on next launch
+            DispatchQueue.global(qos: .utility).async {
+                if krw_persist_save_state() {
+                    self.appendLog("✅ KRW state persisted for fast recovery")
+                }
+                
+                // Also transfer KRW to launchd for cross-app-restart persistence
+                if transfer_krw_to_launchd() {
+                    self.appendLog("✅ KRW parked in launchd bootstrap")
+                }
+            }
 
             // Kernelcache + XPF
             DispatchQueue.global(qos: .utility).async {
