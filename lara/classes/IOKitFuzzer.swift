@@ -74,7 +74,7 @@ final class IOKitFuzzer {
             
             // Try to open — if it succeeds, service is accessible from sandbox
             var conn: io_connect_t = 0
-            let openKr = IOServiceOpen(service, mach_task_self(), 0, &conn)
+            let openKr = IOServiceOpen(service, mach_task_self_, 0, &conn)
             let accessible = (openKr == KERN_SUCCESS)
             if accessible { IOServiceClose(conn) }
             
@@ -110,7 +110,7 @@ final class IOKitFuzzer {
             var openedType: UInt32 = 0
             
             for type in openTypes {
-                let kr = IOServiceOpen(svc, mach_task_self(), type, &conn)
+                let kr = IOServiceOpen(svc, mach_task_self_, type, &conn)
                 if kr == KERN_SUCCESS {
                     openedType = type
                     self.emit("✅ Opened with type 0x\(String(type, radix: 16))")
@@ -169,7 +169,7 @@ final class IOKitFuzzer {
                 guard svc != 0 else { continue }
                 
                 var conn: io_connect_t = 0
-                let kr = IOServiceOpen(svc, mach_task_self(), 0, &conn)
+                let kr = IOServiceOpen(svc, mach_task_self_, 0, &conn)
                 IOObjectRelease(svc)
                 
                 guard kr == KERN_SUCCESS else {
@@ -199,15 +199,24 @@ final class IOKitFuzzer {
     // MARK: - Private
     
     private func callSelector(_ conn: io_connect_t, selector: UInt32, inputSize: Int) -> kern_return_t {
-        var input = [UInt8](repeating: 0x41, count: inputSize)
-        var outputSize: Int = 4096
+        var input = [UInt8](repeating: 0x41, count: max(inputSize, 1))
+        var outputSize = 4096
         var output = [UInt8](repeating: 0, count: outputSize)
         
-        let kr = IOConnectCallStructMethod(
-            conn, selector,
-            inputSize > 0 ? &input : nil, inputSize,
-            &output, &outputSize
-        )
+        let kr: kern_return_t
+        if inputSize > 0 {
+            kr = IOConnectCallStructMethod(
+                conn, selector,
+                input, inputSize,
+                &output, &outputSize
+            )
+        } else {
+            kr = IOConnectCallStructMethod(
+                conn, selector,
+                nil, 0,
+                &output, &outputSize
+            )
+        }
         
         return kr
     }
