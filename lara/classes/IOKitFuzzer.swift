@@ -179,9 +179,10 @@ final class IOKitFuzzer {
                 
                 // Count valid selectors
                 var validSelectors = 0
+                let migBadId = Int32(bitPattern: 0xe00002c2)
                 for sel: UInt32 in 0..<64 {
                     let testKr = self.callSelector(conn, selector: sel, inputSize: 0)
-                    if testKr != KERN_INVALID_ARGUMENT && testKr != 0xe00002c2 { // not MIG_BAD_ID
+                    if testKr != KERN_INVALID_ARGUMENT && testKr != migBadId {
                         validSelectors += 1
                     }
                 }
@@ -222,11 +223,20 @@ final class IOKitFuzzer {
     }
     
     private func recordResult(_ service: String, _ selector: UInt32, _ inputSize: Int, _ kr: kern_return_t) {
+        // IOKit error codes as Int32 (they overflow unsigned hex literals)
+        let kMIGBadID          = Int32(bitPattern: 0xe00002c2)
+        let kIOReturnBadArg    = Int32(bitPattern: 0xe00002bc)
+        let kIOReturnNotPriv   = Int32(bitPattern: 0xe00002ed)
+        let kIOReturnExclusive = Int32(bitPattern: 0xe00002be)
+        let kIOReturnOverrun   = Int32(bitPattern: 0xe00002d8)
+        let kIOReturnNotReady  = Int32(bitPattern: 0xe00002eb)
+        let kIOReturnUnsup     = Int32(bitPattern: 0xe00002c7)
+        
         // Interesting results: anything that's NOT "invalid argument" or "bad selector"
         let boring: Set<kern_return_t> = [
-            KERN_INVALID_ARGUMENT,  // 0x4 — selector doesn't exist
-            0xe00002c2,             // MIG_BAD_ID — selector out of range
-            0xe00002bc,             // kIOReturnBadArgument
+            KERN_INVALID_ARGUMENT,
+            kMIGBadID,
+            kIOReturnBadArg,
         ]
         
         let interesting = !boring.contains(kr) && kr != KERN_SUCCESS
@@ -234,12 +244,12 @@ final class IOKitFuzzer {
         if interesting || kr == KERN_SUCCESS {
             let note: String
             switch kr {
-            case KERN_SUCCESS: note = "SUCCESS — selector accepts this input"
-            case 0xe00002ed: note = "kIOReturnNotPrivileged — needs entitlement"
-            case 0xe00002be: note = "kIOReturnExclusiveAccess — already in use"
-            case 0xe00002d8: note = "kIOReturnOverrun — buffer overflow potential?"
-            case 0xe00002eb: note = "kIOReturnNotReady — state-dependent"
-            case 0xe00002c7: note = "kIOReturnUnsupported — known but disabled"
+            case KERN_SUCCESS:      note = "SUCCESS — selector accepts this input"
+            case kIOReturnNotPriv:  note = "kIOReturnNotPrivileged — needs entitlement"
+            case kIOReturnExclusive: note = "kIOReturnExclusiveAccess — already in use"
+            case kIOReturnOverrun:  note = "kIOReturnOverrun — buffer overflow potential?"
+            case kIOReturnNotReady: note = "kIOReturnNotReady — state-dependent"
+            case kIOReturnUnsup:    note = "kIOReturnUnsupported — known but disabled"
             default: note = String(format: "kr=0x%x — investigate", kr)
             }
             
