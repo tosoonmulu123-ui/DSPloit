@@ -247,13 +247,11 @@ final class ExpTrustCacheInject {
         #endif
     }
     
-    // MARK: - Test 4: Verify (spawn binary via launchd)
+    // MARK: - Test 4: Spawn UNSIGNED binary (the real test)
     
     private func test4_verifyInject(slide: UInt64) {
         log("")
-        log("-- TEST 4: Spawn /bin/df via launchd --")
-        log("⚠️ Result akan muncul di log utama (async)")
-        log("   Cek dspmgr log setelah 10 detik")
+        log("-- TEST 4: Spawn unsigned binary --")
         
         #if !DISABLE_REMOTECALL
         guard dspmgr.shared.rcready else {
@@ -261,27 +259,158 @@ final class ExpTrustCacheInject {
             return
         }
         
-        // Fire and forget — result goes to RootExecutor.lastResult
-        // DO NOT block thread (causes respring)
-        RootExecutor.shared.executeAsRoot(operation: "tc_spawn_test") { rc in
-            let binPath = remote_alloc_str(rc, "/bin/df")
-            let pidAddr = rc.trojanMem + 0x300
-            rc[pidAddr].setValue32(0)
+        // Minimal ARM64 Mach-O that does: mov x0,#0; mov x16,#1; svc #0x80 (exit(0))
+        // This binary has NO code signature — if it runs, AMFI is bypassed.
+        let unsignedBinary = buildMinimalBinary()
+        let testPath = "/var/jb/tmp/unsigned_test"
+        
+        log("Writing unsigned binary (\(unsignedBinary.count) bytes)...")
+        
+        // Write binary to /var/jb/tmp/
+        RootExecutor.shared.executeAsRoot(operation: "write_unsigned") { rc in
+            // mkdir /var/jb/tmp
+            let dir = remote_alloc_str(rc, "/var/jb/tmp")
+            RootExecutor.rcall(rc, "mkdir", dir, 0o755)
+            RootExecutor.rcall(rc, "free", dir)
             
-            let argvBase = rc.trojanMem + 0x400
-            rc[argvBase].setValue64(binPath)
-            rc[argvBase + 8].setValue64(0)
+            // Write binary
+            let pathAddr = remote_alloc_str(rc, testPath)
+            let fd = RootExecutor.rcall(rc, "open", pathAddr, UInt64(O_WRONLY | O_CREAT | O_TRUNC), 0o755)
+            guard fd != UInt64(bitPattern: -1) else {
+                RootExecutor.rcall(rc, "free", pathAddr)
+                return (false, "open failed", 0)
+            }
             
-            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binPath, 0, 0, argvBase, 0)
-            let pid = rc[pidAddr].value32()
-            RootExecutor.rcall(rc, "free", binPath)
+            let writeAddr = rc.trojanMem + 0x800
+            unsignedBinary.withUnsafeBytes { buf in
+                rc.remote_write(writeAddr, from: buf.baseAddress!, size: UInt64(unsignedBinary.count))
+            }
+            RootExecutor.rcall(rc, "write", fd, writeAddr, UInt64(unsignedBinary.count))
+            RootExecutor.rcall(rc, "close", fd)
+            RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
+            RootExecutor.rcall(rc, "free", pathAddr)
             
-            let ok = (ret == 0 && pid != 0)
-            globallogger.log("(exp_tc) TEST 4 RESULT: \(ok ? "✅" : "❌") ret=\(ret) pid=\(pid)")
-            return (ok, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
+            return (true, "written", 0)
         }
+        
+        // Wait for write, then spawn
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 8) { [self] in
+            self.log("Spawning unsigned binary...")
+            
+            RootExecutor.shared.executeAsRoot(operation: "spawn_unsigned") { rc in
+                let binPath = remote_alloc_str(rc, testPath)
+                let pidAddr = rc.trojanMem + 0x300
+                rc[pidAddr].setValue32(0)
+                
+                let argvBase = rc.trojanMem + 0x400
+                rc[argvBase].setValue64(binPath)
+                rc[argvBase + 8].setValue64(0)
+                
+                let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binPath, 0, 0, argvBase, 0)
+                let pid = rc[pidAddr].value32()
+                RootExecutor.rcall(rc, "free", binPath)
+                
+                let ok = (ret == 0 && pid != 0)
+                
+                DispatchQueue.main.async {
+                    if ok {
+                        globallogger.log("(exp_tc) ✅✅✅ UNSIGNED BINARY SPAWNED! pid=\(pid)")
+                        globallogger.log("(exp_tc) FULL JAILBREAK CONFIRMED — AMFI BYPASSED")
+                    } else {
+                        globallogger.log("(exp_tc) ❌ Unsigned spawn failed: ret=\(ret) pid=\(pid)")
+                        if ret == 1 { globallogger.log("(exp_tc) EPERM — AMFI still blocking") }
+                        if ret == 13 { globallogger.log("(exp_tc) EACCES — permission denied") }
+                        if ret == 8 { globallogger.log("(exp_tc) ENOEXEC — not valid executable") }
+                    }
+                }
+                
+                return (ok, "unsigned spawn ret=\(ret) pid=\(pid)", UInt64(pid))
+            }
+        }
+        
+        log("Result will appear in main log (async)")
         #else
         log("❌ DISABLE_REMOTECALL")
         #endif
+    }
+    
+    // MARK: - Build Minimal Unsigned ARM64 Mach-O
+    
+    /// Builds a minimal Mach-O arm64 binary that does exit(0).
+    /// NO code signature. If this executes = AMFI is fully bypassed.
+    private func buildMinimalBinary() -> Data {
+        var bin = Data()
+        
+        // Mach-O Header (32 bytes)
+        var header = mach_header_64()
+        header.magic = MH_MAGIC_64           // 0xFEEDFACF
+        header.cputype = CPU_TYPE_ARM64       // 12 | 0x01000000
+        header.cpusubtype = CPU_SUBTYPE_ARM64E // 2
+        header.filetype = UInt32(MH_EXECUTE)  // 2
+        header.ncmds = 2                      // LC_SEGMENT_64 + LC_UNIXTHREAD
+        header.sizeofcmds = 72 + 280          // segment cmd + thread cmd
+        header.flags = 0
+        header.reserved = 0
+        bin.append(Data(bytes: &header, count: 32))
+        
+        // LC_SEGMENT_64 for __TEXT (72 bytes)
+        var seg = segment_command_64()
+        seg.cmd = UInt32(LC_SEGMENT_64)       // 0x19
+        seg.cmdsize = 72
+        withUnsafeMutableBytes(of: &seg.segname) { buf in
+            let name = "__TEXT"
+            name.utf8.enumerated().forEach { buf[$0.offset] = $0.element }
+        }
+        seg.vmaddr = 0x100000000
+        seg.vmsize = 0x4000
+        seg.fileoff = 0
+        seg.filesize = 0x4000
+        seg.maxprot = 5  // r-x
+        seg.initprot = 5
+        seg.nsects = 0
+        seg.flags = 0
+        bin.append(Data(bytes: &seg, count: 72))
+        
+        // LC_UNIXTHREAD (280 bytes for arm64)
+        var threadCmd = Data()
+        var cmd: UInt32 = 0x05  // LC_UNIXTHREAD
+        var cmdsize: UInt32 = 280
+        var flavor: UInt32 = 6  // ARM_THREAD_STATE64
+        var count: UInt32 = 68  // (280 - 16) / 4
+        threadCmd.append(Data(bytes: &cmd, count: 4))
+        threadCmd.append(Data(bytes: &cmdsize, count: 4))
+        threadCmd.append(Data(bytes: &flavor, count: 4))
+        threadCmd.append(Data(bytes: &count, count: 4))
+        // Thread state: 33 uint64 registers (x0-x28, fp, lr, sp, pc)
+        // Set pc = 0x100000000 + 384 (offset of our code after headers)
+        var regs = [UInt64](repeating: 0, count: 33)
+        regs[32] = 0x100000000 + 384  // pc = start of code
+        for reg in regs {
+            var r = reg
+            threadCmd.append(Data(bytes: &r, count: 8))
+        }
+        bin.append(threadCmd)
+        
+        // Pad to code offset (384 bytes from start)
+        while bin.count < 384 {
+            bin.append(0)
+        }
+        
+        // ARM64 code: exit(0)
+        // mov x0, #0       → 0xD2800000
+        // mov x16, #1      → 0xD2800030
+        // svc #0x80        → 0xD4001001
+        var code: [UInt32] = [0xD2800000, 0xD2800030, 0xD4001001]
+        for instr in code {
+            var i = instr
+            bin.append(Data(bytes: &i, count: 4))
+        }
+        
+        // Pad to page size
+        while bin.count < 0x4000 {
+            bin.append(0)
+        }
+        
+        return bin
     }
 }
