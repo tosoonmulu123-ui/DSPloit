@@ -250,8 +250,16 @@ final class TweakLoader: ObservableObject {
         appendLog("Installing tweak from \(debPath)...")
         
         // Use DebInstaller to extract
-        DebInstaller.shared.installDeb(path: debPath) { [weak self] success, message in
+        guard let debData = try? Data(contentsOf: URL(fileURLWithPath: debPath)) else {
+            appendLog("❌ Cannot read .deb file")
+            completion(false, "Cannot read file")
+            return
+        }
+        let debName = (debPath as NSString).lastPathComponent
+        let installer = DebInstaller()
+        installer.install(debData: debData, name: debName) { [weak self] success, fileCount in
             guard let self else { return }
+            let message = success ? "\(fileCount) files installed" : "extraction failed"
             if success {
                 self.appendLog("✅ Tweak installed: \(message)")
                 self.scanInstalledTweaks()
