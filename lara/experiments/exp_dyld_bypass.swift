@@ -268,19 +268,21 @@ final class ExpDyldBypass {
         }
     }
     
-    // MARK: - Test 4: Patch policy cache
+    // MARK: - Test 4: Patch policy cache (SELF ONLY — safe)
     
     private func test4_patchPolicyCache() {
         log("")
-        log("── TEST 4: Patch AMFI policy cache ──")
-        log("   Menulis 0xFF (ALLOW_EVERYTHING) ke policy cache")
+        log("── TEST 4: Patch AMFI policy cache (self only) ──")
+        log("   Menulis 0xFF (ALLOW_EVERYTHING) ke policy cache PROSES KITA")
+        log("   ⚠️ Hanya patch proses sendiri — tidak menyentuh SpringBoard/launchd")
         
         let result = dyld_patch_amfi_policy_self()
         
         if result == 0 {
             log("✅ Policy cache patched to 0xFF!")
-            log("   ARTINYA: dyld sekarang skip semua security check")
+            log("   ARTINYA: dyld di proses kita skip semua security check")
             log("   NEXT: Test apakah dlopen unsigned dylib berhasil")
+            log("   SAFE: Tidak menyebabkan respring (hanya proses kita)")
         } else {
             log("⚠️ Policy patch returned \(result)")
             log("   KEMUNGKINAN:")
@@ -345,11 +347,13 @@ final class ExpDyldBypass {
         log("   5. Lihat /var/jb/tmp/tweakloader.log untuk konfirmasi")
     }
     
-    // MARK: - Test 7: Remote process (SpringBoard)
+    // MARK: - Test 7: Remote process (SpringBoard) — READ ONLY
     
     private func test7_remoteSpringBoard() {
         log("")
-        log("── TEST 7: Remote dyld patch (SpringBoard) ──")
+        log("── TEST 7: Remote dyld scan (SpringBoard) — READ ONLY ──")
+        log("   ⚠️ TIDAK melakukan write/patch — hanya scan address")
+        log("   (Patch remote process bisa menyebabkan respring)")
         
         guard mgr.rcready else {
             log("⚠️ SKIP: RemoteCall not active")
@@ -369,17 +373,16 @@ final class ExpDyldBypass {
             log("✅ SpringBoard dyld base: 0x\(String(sbDyldBase, radix: 16))")
             log("   PERHATIKAN: Harus berbeda dari dyld base kita (ASLR)")
             
-            let result = dyld_patch_amfi_policy_remote(sbProc)
-            if result == 0 {
-                log("✅ SpringBoard dyld policy PATCHED!")
-                log("   ARTINYA: SpringBoard sekarang bisa load unsigned dylibs")
-                log("   NEXT: dlopen TweakLoader.dylib di SpringBoard")
+            // READ ONLY — just verify we can find the Mach-O header
+            let magic = ds_kread32(sbDyldBase)
+            if magic == 0xFEEDFACF {
+                log("✅ SpringBoard dyld Mach-O valid")
+                log("   READY: Bisa di-patch kalau Test 4 (self) sudah ✅")
+                log("   INTEGRASI: Panggil dyld_patch_amfi_policy_remote(sbProc)")
+                log("   ⚠️ JANGAN patch dari experiment — lakukan dari main chain saja")
             } else {
-                log("⚠️ SpringBoard patch failed (ret=\(result))")
-                log("   KEMUNGKINAN:")
-                log("   - dyld base detection salah untuk remote proc")
-                log("   - __DATA offset berbeda di SpringBoard's dyld instance")
-                log("   - PPL protecting SpringBoard's memory")
+                log("❌ SpringBoard dyld magic invalid: 0x\(String(magic, radix: 16))")
+                log("   PENYEBAB: dyld base detection salah untuk remote proc")
             }
         } else {
             log("❌ Cannot find dyld base for SpringBoard")
