@@ -540,9 +540,8 @@ struct PackageManagerView: View {
                 continue
             }
             
-            URLSession.shared.dataTask(with: fetchURL) { [weak self] data, response, error in
+            URLSession.shared.dataTask(with: fetchURL) { data, response, error in
                 DispatchQueue.main.async {
-                    guard let self else { return }
                     if let idx = self.repos.firstIndex(where: { $0.url == url }) {
                         self.repos[idx].isRefreshing = false
                     }
