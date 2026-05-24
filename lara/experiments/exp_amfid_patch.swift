@@ -318,102 +318,110 @@ final class ExpAmfidPatch {
     private func attemptAmfidRemoteCall(pid: Int32, textBase: UInt64) {
         #if !DISABLE_REMOTECALL
         // Try to connect to amfid via RemoteCall
-        let amfidRC = RemoteCall(process: "amfid", useMigFilterBypass: false)
-        
-        if amfidRC.pid != 0 {
-            log("✅ Connected to amfid via RemoteCall!")
-            log("   amfid pid = \(amfidRC.pid)")
-            
-            // Find MISValidateSignatureAndCopyInfo via dlsym
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            let dlsymAddr = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
-                                               remote_alloc_str(amfidRC, "dlsym"))
-            
-            if dlsymAddr != 0 {
-                // Look for MIS functions
-                let misValidate = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
-                    remote_alloc_str(amfidRC, "MISValidateSignatureAndCopyInfo"))
-                let misValidate2 = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
-                    remote_alloc_str(amfidRC, "verify_code_directory"))
-                
-                log("🔍 MISValidateSignatureAndCopyInfo = 0x\(String(misValidate, radix: 16))")
-                log("🔍 verify_code_directory = 0x\(String(misValidate2, radix: 16))")
-                
-                if misValidate != 0 {
-                    log("")
-                    log("✅ Found validation function!")
-                    log("   Patching to always return 0 (success)...")
-                    
-                    // Read current bytes at function start
-                    let origBytes = amfidRC.remoteRead64(from: misValidate)
-                    log("🔍 Original bytes: 0x\(String(origBytes, radix: 16))")
-                    
-                    // Patch: mov x0, #0; ret
-                    // 0xD2800000 = mov x0, #0
-                    // 0xD65F03C0 = ret
-                    let patchValue: UInt64 = 0xD65F03C0_D2800000
-                    
-                    let writeOk = amfidRC.remote_write64(misValidate, value: patchValue)
-                    if writeOk {
-                        let verify = amfidRC.remoteRead64(from: misValidate)
-                        if verify == patchValue {
-                            log("✅✅✅ AMFID PATCHED!")
-                            log("   MISValidateSignatureAndCopyInfo → always returns 0")
-                            log("   Unsigned binaries should now be allowed!")
-                            log("")
-                            log("   → TEST: spawn unsigned binary now")
-                            testSpawnAfterPatch()
-                        } else {
-                            log("⚠️ Write succeeded but verify mismatch")
-                            log("   verify = 0x\(String(verify, radix: 16))")
-                            log("   __TEXT may be read-only (need vm_protect)")
-                        }
-                    } else {
-                        log("❌ remote_write64 failed — __TEXT is read-only")
-                        log("   Need mach_vm_protect to make writable first")
-                        
-                        // Try vm_protect approach
-                        log("")
-                        log("   Trying mach_vm_protect...")
-                        let pageAddr = misValidate & ~0x3FFF // page-align
-                        let mprotect = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
-                            remote_alloc_str(amfidRC, "mprotect"))
-                        if mprotect != 0 {
-                            // mprotect(addr, 0x4000, PROT_READ|PROT_WRITE|PROT_EXEC)
-                            let mpRet = RootExecutor.rcallAddr(amfidRC, mprotect, pageAddr, 0x4000, 7)
-                            log("   mprotect ret = \(mpRet)")
-                            if mpRet == 0 {
-                                // Retry write
-                                let writeOk2 = amfidRC.remote_write64(misValidate, value: patchValue)
-                                let verify2 = amfidRC.remoteRead64(from: misValidate)
-                                if verify2 == patchValue {
-                                    log("✅✅✅ AMFID PATCHED (after mprotect)!")
-                                    testSpawnAfterPatch()
-                                } else {
-                                    log("❌ Still failed after mprotect")
-                                }
-                            } else {
-                                log("❌ mprotect failed (code signing enforcement on __TEXT)")
-                            }
-                        }
-                    }
-                } else {
-                    log("⚠️ MISValidateSignatureAndCopyInfo not found via dlsym")
-                    log("   May be inlined or have different name")
-                    log("   Try: _amfi_check_dyld_policy_self")
-                    
-                    let amfiCheck = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
-                        remote_alloc_str(amfidRC, "_amfi_check_dyld_policy_self"))
-                    log("🔍 _amfi_check_dyld_policy_self = 0x\(String(amfiCheck, radix: 16))")
-                }
-            }
-            
-            amfidRC.destroyRemoteCall()
-        } else {
+        guard let amfidRC = RemoteCall(process: "amfid", useMigFilterBypass: false) else {
             log("❌ Cannot connect to amfid via RemoteCall")
             log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
             log("   amfid may have restricted exception ports")
+            log("")
+            return
         }
+        
+        guard amfidRC.pid != 0 else {
+            log("❌ RemoteCall created but pid=0")
+            log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
+            amfidRC.destroyRemoteCall()
+            log("")
+            return
+        }
+        
+        log("✅ Connected to amfid via RemoteCall!")
+        log("   amfid pid = \(amfidRC.pid)")
+        
+        // Find MISValidateSignatureAndCopyInfo via dlsym
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        let dlsymAddr = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(amfidRC, "dlsym"))
+        
+        if dlsymAddr != 0 {
+            // Look for MIS functions
+            let misValidate = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
+                remote_alloc_str(amfidRC, "MISValidateSignatureAndCopyInfo"))
+            let misValidate2 = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
+                remote_alloc_str(amfidRC, "verify_code_directory"))
+            
+            log("🔍 MISValidateSignatureAndCopyInfo = 0x\(String(misValidate, radix: 16))")
+            log("🔍 verify_code_directory = 0x\(String(misValidate2, radix: 16))")
+            
+            if misValidate != 0 {
+                log("")
+                log("✅ Found validation function!")
+                log("   Patching to always return 0 (success)...")
+                
+                // Read current bytes at function start
+                let origBytes = amfidRC.remoteRead64(from: misValidate)
+                log("🔍 Original bytes: 0x\(String(origBytes, radix: 16))")
+                
+                // Patch: mov x0, #0; ret
+                // 0xD2800000 = mov x0, #0
+                // 0xD65F03C0 = ret
+                let patchValue: UInt64 = 0xD65F03C0_D2800000
+                
+                let writeOk = amfidRC.remote_write64(misValidate, value: patchValue)
+                if writeOk {
+                    let verify = amfidRC.remoteRead64(from: misValidate)
+                    if verify == patchValue {
+                        log("✅✅✅ AMFID PATCHED!")
+                        log("   MISValidateSignatureAndCopyInfo → always returns 0")
+                        log("   Unsigned binaries should now be allowed!")
+                        log("")
+                        log("   → TEST: spawn unsigned binary now")
+                        testSpawnAfterPatch()
+                    } else {
+                        log("⚠️ Write succeeded but verify mismatch")
+                        log("   verify = 0x\(String(verify, radix: 16))")
+                        log("   __TEXT may be read-only (need vm_protect)")
+                    }
+                } else {
+                    log("❌ remote_write64 failed — __TEXT is read-only")
+                    log("   Need mach_vm_protect to make writable first")
+                    
+                    // Try vm_protect approach
+                    log("")
+                    log("   Trying mach_vm_protect...")
+                    let pageAddr = misValidate & ~0x3FFF // page-align
+                    let mprotect = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
+                        remote_alloc_str(amfidRC, "mprotect"))
+                    if mprotect != 0 {
+                        // mprotect(addr, 0x4000, PROT_READ|PROT_WRITE|PROT_EXEC)
+                        let mpRet = RootExecutor.rcallAddr(amfidRC, mprotect, pageAddr, 0x4000, 7)
+                        log("   mprotect ret = \(mpRet)")
+                        if mpRet == 0 {
+                            // Retry write
+                            _ = amfidRC.remote_write64(misValidate, value: patchValue)
+                            let verify2 = amfidRC.remoteRead64(from: misValidate)
+                            if verify2 == patchValue {
+                                log("✅✅✅ AMFID PATCHED (after mprotect)!")
+                                testSpawnAfterPatch()
+                            } else {
+                                log("❌ Still failed after mprotect")
+                            }
+                        } else {
+                            log("❌ mprotect failed (code signing enforcement on __TEXT)")
+                        }
+                    }
+                }
+            } else {
+                log("⚠️ MISValidateSignatureAndCopyInfo not found via dlsym")
+                log("   May be inlined or have different name")
+                log("   Try: _amfi_check_dyld_policy_self")
+                
+                let amfiCheck = RootExecutor.rcall(amfidRC, "dlsym", RTLD_DEFAULT,
+                    remote_alloc_str(amfidRC, "_amfi_check_dyld_policy_self"))
+                log("🔍 _amfi_check_dyld_policy_self = 0x\(String(amfiCheck, radix: 16))")
+            }
+        }
+        
+        amfidRC.destroyRemoteCall()
         log("")
         #else
         log("❌ DISABLE_REMOTECALL")
