@@ -16,6 +16,7 @@
 //
 
 import Foundation
+import Combine
 
 final class AppRegistrar: ObservableObject {
     static let shared = AppRegistrar()

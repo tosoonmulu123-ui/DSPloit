@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import Combine
 
 /// Manages tweak injection lifecycle
 final class TweakLoader: ObservableObject {
