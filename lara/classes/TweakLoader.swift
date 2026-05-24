@@ -142,6 +142,7 @@ final class TweakLoader: ObservableObject {
     // MARK: - Inject into SpringBoard (Step 2)
     
     /// Inject TweakLoader.dylib into SpringBoard via RemoteCall dlopen
+    /// If dyld bypass is active, also sets DYLD_INSERT_LIBRARIES for future loads
     func injectIntoSpringBoard(completion: @escaping (Bool) -> Void) {
         guard mgr.rcready, let sb = mgr.sbProc else {
             appendLog("❌ SpringBoard RC not available")
@@ -150,7 +151,26 @@ final class TweakLoader: ObservableObject {
         }
         
         isWorking = true
-        appendLog("Injecting TweakLoader into SpringBoard...")
+        
+        // If dyld bypass is active, use DYLD_INSERT_LIBRARIES (cleaner approach)
+        if dyld_bypass_is_active() {
+            appendLog("Injecting via DYLD_INSERT_LIBRARIES (dyld bypass active)...")
+            
+            // Set DYLD_INSERT_LIBRARIES in SpringBoard via RemoteCall setenv
+            let RTLD_DEFAULT = UInt64(bitPattern: -2)
+            let setenvSym = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                               remote_alloc_str(sb, "setenv"))
+            if setenvSym != 0 {
+                let envKey = remote_alloc_str(sb, "DYLD_INSERT_LIBRARIES")
+                let envVal = remote_alloc_str(sb, Self.loaderDylibPath)
+                RootExecutor.rcallAddr(sb, setenvSym, envKey, envVal, 1)
+                RootExecutor.rcall(sb, "free", envKey)
+                RootExecutor.rcall(sb, "free", envVal)
+                appendLog("✅ DYLD_INSERT_LIBRARIES set in SpringBoard")
+            }
+        }
+        
+        appendLog("Injecting TweakLoader into SpringBoard (dlopen)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }

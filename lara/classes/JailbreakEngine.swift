@@ -399,6 +399,27 @@ final class JailbreakEngine: ObservableObject {
         }
         
         progress = 0.9
+        step6b_dyldBypass()
+    }
+    
+    // MARK: - Step 6b: DYLD-level AMFI Bypass (from RE analysis)
+    
+    /// Patch dyld's cached AMFI policy result in self, SpringBoard, and launchd.
+    /// This makes dyld think AMFI returned "allow everything" — enables:
+    /// - DYLD_INSERT_LIBRARIES (for tweak injection without dlopen)
+    /// - Loading unsigned dylibs without code signature check
+    /// - @rpath and fallback path resolution
+    /// Discovered via reverse engineering of iOS 18.2 dyld binary.
+    private func step6b_dyldBypass() {
+        appendLog("Patching dyld AMFI policy (RE-based bypass)...")
+        
+        let result = dyld_full_bypass()
+        if result == 0 {
+            appendLog("✅ dyld AMFI bypass active (DYLD_INSERT_LIBRARIES enabled)")
+        } else {
+            appendLog("⚠️ dyld bypass failed — tweak injection will use dlopen fallback")
+        }
+        
         step7_trustCacheInject()
     }
     
