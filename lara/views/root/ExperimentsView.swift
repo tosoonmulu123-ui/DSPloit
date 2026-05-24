@@ -14,6 +14,10 @@ struct ExperimentsView: View {
     @State private var isTCRunning = false
     @State private var showTCResults = false
     
+    @State private var csResults: [String] = []
+    @State private var isCSRunning = false
+    @State private var showCSResults = false
+    
     var body: some View {
         List {
             Section {
@@ -23,6 +27,61 @@ struct ExperimentsView: View {
                     Text("Test bypasses here. Results logged for analysis. Nothing touches main chain until verified ✅.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+            
+            // proc_ro CS Flags (NEW — priority experiment)
+            Section("proc_ro cs_flags Patching (PRIORITY)") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Patch proc_ro→p_csflags to set CS_PLATFORM_BINARY on spawning process. This should bypass AMFI's trust cache check for unsigned binaries.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Chance: ~85-90% — proven technique (Dopamine/Fugu15)")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
+                
+                Button {
+                    runCSFlagsExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isCSRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.green)
+                        Text(isCSRunning ? "Running..." : "Run cs_flags Patch Test")
+                        Spacer()
+                        if !isCSRunning {
+                            Text("★")
+                                .foregroundStyle(.yellow)
+                        }
+                    }
+                }
+                .disabled(isCSRunning || !mgr.dsready)
+                
+                if !mgr.dsready {
+                    Text("⚠️ Jailbreak dulu — butuh KRW aktif")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                
+                if !csResults.isEmpty {
+                    Button { showCSResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showCSResults ? "Hide" : "Show Results (\(csResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showCSResults ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                        }
+                    }
+                }
+                
+                if showCSResults {
+                    ForEach(Array(csResults.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(lineColor(line))
+                            .textSelection(.enabled)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 4))
+                    }
                 }
             }
             
@@ -81,6 +140,19 @@ struct ExperimentsView: View {
             }
         }
         .navigationTitle("Experiments")
+    }
+    
+    private func runCSFlagsExperiment() {
+        isCSRunning = true
+        csResults.removeAll()
+        showCSResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpProcRoCSFlags.shared.runAll()
+            DispatchQueue.main.async {
+                csResults = r
+                isCSRunning = false
+            }
+        }
     }
     
     private func runTCExperiment() {
