@@ -69,7 +69,19 @@ final class DebInstaller {
                 return
             }
             tarData = decompressed
-            emit("[deb] Decompressed: \(decompressed.count) bytes")
+            emit("[deb] Decompressed (gzip): \(decompressed.count) bytes")
+        } else if dataTar.name.hasSuffix(".xz") {
+            guard let decompressed = decompressXZ(dataTar.data) else {
+                emit("[deb] ❌ XZ decompression failed")
+                completion(false, 0)
+                return
+            }
+            tarData = decompressed
+            emit("[deb] Decompressed (xz): \(decompressed.count) bytes")
+        } else if dataTar.name.hasSuffix(".zst") || dataTar.name.hasSuffix(".zstd") {
+            emit("[deb] ❌ Zstandard compression not yet supported")
+            completion(false, 0)
+            return
         } else {
             tarData = dataTar.data
         }
@@ -1153,6 +1165,68 @@ final class DebInstaller {
         }
         
         emit("[deb] ⚠️ Gzip decompression failed")
+        return nil
+    }
+    
+    // MARK: - XZ Decompression
+    
+    private func decompressXZ(_ data: Data) -> Data? {
+        // XZ magic: FD 37 7A 58 5A 00
+        guard data.count > 6,
+              data[0] == 0xFD, data[1] == 0x37, data[2] == 0x7A,
+              data[3] == 0x58, data[4] == 0x5A, data[5] == 0x00 else {
+            emit("[deb] Not a valid XZ file")
+            return nil
+        }
+        
+        // Use Apple's Compression framework with LZMA algorithm
+        // XZ is LZMA2 with headers — we need to strip the XZ container
+        // and decompress the raw LZMA2 stream
+        
+        // Find the LZMA2 compressed data (skip XZ stream header: 12 bytes)
+        // XZ format: 6 magic + 2 flags + 4 CRC32 = 12 bytes header
+        // Then block header + compressed data
+        // For simplicity, try raw LZMA decompression on the payload
+        
+        let headerSize = 12
+        guard data.count > headerSize + 10 else { return nil }
+        
+        // Skip XZ header and try LZMA decompression
+        // Block header is variable length — find it
+        let blockHeaderSize = Int(data[headerSize]) + 1 // first byte = (size-1)/4
+        let compressedStart = headerSize + (blockHeaderSize * 4) + 4 // +4 for block header CRC
+        
+        guard compressedStart < data.count else {
+            emit("[deb] XZ block header parse failed")
+            return nil
+        }
+        
+        var src = [UInt8](data[compressedStart..<(data.count - 12)]) // -12 for XZ footer
+        let srcSize = src.count
+        
+        var dstCapacity = srcSize * 8
+        if dstCapacity < 4 * 1024 * 1024 { dstCapacity = 8 * 1024 * 1024 }
+        
+        for attempt in 0..<5 {
+            var dst = [UInt8](repeating: 0, count: dstCapacity)
+            let result = compression_decode_buffer(
+                &dst, dstCapacity,
+                &src, srcSize,
+                nil,
+                COMPRESSION_LZMA
+            )
+            
+            if result > 0 && result < dstCapacity {
+                return Data(dst.prefix(result))
+            } else if result == dstCapacity {
+                dstCapacity *= 2
+                emit("[deb] XZ buffer full, retrying \(dstCapacity / 1024 / 1024)MB (attempt \(attempt + 2))")
+            } else {
+                break
+            }
+        }
+        
+        emit("[deb] ⚠️ XZ decompression failed — try installing .gz variant instead")
         return nil
     }
     

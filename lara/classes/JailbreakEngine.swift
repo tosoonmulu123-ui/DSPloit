@@ -47,18 +47,35 @@ final class JailbreakEngine: ObservableObject {
     // MARK: - One-Tap Jailbreak
     
     #if !DISABLE_REMOTECALL
+    private var retryCount = 0
+    private let maxRetries = 2
+    
     func runFullChain() {
         guard !isRunning else { return }
         isRunning = true
         isJailbroken = false
         errorMessage = nil
         progress = 0
+        retryCount = 0
         log.removeAll()
         
         appendLog("Starting jailbreak chain...")
         
         // Step 1: Exploit
         step1_exploit()
+    }
+    
+    private func retryChain(_ reason: String) {
+        retryCount += 1
+        if retryCount > maxRetries {
+            fail("Failed after \(maxRetries + 1) attempts. Last error: \(reason)")
+            return
+        }
+        appendLog("⚠️ \(reason) — retrying (\(retryCount)/\(maxRetries))...")
+        progress = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.step1_exploit()
+        }
     }
     
     private func step1_exploit() {
@@ -170,14 +187,14 @@ final class JailbreakEngine: ObservableObject {
         mgr.vfsinit { [weak self] vfsOk in
             guard let self else { return }
             if !vfsOk {
-                self.fail("VFS init failed")
+                self.retryChain("VFS init failed")
                 return
             }
             self.appendLog("✅ VFS ready")
             
             self.mgr.sbxescape { sbxOk in
                 if !sbxOk {
-                    self.fail("Sandbox escape failed")
+                    self.retryChain("Sandbox escape failed")
                     return
                 }
                 self.appendLog("✅ Sandbox escaped")
@@ -205,7 +222,7 @@ final class JailbreakEngine: ObservableObject {
                 self.progress = 0.75
                 self.step4_verifyRoot()
             } else {
-                self.fail("RemoteCall init failed: \(RemoteCall.lastInitError() ?? "unknown")")
+                self.retryChain("RemoteCall init failed: \(RemoteCall.lastInitError() ?? "unknown")")
             }
         }
     }
