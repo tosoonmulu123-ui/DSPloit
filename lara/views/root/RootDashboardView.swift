@@ -26,7 +26,6 @@ struct RootDashboardView: View {
                         toolRow("shippingbox.fill", "Packages", "Install apps and tweaks", .purple, PackageManagerView())
                         toolRow("building.columns.fill", "Banking", "Hide jailbreak detection", .green, MobileBankingView())
                         toolRow("gearshape.2.fill", "Daemons", "Manage system services", .orange, DaemonDisableView())
-                        toolRow("flask.fill", "Experiments", "Test new bypass techniques", .red, ExperimentsView())
                     }
                 } else {
                     Section {
