@@ -252,6 +252,8 @@ final class ExpTrustCacheInject {
     private func test4_verifyInject(slide: UInt64) {
         log("")
         log("-- TEST 4: Spawn /bin/df via launchd --")
+        log("⚠️ Result akan muncul di log utama (async)")
+        log("   Cek dspmgr log setelah 10 detik")
         
         #if !DISABLE_REMOTECALL
         guard dspmgr.shared.rcready else {
@@ -259,12 +261,8 @@ final class ExpTrustCacheInject {
             return
         }
         
-        // Synchronous-ish: we log the attempt, result comes later
-        // But since runAll() is on background thread, we can wait
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        var spawnResult: (success: Bool, msg: String) = (false, "timeout")
-        
+        // Fire and forget — result goes to RootExecutor.lastResult
+        // DO NOT block thread (causes respring)
         RootExecutor.shared.executeAsRoot(operation: "tc_spawn_test") { rc in
             let binPath = remote_alloc_str(rc, "/bin/df")
             let pidAddr = rc.trojanMem + 0x300
@@ -278,25 +276,9 @@ final class ExpTrustCacheInject {
             let pid = rc[pidAddr].value32()
             RootExecutor.rcall(rc, "free", binPath)
             
-            if ret == 0 && pid != 0 {
-                spawnResult = (true, "pid=\(pid)")
-            } else {
-                spawnResult = (false, "ret=\(ret) pid=\(pid)")
-            }
-            semaphore.signal()
-            return (ret == 0, "spawn", UInt64(pid))
-        }
-        
-        // Wait max 15s for result
-        let waitResult = semaphore.wait(timeout: .now() + 15)
-        
-        if waitResult == .timedOut {
-            log("⚠️ Spawn timed out (launchd busy?)")
-        } else if spawnResult.success {
-            log("✅ /bin/df spawned (\(spawnResult.msg))")
-            log("   Spawn path works — ready for unsigned binary test")
-        } else {
-            log("❌ Spawn failed: \(spawnResult.msg)")
+            let ok = (ret == 0 && pid != 0)
+            globallogger.log("(exp_tc) TEST 4 RESULT: \(ok ? "✅" : "❌") ret=\(ret) pid=\(pid)")
+            return (ok, "spawn ret=\(ret) pid=\(pid)", UInt64(pid))
         }
         #else
         log("❌ DISABLE_REMOTECALL")
