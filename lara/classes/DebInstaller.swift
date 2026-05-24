@@ -290,18 +290,31 @@ final class DebInstaller {
         
         // Send via MSM XPC
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
-        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_connection_create_mach_service"))
-        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_connection_resume"))
-        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_dictionary_create"))
-        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_dictionary_set_string"))
-        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_dictionary_set_data"))
-        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
-            remote_alloc_str(sb, "xpc_connection_send_message"))
+        
+        // Resolve XPC functions (alloc strings, resolve, then free)
+        let s1 = remote_alloc_str(sb, "xpc_connection_create_mach_service")
+        let xpcCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s1)
+        RootExecutor.rcall(sb, "free", s1)
+        
+        let s2 = remote_alloc_str(sb, "xpc_connection_resume")
+        let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s2)
+        RootExecutor.rcall(sb, "free", s2)
+        
+        let s3 = remote_alloc_str(sb, "xpc_dictionary_create")
+        let xpcDictCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s3)
+        RootExecutor.rcall(sb, "free", s3)
+        
+        let s4 = remote_alloc_str(sb, "xpc_dictionary_set_string")
+        let xpcSetStr = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s4)
+        RootExecutor.rcall(sb, "free", s4)
+        
+        let s5 = remote_alloc_str(sb, "xpc_dictionary_set_data")
+        let xpcSetData = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s5)
+        RootExecutor.rcall(sb, "free", s5)
+        
+        let s6 = remote_alloc_str(sb, "xpc_connection_send_message")
+        let xpcSend = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, s6)
+        RootExecutor.rcall(sb, "free", s6)
         
         guard xpcCreate != 0 && xpcDictCreate != 0 else {
             emit("[deb] ⚠️ XPC functions not available")
@@ -668,15 +681,10 @@ final class DebInstaller {
                 let srcPath = "\(tempBase)/\(dir)"
                 let dstPath = "/var/jb/\(dir)"
                 
-                // Remove destination if exists (rename fails on EEXIST/ENOTEMPTY)
-                let dstAddr = remote_alloc_str(rc, dstPath)
-                // Don't remove existing — merge instead by skipping rename for existing dirs
-                RootExecutor.rcall(rc, "free", dstAddr)
-                
                 let srcAddr = remote_alloc_str(rc, srcPath)
-                let dstAddr2 = remote_alloc_str(rc, dstPath)
+                let dstAddr = remote_alloc_str(rc, dstPath)
                 
-                let ret = RootExecutor.rcall(rc, "rename", srcAddr, dstAddr2)
+                let ret = RootExecutor.rcall(rc, "rename", srcAddr, dstAddr)
                 if ret == 0 {
                     moved += 1
                 } else {
@@ -684,7 +692,7 @@ final class DebInstaller {
                 }
                 
                 RootExecutor.rcall(rc, "free", srcAddr)
-                RootExecutor.rcall(rc, "free", dstAddr2)
+                RootExecutor.rcall(rc, "free", dstAddr)
             }
             
             DispatchQueue.main.async {
@@ -1165,7 +1173,8 @@ final class DebInstaller {
             let header = data[offset..<offset+512]
             if header.allSatisfy({ $0 == 0 }) { break }
             
-            let nameBytes = header[offset..<offset+100]
+            // Parse fields relative to offset (not header slice)
+            let nameBytes = data[offset..<offset+100]
             let name = String(data: Data(nameBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
             
@@ -1182,7 +1191,8 @@ final class DebInstaller {
             let typeFlag = data[offset+156]
             let isDir = typeFlag == 0x35 || name.hasSuffix("/")
             
-            let prefixBytes = data[offset+345..<min(offset+500, data.count)]
+            let prefixEnd = min(offset+500, data.count)
+            let prefixBytes = data[offset+345..<prefixEnd]
             let prefix = String(data: Data(prefixBytes), encoding: .ascii)?
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
             
@@ -1291,8 +1301,19 @@ final class DebInstaller {
         let kernBase = ds_get_kernel_base()
         guard kernBase != 0 else { return }
         
-        let slide = kernBase - 0xfffffff007004000
-        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        // Resolve AMFI data address dynamically (same as JailbreakEngine)
+        var amfiDataSlid: UInt64 = 0
+        let amfiSym = ds_kcache_symbol_runtime("_amfi_data_base")
+        if amfiSym != 0 {
+            amfiDataSlid = amfiSym
+        } else {
+            // Hardcoded fallback — only valid for specific iOS 18.2 builds
+            let slide = kernBase - 0xfffffff007004000
+            amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        }
+        
+        guard amfiDataSlid != 0 else { return }
+        
         let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
         
         // Check if already disabled

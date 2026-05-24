@@ -563,7 +563,7 @@ final class dspmgr: ObservableObject {
     @discardableResult
     func apfsown(path: String, uid: UInt32, gid: UInt32) -> Bool {
         if !isapfs(path) {
-            print("\(path) is apfs!")
+            print("⚠️ \(path) is NOT on APFS — apfs_own may not work")
         }
         
         let result = path.withCString { cPath in
@@ -1127,8 +1127,11 @@ final class dspmgr: ObservableObject {
         let vmMap = task_get_vm_map(task)
         guard vmMap != 0 else { return [] }
         
-        // For kernel processes, read directly; for user processes, we walk the VM map
-        // and read through the kernel's view of the user address space
+        // WARNING: This reads KERNEL virtual addresses directly via KRW.
+        // For user-space process memory, the caller must provide the kernel-mapped
+        // virtual address of the target page, NOT the user-space VA.
+        // To read user-space VA, you need to walk the target process's page tables
+        // or use the VM object mapping technique (see DarkSword Analysis §5.5).
         var bytes: [UInt8] = []
         bytes.reserveCapacity(size)
         
@@ -1503,8 +1506,8 @@ final class dspmgr: ObservableObject {
         guard commCenter != 0 else { return (false, "CommCenter not found") }
         
         let task = getTaskForProc(commCenter)
-        let ipcSpace = ds_kread64(task + 0x300) // task->itk_space
-        let isTable = ds_kread64(ipcSpace + 0x20) // is_table
+        let ipcSpace = ds_kread64(task + UInt64(off_task_itk_space))
+        let isTable = ds_kread64(ipcSpace + UInt64(off_ipc_space_is_table))
         
         return (true, String(format: "AT command channel probed: CommCenter task=0x%llx, ipc_space=0x%llx, is_table=0x%llx. Command: %@", task, ipcSpace, isTable, command))
     }
@@ -1516,11 +1519,11 @@ final class dspmgr: ObservableObject {
         guard commCenter != 0 else { return [(0, "CommCenter", "Process not found")] }
         
         let task = getTaskForProc(commCenter)
-        let ipcSpace = ds_kread64(task + 0x300)
+        let ipcSpace = ds_kread64(task + UInt64(off_task_itk_space))
         
         for i in 0..<min(iterations, 50) {
             let portIdx = UInt64(i * 0x18)
-            let isTable = ds_kread64(ipcSpace + 0x20)
+            let isTable = ds_kread64(ipcSpace + UInt64(off_ipc_space_is_table))
             let entry = ds_kread64(isTable + portIdx)
             let portAddr = entry & 0xFFFFFFFFFFFF
             let portType = (entry >> 48) & 0xFF
@@ -1593,18 +1596,17 @@ final class dspmgr: ObservableObject {
     func overrideThermalThrottle() -> (success: Bool, msg: String) {
         guard dsready else { return (false, "KRW not ready") }
         // Find kernel's thermal policy data structure
-        // The thermal_zone structure in XNU controls CPU frequency scaling
         let proc0 = findProc(pid: 0)
         let task0 = getTaskForProc(proc0)
         
         // Read the kernel task's thread list to find the thermal daemon thread
-        let firstThread = ds_kread64(task0 + 0x58)
+        let firstThread = ds_kread64(task0 + UInt64(off_task_threads_next))
         guard firstThread != 0 else { return (false, "Cannot read kernel threads") }
         
-        // Read thread state
-        let threadPC = ds_kread64(firstThread + 0x100) // thread->machine.pc
+        // Read thread state — kstackptr offset from offsets.h
+        let threadPC = ds_kread64(firstThread + UInt64(off_thread_machine_kstackptr))
         
-        return (true, String(format: "Thermal policy probed: kernel_task thread=0x%llx, PC=0x%llx. Override requires direct SMC register writes via MMIO.", firstThread, threadPC))
+        return (true, String(format: "Thermal policy probed: kernel_task thread=0x%llx, kstackptr=0x%llx. Override requires direct SMC register writes via MMIO.", firstThread, threadPC))
     }
     
     // MARK: - Hardware Watchpoints (ARM Debug Registers)
@@ -1689,14 +1691,17 @@ final class dspmgr: ObservableObject {
         activeWatchpoints[index].active = false
         
         if dsready {
-            _ = ds_get_our_task()
-            // Watchpoint removal logic commented out to avoid unused variable warning
-            // let firstThread = ds_kread64(task + 0x58)
-            // let debugState = ds_kread64(firstThread + 0x180)
-            // if debugState != 0 {
-            //     ds_kwrite64(debugState + UInt64(index * 16), 0)
-            //     ds_kwrite32(debugState + UInt64(index * 16 + 8), 0)
-            // }
+            let task = ds_get_our_task()
+            let firstThread = ds_kread64(task + UInt64(off_task_threads_next))
+            if firstThread != 0 {
+                let debugState = ds_kread64(firstThread + 0x180)
+                if debugState != 0 {
+                    // Clear DBGWVR (address register)
+                    ds_kwrite64(debugState + UInt64(index * 16), 0)
+                    // Clear DBGWCR (control register — disable bit)
+                    ds_kwrite32(debugState + UInt64(index * 16 + 8), 0)
+                }
+            }
         }
         return true
     }
@@ -1723,9 +1728,11 @@ final class dspmgr: ObservableObject {
         guard dsready else { return [] }
         var entries: [PTEEntry] = []
         
-        let _ = ds_get_our_proc()
         let task = ds_get_our_task()
-        let pmap = ds_kread64(task + 0x28) // task->map->pmap (approx offset)
+        let vmMap = task_get_vm_map(task)
+        guard vmMap != 0 else { return [] }
+        // pmap is at a fixed offset from vm_map on arm64 (typically +0x48 or via kernel struct)
+        let pmap = ds_kread64(vmMap + 0x48)
         let ttbr = ds_kread64(pmap + 0x08) // pmap->tte (translation table base)
         
         // L1 index (bits 39:30)

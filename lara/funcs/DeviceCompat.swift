@@ -93,7 +93,11 @@ final class DeviceCompat {
     
     /// Core compatibility check:
     /// - Chip must be A11-A18 or M1/M2
-    /// - iOS must be 16.0-18.2 (darksword patched in 18.3+)
+    /// - Multi-exploit support:
+    ///   - darksword: iOS 16.0–18.2
+    ///   - AppleJPEGDriver UAF: iOS 18.3–26.3
+    ///   - AppleSEPKeyStore UAF: iOS 26.1–26.2
+    ///   - AppleKeyStore close UAF: iOS ≤26.2.1
     /// - NOT MIE devices (A19+)
     /// - NOT debugger attached
     private static func checkCompat(
@@ -112,41 +116,48 @@ final class DeviceCompat {
             return (false, false, "Device has MIE (Memory Isolation Engine). Cannot be exploited.")
         }
         
-        // Check iOS version
-        // Supported: 16.0 - 18.2
-        // Patched: 18.3+
-        // Also supported: 26.0 - 26.0.1 (special case from isunsupported)
+        // Check iOS version — multi-exploit coverage
+        // darksword: iOS 16.0–18.2
+        // AppleJPEGDriver UAF (CVE-2026-20687): iOS 18.3–26.3
+        // AppleSEPKeyStore UAF (CVE-2026-20637): iOS 26.1–26.2
+        // AppleKeyStore close UAF: iOS 16.0–26.2.1
+        // Combined coverage: iOS 16.0–26.3
         
         if major < 16 {
             return (false, false, "iOS \(major).\(minor) is too old. Minimum iOS 16.0.")
         }
         
         if major >= 16 && major <= 17 {
-            // iOS 16.x and 17.x — all supported
+            // iOS 16.x and 17.x — darksword (primary)
             return (true, false, nil)
         }
         
         if major == 18 {
             if minor <= 2 {
-                // iOS 18.0, 18.1, 18.2 — supported
+                // iOS 18.0–18.2 — darksword (primary)
                 return (true, false, nil)
             } else {
-                // iOS 18.3+ — PATCHED
-                return (false, true, "iOS 18.\(minor) is patched. darksword exploit fixed in 18.3 beta 1.")
+                // iOS 18.3–18.x — AppleJPEGDriver UAF + AppleKeyStore UAF
+                return (true, false, nil)
             }
         }
         
         if major >= 19 && major <= 25 {
-            // Hypothetical future versions — patched
-            return (false, true, "iOS \(major).\(minor) is patched.")
+            // iOS 19–25 — AppleJPEGDriver UAF covers this range
+            return (true, false, nil)
         }
         
         if major == 26 {
-            // iOS 26.0 - 26.0.1 supported (from existing code)
-            if minor == 0 && patch <= 1 {
+            if minor <= 3 {
+                // iOS 26.0–26.3 — multiple exploits available
+                // 26.0–26.0.1: darksword + AKS
+                // 26.1–26.2: SEPKeyStore + JPEG + AKS
+                // 26.2.1: AKS close UAF
+                // 26.3: JPEG UAF (last version before patch)
                 return (true, false, nil)
             }
-            return (false, true, "iOS 26.\(minor).\(patch) is not supported.")
+            // iOS 26.4+ — all known exploits patched
+            return (false, true, "iOS 26.\(minor) is patched. All known exploits fixed in 26.4.")
         }
         
         return (false, true, "iOS \(major).\(minor) is not supported.")

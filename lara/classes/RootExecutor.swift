@@ -118,11 +118,6 @@ final class RootExecutor: ObservableObject {
             return
         }
         
-        guard mgr.rcready else {
-            appendLog("[\(operation)] ❌ RC not ready — re-jailbreak required after respring")
-            return
-        }
-        
         // Prevent overlapping launchd connections — queue if busy
         if isExecuting {
             appendLog("[\(operation)] Queued — waiting for previous operation...")
@@ -132,27 +127,28 @@ final class RootExecutor: ObservableObject {
             return
         }
         
-        isExecuting = true
-        
-        // Auto-reconnect SpringBoard RC if it died
+        // Check RC and auto-reconnect if needed
         if !mgr.rcready {
-            appendLog("[\(operation)] RC dead — reconnecting SpringBoard...")
+            appendLog("[\(operation)] RC not ready — attempting reconnect...")
+            isExecuting = true
             mgr.rcinit(process: "SpringBoard", migbypass: false) { [weak self] success in
                 guard let self else { return }
                 if success {
                     self.appendLog("[\(operation)] ✅ SpringBoard reconnected")
                     self.doExecuteAsRoot(operation: operation, block: block)
                 } else {
-                    self.appendLog("[\(operation)] ❌ SpringBoard reconnect failed")
+                    self.appendLog("[\(operation)] ❌ RC reconnect failed — re-jailbreak required")
                     DispatchQueue.main.async {
                         self.lastResult = RootOpResult(operation: operation, success: false, message: "RC reconnect failed", returnValue: 0, timestamp: Date())
                         self.isExecuting = false
                     }
                 }
             }
-        } else {
-            doExecuteAsRoot(operation: operation, block: block)
+            return
         }
+        
+        isExecuting = true
+        doExecuteAsRoot(operation: operation, block: block)
     }
     
     private func doExecuteAsRoot(
@@ -297,10 +293,13 @@ final class RootExecutor: ObservableObject {
             let result = RootExecutor.rcall(rc, "posix_spawn", pidAddr, binAddr, 0, 0, argvBase, 0)
             let spawnedPid = rc[pidAddr].value32()
             
-            // Free allocated strings
+            // Free allocated strings (skip NULL terminator and binAddr which is freed separately)
             RootExecutor.rcall(rc, "free", binAddr)
-            for ptr in argvPtrs where ptr != 0 && ptr != binAddr {
-                RootExecutor.rcall(rc, "free", ptr)
+            for i in 1..<argvPtrs.count {
+                let ptr = argvPtrs[i]
+                if ptr != 0 {
+                    RootExecutor.rcall(rc, "free", ptr)
+                }
             }
             
             if result == 0 && spawnedPid != 0 {
@@ -373,42 +372,23 @@ final class RootExecutor: ObservableObject {
     
     // MARK: - Operation 6: Trust Cache Injection
     
-    /// Inject a CDHash into the dynamic trust cache
-    /// This allows unsigned binaries to execute
+    /// Inject a CDHash into the dynamic trust cache.
+    /// NOTE: Direct kernel TC injection is blocked by KTRR on iOS 18+.
+    /// Use JailbreakEngine.step7_trustCacheInject() (MSM XPC path) instead.
+    /// This function exists as a fallback for future trustd integration.
     func injectTrustCache(cdhash: [UInt8]) {
         guard cdhash.count == 20 else {
             appendLog("[trust_cache] CDHash must be 20 bytes")
             return
         }
         
-        executeAsRoot(operation: "trust_cache") { rc in
-            // On iOS 18, dynamic trust cache is managed by trustd
-            // We can call trustd's private API or directly manipulate
-            // the kernel trust cache structure
-            
-            // Method 1: Use MobileContainerManager to add to trust cache
-            // This requires the binary to exist on disk first
-            
-            // Method 2: Direct kernel manipulation (requires KRW to trust cache zone)
-            // This is blocked by socket KRW zone limitation
-            
-            // Method 3: Use launchd to call trustd
-            // trustd has com.apple.private.security.storage.TrustCache entitlement
-            
-            // For now, log the attempt and return info
-            let hashHex = cdhash.map { String(format: "%02x", $0) }.joined()
-            
-            // Try calling amfi_check_trust_cache_for_hash
-            // This is a read operation — just verify if hash is already trusted
-            let mem = rc.trojanMem
-            let hashAddr = mem + 0x900
-            
-            // Write cdhash to remote memory
-            var hashData = cdhash
-            rc.remote_write(hashAddr, from: &hashData, size: 20)
-            
-            return (false, "Trust cache injection requires trustd integration (CDHash: \(hashHex))", 0)
-        }
+        appendLog("[trust_cache] ⚠️ Direct TC injection not available — use MSM XPC path via JailbreakEngine")
+        appendLog("[trust_cache] CDHash: \(cdhash.map { String(format: "%02x", $0) }.joined())")
+        
+        // TODO: Implement trustd integration when available:
+        // 1. Connect to trustd via RemoteCall
+        // 2. Call trust_cache_add() in trustd context
+        // 3. trustd has com.apple.private.security.storage.TrustCache entitlement
     }
     
     // MARK: - Operation 7: Read File as Root
@@ -449,7 +429,19 @@ final class RootExecutor: ObservableObject {
     // MARK: - Operation 8: Execute Shell Command as Root
     
     func shellAsRoot(command: String) {
-        spawnAsRoot(binary: "/bin/sh", args: ["-c", command])
+        // NOTE: iOS 18+ rootfs does NOT have /bin/sh.
+        // This will only work if a shell has been installed to /var/jb/usr/bin/sh
+        // or if running on iOS 16/17 where /bin/sh still exists.
+        let shellPath: String
+        if FileManager.default.fileExists(atPath: "/var/jb/usr/bin/sh") {
+            shellPath = "/var/jb/usr/bin/sh"
+        } else if FileManager.default.fileExists(atPath: "/bin/sh") {
+            shellPath = "/bin/sh"
+        } else {
+            appendLog("[shell] ⚠️ No shell available — install one to /var/jb/usr/bin/sh first")
+            return
+        }
+        spawnAsRoot(binary: shellPath, args: ["-c", command])
     }
     
     // MARK: - Operation 9: Remount Rootfs (experimental)

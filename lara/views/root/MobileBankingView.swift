@@ -219,13 +219,14 @@ struct MobileBankingView: View {
 
             let result = RootExecutor.rcall(rc, "rename", fromAddr, toAddr)
             let ok = result == 0
+            let errNo = ok ? 0 : Int(remote_errno(rc))
 
             RootExecutor.rcall(rc, "free", fromAddr)
             RootExecutor.rcall(rc, "free", toAddr)
             rc.destroy()
 
             DispatchQueue.main.async {
-                self.statusMessage = ok ? "✅ Hidden. Force-quit banking app and reopen." : "❌ Failed (errno=\(remote_errno(rc)))"
+                self.statusMessage = ok ? "✅ Hidden. Force-quit banking app and reopen." : "❌ Failed (errno=\(errNo))"
                 self.isHideRestoreRunning = false
                 if ok { self.jbHidden = true }
                 else { self.refreshJbPathsLocal() }

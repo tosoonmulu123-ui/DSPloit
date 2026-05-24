@@ -20,6 +20,12 @@
 #import "rc.h"
 #import "RemoteCall.h"
 
+// Multi-exploit system
+#import "exploits/exploit_selector.h"
+#import "exploits/jpeg_uaf.h"
+#import "exploits/sepkeystore_uaf.h"
+#import "exploits/aks_close_uaf.h"
+
 long findcachedataoff(const char *mgkey);
 void DSPClearIconCache(void);
 
