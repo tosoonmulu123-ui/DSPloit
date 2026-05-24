@@ -341,75 +341,72 @@ final class ExpTrustCacheInject {
     private func buildMinimalBinary() -> Data {
         var bin = Data()
         
-        // Mach-O Header (32 bytes)
-        var header = mach_header_64()
-        header.magic = MH_MAGIC_64           // 0xFEEDFACF
-        header.cputype = CPU_TYPE_ARM64       // 12 | 0x01000000
-        header.cpusubtype = CPU_SUBTYPE_ARM64E // 2
-        header.filetype = UInt32(MH_EXECUTE)  // 2
-        header.ncmds = 2                      // LC_SEGMENT_64 + LC_UNIXTHREAD
-        header.sizeofcmds = 72 + 280          // segment cmd + thread cmd
-        header.flags = 0
-        header.reserved = 0
-        bin.append(Data(bytes: &header, count: 32))
+        // Mach-O Header (32 bytes) — arm64, MH_EXECUTE
+        let header: [UInt8] = [
+            0xCF, 0xFA, 0xED, 0xFE, // magic: MH_MAGIC_64
+            0x0C, 0x00, 0x00, 0x01, // cputype: CPU_TYPE_ARM64
+            0x02, 0x00, 0x00, 0x00, // cpusubtype: ARM64E
+            0x02, 0x00, 0x00, 0x00, // filetype: MH_EXECUTE
+            0x02, 0x00, 0x00, 0x00, // ncmds: 2
+            0x60, 0x01, 0x00, 0x00, // sizeofcmds: 352 (72 + 280)
+            0x00, 0x00, 0x00, 0x00, // flags
+            0x00, 0x00, 0x00, 0x00, // reserved
+        ]
+        bin.append(contentsOf: header)
         
-        // LC_SEGMENT_64 for __TEXT (72 bytes)
-        var seg = segment_command_64()
-        seg.cmd = UInt32(LC_SEGMENT_64)       // 0x19
-        seg.cmdsize = 72
-        withUnsafeMutableBytes(of: &seg.segname) { buf in
-            let name = "__TEXT"
-            name.utf8.enumerated().forEach { buf[$0.offset] = $0.element }
-        }
-        seg.vmaddr = 0x100000000
-        seg.vmsize = 0x4000
-        seg.fileoff = 0
-        seg.filesize = 0x4000
-        seg.maxprot = 5  // r-x
-        seg.initprot = 5
-        seg.nsects = 0
-        seg.flags = 0
-        bin.append(Data(bytes: &seg, count: 72))
+        // LC_SEGMENT_64 (72 bytes) — __TEXT segment
+        var seg = [UInt8](repeating: 0, count: 72)
+        // cmd = LC_SEGMENT_64 (0x19)
+        seg[0] = 0x19; seg[1] = 0x00; seg[2] = 0x00; seg[3] = 0x00
+        // cmdsize = 72
+        seg[4] = 0x48; seg[5] = 0x00; seg[6] = 0x00; seg[7] = 0x00
+        // segname = "__TEXT"
+        seg[8] = 0x5F; seg[9] = 0x5F; seg[10] = 0x54; seg[11] = 0x45
+        seg[12] = 0x58; seg[13] = 0x54
+        // vmaddr = 0x100000000
+        seg[24] = 0x00; seg[25] = 0x00; seg[26] = 0x00; seg[27] = 0x00
+        seg[28] = 0x01; seg[29] = 0x00; seg[30] = 0x00; seg[31] = 0x00
+        // vmsize = 0x4000
+        seg[32] = 0x00; seg[33] = 0x40; seg[34] = 0x00; seg[35] = 0x00
+        // fileoff = 0
+        // filesize = 0x4000
+        seg[40] = 0x00; seg[41] = 0x40; seg[42] = 0x00; seg[43] = 0x00
+        // maxprot = 5 (r-x)
+        seg[48] = 0x05; seg[49] = 0x00; seg[50] = 0x00; seg[51] = 0x00
+        // initprot = 5
+        seg[52] = 0x05; seg[53] = 0x00; seg[54] = 0x00; seg[55] = 0x00
+        bin.append(contentsOf: seg)
         
-        // LC_UNIXTHREAD (280 bytes for arm64)
-        var threadCmd = Data()
-        var cmd: UInt32 = 0x05  // LC_UNIXTHREAD
-        var cmdsize: UInt32 = 280
-        var flavor: UInt32 = 6  // ARM_THREAD_STATE64
-        var count: UInt32 = 68  // (280 - 16) / 4
-        threadCmd.append(Data(bytes: &cmd, count: 4))
-        threadCmd.append(Data(bytes: &cmdsize, count: 4))
-        threadCmd.append(Data(bytes: &flavor, count: 4))
-        threadCmd.append(Data(bytes: &count, count: 4))
-        // Thread state: 33 uint64 registers (x0-x28, fp, lr, sp, pc)
-        // Set pc = 0x100000000 + 384 (offset of our code after headers)
-        var regs = [UInt64](repeating: 0, count: 33)
-        regs[32] = 0x100000000 + 384  // pc = start of code
-        for reg in regs {
-            var r = reg
-            threadCmd.append(Data(bytes: &r, count: 8))
-        }
-        bin.append(threadCmd)
+        // LC_UNIXTHREAD (280 bytes) — set PC to code
+        var thread = [UInt8](repeating: 0, count: 280)
+        // cmd = LC_UNIXTHREAD (0x05)
+        thread[0] = 0x05
+        // cmdsize = 280
+        thread[4] = 0x18; thread[5] = 0x01
+        // flavor = ARM_THREAD_STATE64 (6)
+        thread[8] = 0x06
+        // count = 68
+        thread[12] = 0x44
+        // PC at offset 16 + 32*8 = 272 → set to 0x100000180 (code at offset 384)
+        thread[16 + 256] = 0x80; thread[16 + 257] = 0x01
+        thread[16 + 258] = 0x00; thread[16 + 259] = 0x00
+        thread[16 + 260] = 0x01; thread[16 + 261] = 0x00
+        thread[16 + 262] = 0x00; thread[16 + 263] = 0x00
+        bin.append(contentsOf: thread)
         
-        // Pad to code offset (384 bytes from start)
-        while bin.count < 384 {
-            bin.append(0)
-        }
+        // Pad to offset 384 (0x180)
+        while bin.count < 384 { bin.append(0) }
         
-        // ARM64 code: exit(0)
-        // mov x0, #0       → 0xD2800000
-        // mov x16, #1      → 0xD2800030
-        // svc #0x80        → 0xD4001001
-        var code: [UInt32] = [0xD2800000, 0xD2800030, 0xD4001001]
-        for instr in code {
-            var i = instr
-            bin.append(Data(bytes: &i, count: 4))
-        }
+        // ARM64 code at 0x100000180: exit(0)
+        let code: [UInt8] = [
+            0x00, 0x00, 0x80, 0xD2, // mov x0, #0
+            0x30, 0x00, 0x80, 0xD2, // mov x16, #1
+            0x01, 0x10, 0x00, 0xD4, // svc #0x80
+        ]
+        bin.append(contentsOf: code)
         
-        // Pad to page size
-        while bin.count < 0x4000 {
-            bin.append(0)
-        }
+        // Pad to page size (0x4000)
+        while bin.count < 0x4000 { bin.append(0) }
         
         return bin
     }
