@@ -10,13 +10,9 @@ import SwiftUI
 struct ExperimentsView: View {
     @ObservedObject private var mgr = dspmgr.shared
     
-    @State private var tcResults: [String] = []
-    @State private var isTCRunning = false
-    @State private var showTCResults = false
-    
-    @State private var csResults: [String] = []
-    @State private var isCSRunning = false
-    @State private var showCSResults = false
+    @State private var amfidResults: [String] = []
+    @State private var isAmfidRunning = false
+    @State private var showAmfidResults = false
     
     var body: some View {
         List {
@@ -30,98 +26,52 @@ struct ExperimentsView: View {
                 }
             }
             
-            // proc_ro CS Flags (NEW — priority experiment)
-            Section("proc_ro cs_flags Patching (PRIORITY)") {
+            // amfid Patch (PRIORITY)
+            Section("amfid Patch — AMFI Bypass") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Patch proc_ro→p_csflags to set CS_PLATFORM_BINARY on spawning process. This should bypass AMFI's trust cache check for unsigned binaries.")
+                    Text("Patch amfid's signature validation function to always return success. This bypasses AMFI for unsigned binary execution.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("Chance: ~85-90% — proven technique (Dopamine/Fugu15)")
+                    Text("3 strategies: kill+race, __TEXT patch via RC, XPC hook")
                         .font(.caption2)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.blue)
                 }
                 
                 Button {
-                    runCSFlagsExperiment()
+                    runAmfidExperiment()
                 } label: {
                     HStack {
-                        Image(systemName: isCSRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.green)
-                        Text(isCSRunning ? "Running..." : "Run cs_flags Patch Test")
+                        Image(systemName: isAmfidRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.purple)
+                        Text(isAmfidRunning ? "Running..." : "Run amfid Patch Test")
                         Spacer()
-                        if !isCSRunning {
+                        if !isAmfidRunning {
                             Text("★")
                                 .foregroundStyle(.yellow)
                         }
                     }
                 }
-                .disabled(isCSRunning || !mgr.dsready)
+                .disabled(isAmfidRunning || !mgr.dsready)
                 
                 if !mgr.dsready {
-                    Text("⚠️ Jailbreak dulu — butuh KRW aktif")
+                    Text("⚠️ Jailbreak dulu — butuh KRW + RemoteCall aktif")
                         .font(.caption).foregroundStyle(.red)
                 }
                 
-                if !csResults.isEmpty {
-                    Button { showCSResults.toggle() } label: {
+                if !amfidResults.isEmpty {
+                    Button { showAmfidResults.toggle() } label: {
                         HStack {
                             Image(systemName: "doc.text")
-                            Text(showCSResults ? "Hide" : "Show Results (\(csResults.count) lines)")
+                            Text(showAmfidResults ? "Hide" : "Show Results (\(amfidResults.count) lines)")
                             Spacer()
-                            Image(systemName: showCSResults ? "chevron.up" : "chevron.down")
+                            Image(systemName: showAmfidResults ? "chevron.up" : "chevron.down")
                                 .font(.caption)
                         }
                     }
                 }
                 
-                if showCSResults {
-                    ForEach(Array(csResults.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(lineColor(line))
-                            .textSelection(.enabled)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 4))
-                    }
-                }
-            }
-            
-            // Trust Cache Inject
-            Section("Trust Cache Direct Inject (RE-based)") {
-                Text("Write CDHash directly to kernel trust cache slot table. Bypasses all entitlement checks.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Button {
-                    runTCExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isTCRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.orange)
-                        Text(isTCRunning ? "Running..." : "Run Trust Cache Tests")
-                        Spacer()
-                    }
-                }
-                .disabled(isTCRunning || !mgr.dsready)
-                
-                if !mgr.dsready {
-                    Text("⚠️ Jailbreak dulu")
-                        .font(.caption).foregroundStyle(.red)
-                }
-                
-                if !tcResults.isEmpty {
-                    Button { showTCResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showTCResults ? "Hide" : "Show Results (\(tcResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showTCResults ? "chevron.up" : "chevron.down")
-                                .font(.caption)
-                        }
-                    }
-                }
-                
-                if showTCResults {
-                    ForEach(Array(tcResults.enumerated()), id: \.offset) { _, line in
+                if showAmfidResults {
+                    ForEach(Array(amfidResults.enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(lineColor(line))
@@ -142,28 +92,15 @@ struct ExperimentsView: View {
         .navigationTitle("Experiments")
     }
     
-    private func runCSFlagsExperiment() {
-        isCSRunning = true
-        csResults.removeAll()
-        showCSResults = true
+    private func runAmfidExperiment() {
+        isAmfidRunning = true
+        amfidResults.removeAll()
+        showAmfidResults = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpProcRoCSFlags.shared.runAll()
+            let r = ExpAmfidPatch.shared.runAll()
             DispatchQueue.main.async {
-                csResults = r
-                isCSRunning = false
-            }
-        }
-    }
-    
-    private func runTCExperiment() {
-        isTCRunning = true
-        tcResults.removeAll()
-        showTCResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpTrustCacheInject.shared.runAll()
-            DispatchQueue.main.async {
-                tcResults = r
-                isTCRunning = false
+                amfidResults = r
+                isAmfidRunning = false
             }
         }
     }
