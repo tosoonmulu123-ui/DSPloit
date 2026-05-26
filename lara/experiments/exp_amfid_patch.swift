@@ -329,7 +329,7 @@ final class ExpAmfidPatch {
         guard amfidRC.pid != 0 else {
             log("❌ RemoteCall created but pid=0")
             log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
-            amfidRC.destroyRemoteCall()
+            amfidRC.destroy()
             log("")
             return
         }
@@ -421,7 +421,7 @@ final class ExpAmfidPatch {
             }
         }
         
-        amfidRC.destroyRemoteCall()
+        amfidRC.destroy()
         log("")
         #else
         log("❌ DISABLE_REMOTECALL")
