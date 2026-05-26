@@ -259,6 +259,8 @@ class Logger: ObservableObject {
 
     private func emit(_ message: String) {
         if shouldignore(message) { return }
+        // Send to system syslog (captured by PC via syslog relay)
+        NSLog("[DSPloit] %@", message)
         guard ogstdout != -1 else { return }
         let line = message + "\n"
         line.withCString { ptr in
