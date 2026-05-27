@@ -283,5 +283,68 @@ IOKitFuzzer.shared.quickScan { results in }
 
 ---
 
+## RE FINDINGS (Ghidra — iOS 18.2 kernelcache)
+
+### Trust Cache Internal Addresses (unslid)
+```
+TC_SLOT_TABLE:     0xfffffff00798f600  (stride 0x28 per type)
+TC_STATE:          0xfffffff00798f5a8  (global trust cache state)
+TC_LOCK_D:         0xfffffff00a18fa48  (type 0xd lock flag)
+TC_LOCK_E:         0xfffffff00a18fa49  (type 0xe lock flag)
+AMFI_OBJECT:       0xfffffff00a3304c0  (AppleMobileFileIntegrity IOKit object)
+```
+
+### Trust Cache Load Flow (from RE)
+```
+1. AMFI kext receives XPC → checks entitlement "can-load-trust-cache"
+2. Calls FUN_fffffff008f858b4 (wrapper) → loops type 4-23
+3. Each type calls FUN_fffffff00828516c (actual loader):
+   - Validates type range (0x19 to 0x103)
+   - Calls FUN_fffffff0082853dc(type, tc_data, tc_size, manifest, manifest_size, 0, 0)
+   - On success: sets lock flag at 0xfffffff00a18fa48/49
+4. Static TC loaded via pcRam0000000000000120(&state, type, uuid_ctx, data, size)
+```
+
+### Trust Cache Module Format (v2)
+```
++0x00: uint32 version (must be 2)
++0x04: uint8[16] uuid
++0x14: uint32 entry_count
++0x18: entries[] (each 24 bytes):
+       +0x00: uint8[20] cdhash (SHA256 truncated)
+       +0x14: uint8 hash_type (2 = SHA256)
+       +0x15: uint8 flags (0 = normal)
+       +0x16: uint16 padding
+```
+
+### Experiment Results (on device)
+```
+✅ Kernel exploit (darksword) — working
+✅ Sandbox escape — working
+✅ RemoteCall (SpringBoard + launchd) — working
+✅ Root (uid=0) — working
+✅ VFS filesystem access — working
+✅ AMFI 10 flags zeroed — working
+✅ cs_enforcement_disable = 1 — working
+✅ MSM XPC connected + replied (0xdead) — connected but may be error
+✅ posix_spawn signed binary (/bin/df) — working (ret=0)
+❌ posix_spawn UNSIGNED binary — EPERM (AMFI still blocking)
+❌ Direct kernel write to TC slot table — PPL blocks (panic)
+```
+
+### Blocking Issue
+```
+AMFI flag zeroing + cs_enforcement_disable NOT ENOUGH for unsigned exec.
+Trust cache MSM XPC reply 0xdead = likely error (format/entitlement rejected).
+PPL protects trust cache slot table — cannot direct write.
+
+NEXT APPROACH NEEDED:
+- Patch proc_ro cs_flags per-process (CS_VALID | CS_PLATFORM_BINARY)
+- OR: find writable AMFI variable that controls code signing decision
+- OR: hook _amfi_check_dyld_policy_self return value
+```
+
+---
+
 *DSPloit — iOS 16–18.7.1 • A11–A18 • Full Jailbreak*
 *Created by Royan | Last updated: 2026-05-24*
