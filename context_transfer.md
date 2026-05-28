@@ -338,10 +338,32 @@ AMFI flag zeroing + cs_enforcement_disable NOT ENOUGH for unsigned exec.
 Trust cache MSM XPC reply 0xdead = likely error (format/entitlement rejected).
 PPL protects trust cache slot table — cannot direct write.
 
-NEXT APPROACH NEEDED:
-- Patch proc_ro cs_flags per-process (CS_VALID | CS_PLATFORM_BINARY)
-- OR: find writable AMFI variable that controls code signing decision
-- OR: hook _amfi_check_dyld_policy_self return value
+RUST ANALYZER FINDINGS (2026-05-28):
+═══════════════════════════════════════════════════════════════
+60 AMFI __DATA byte-flags found, 4 CONFIRMED checked by code:
+  - 0xfffffff00a3303d8 = 1 (already zeroed by step 6)
+  - 0xfffffff00a330e04 = 1 ★★★ NEW! Checked by code near AMFI
+  - 0xfffffff00a330408 = 3 ★★ Enforcement level, checked by code
+  - 0xfffffff00a331190 = 2 ★ Checked by code
+
+49 pmap_cs flags at 0xfffffff00a110000 — ALL ZERO in kernelcache!
+  → Previous exp_pmap_cs_disable was WRONG (writing 0 to already-0 flags)
+  → These might be "allow_invalid" flags that need SET TO 1
+
+2423 EPERM return paths found near AMFI flag checks.
+
+EXPERIMENTS STATUS:
+  ✅ exp_safe_flag_scan.swift — NEW, systematic, safe (no panic risk)
+  ✅ exp_amfid_patch.swift — kept, tests amfid userspace patch
+  ⚠️ exp_pmap_cs_disable.swift — legacy, corrected addresses
+  ❌ exp_tc_funcptr_hijack.swift — DELETED (caused panic)
+  ❌ exp_amfi_full_zero.swift — DELETED (caused panic)
+
+NEXT APPROACH:
+1. Run exp_safe_flag_scan on device (tests flags one-by-one)
+2. If flags alone don't work → amfid patch is the path
+3. If amfid patch works → integrate into main chain
+4. Fallback: JS injection (Cyanide-level) if all kernel approaches fail
 ```
 
 ---

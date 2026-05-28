@@ -2,11 +2,17 @@
 //  exp_pmap_cs_disable.swift
 //  DSPloit
 //
+//  ⚠️ LEGACY EXPERIMENT — Use exp_safe_flag_scan.swift instead
+//  Previous version caused panic by writing to wrong addresses.
+//  Kept for reference. The Safe Flag Scan experiment is more thorough.
+//
 //  EXPERIMENT: Disable pmap_cs enforcement via __DATA byte flags
 //  Found via ARM64 disassembly of kernelcache — pmap_cs_allow_invalid_internal
 //  accesses byte flags at __DATA+0x30000 (vmaddr 0xfffffff00a110000 unslid).
-//  These are likely master enforcement booleans set to 1 at boot.
-//  Writing 0 may disable pmap_cs code signing enforcement.
+//  
+//  KEY FINDING: These flags are ALL ZERO in the kernelcache!
+//  This means they might be "allow_invalid" flags that need to be SET TO 1
+//  rather than enforcement flags that need to be zeroed.
 //
 
 import Foundation
@@ -16,10 +22,12 @@ final class ExpPmapCSDisable {
     private var results: [String] = []
     
     // pmap_cs byte flags (UNSLID) — found via Rust disassembler
-    // These are in __DATA segment (WRITABLE) at __DATA+0x30000
+    // IMPORTANT: These are ALL ZERO in kernelcache! The previous experiment
+    // was wrong — we need to SET these to 1 (enable allow_invalid)
+    // not zero them (they're already zero).
     private let PMAP_CS_FLAG0_UNSLID: UInt64 = 0xfffffff00a110000
     private let PMAP_CS_FLAG1_UNSLID: UInt64 = 0xfffffff00a110001
-    private let PMAP_CS_FLAG2_UNSLID: UInt64 = 0xfffffff00a110002
+    private let PMAP_CS_FLAG2_UNSLID: UInt64 = 0xfffffff00a110004
     
     private var origFlag0: UInt8 = 0
     private var origFlag1: UInt8 = 0

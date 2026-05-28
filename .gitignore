@@ -17,3 +17,4 @@ aeota_temp/
 walkthrough/
 scripts/__pycache__/
 *.pyc
+tools/kcache_analyzer/target/

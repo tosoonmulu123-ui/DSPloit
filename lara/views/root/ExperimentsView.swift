@@ -14,13 +14,9 @@ struct ExperimentsView: View {
     @State private var isAmfidRunning = false
     @State private var showAmfidResults = false
     
-    @State private var tcHijackResults: [String] = []
-    @State private var isTCHijackRunning = false
-    @State private var showTCHijackResults = false
-    
-    @State private var fullZeroResults: [String] = []
-    @State private var isFullZeroRunning = false
-    @State private var showFullZeroResults = false
+    @State private var flagScanResults: [String] = []
+    @State private var isFlagScanRunning = false
+    @State private var showFlagScanResults = false
     
     @State private var pmapResults: [String] = []
     @State private var isPmapRunning = false
@@ -92,21 +88,53 @@ struct ExperimentsView: View {
                 }
             }
             
-            // Legend
-            // AMFI Full Zero (PRIORITY — from deep RE)
-            Section("pmap_cs Disable (★★ BREAKTHROUGH)") {
-                Text("Disable pmap_cs enforcement byte flags found via ARM64 disassembly. These control whether PPL enforces code signing. SAFEST experiment — only writes to __DATA bytes.")
+            // Safe Flag Scan (★★★ HIGHEST PRIORITY)
+            Section("Safe Flag Scan (★★★ BREAKTHROUGH)") {
+                Text("Systematically test AMFI/pmap_cs __DATA flags found by Rust analyzer. Tests ONE flag at a time, restores on failure. SAFEST experiment — no panic risk.")
                     .font(.caption).foregroundStyle(.secondary)
+                
+                Button {
+                    runFlagScanExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isFlagScanRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.mint)
+                        Text(isFlagScanRunning ? "Running..." : "Run Safe Flag Scan")
+                        Spacer()
+                        Text("★★★").foregroundStyle(.yellow)
+                    }
+                }
+                .disabled(isFlagScanRunning || !mgr.dsready)
+                
+                if !flagScanResults.isEmpty {
+                    Button { showFlagScanResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showFlagScanResults ? "Hide" : "Show Results (\(flagScanResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showFlagScanResults ? "chevron.up" : "chevron.down").font(.caption)
+                        }
+                    }
+                }
+                if showFlagScanResults {
+                    ForEach(Array(flagScanResults.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
+                    }
+                }
+            }
+            
+            Section("pmap_cs Disable (★ Legacy)") {
+                Text("⚠️ CAUTION: Previous version wrote to wrong addresses. Now uses corrected addresses from Rust analyzer. Tests if pmap_cs flags need to be SET to 1.")
+                    .font(.caption).foregroundStyle(.orange)
                 
                 Button {
                     runPmapExperiment()
                 } label: {
                     HStack {
                         Image(systemName: isPmapRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.mint)
+                            .foregroundStyle(.orange)
                         Text(isPmapRunning ? "Running..." : "Run pmap_cs Disable")
                         Spacer()
-                        Text("★★").foregroundStyle(.yellow)
                     }
                 }
                 .disabled(isPmapRunning || !mgr.dsready)
@@ -124,83 +152,6 @@ struct ExperimentsView: View {
                 if showPmapResults {
                     ForEach(Array(pmapResults.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
-                    }
-                }
-            }
-            
-            Section("AMFI Full Zero — 33 Flags") {
-                Text("Zero ALL 33 AMFI flags found via kernelcache RE (not just 10). Tests if additional flags control unsigned exec.")
-                    .font(.caption).foregroundStyle(.secondary)
-                
-                Button {
-                    runFullZeroExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isFullZeroRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.green)
-                        Text(isFullZeroRunning ? "Running..." : "Run AMFI Full Zero")
-                        Spacer()
-                        Text("★").foregroundStyle(.yellow)
-                    }
-                }
-                .disabled(isFullZeroRunning || !mgr.dsready)
-                
-                if !fullZeroResults.isEmpty {
-                    Button { showFullZeroResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showFullZeroResults ? "Hide" : "Show Results (\(fullZeroResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showFullZeroResults ? "chevron.up" : "chevron.down")
-                                .font(.caption)
-                        }
-                    }
-                }
-                
-                if showFullZeroResults {
-                    ForEach(Array(fullZeroResults.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(lineColor(line))
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-            
-            Section("Trust Cache Func Ptr Hijack") {
-                Text("⚠️ CAUTION: May panic. Find kernel TC load function pointer.")
-                    .font(.caption).foregroundStyle(.red)
-                
-                Button {
-                    runTCHijackExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isTCHijackRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.orange)
-                        Text(isTCHijackRunning ? "Running..." : "Run TC Hijack Test")
-                        Spacer()
-                    }
-                }
-                .disabled(isTCHijackRunning || !mgr.dsready)
-                
-                if !tcHijackResults.isEmpty {
-                    Button { showTCHijackResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showTCHijackResults ? "Hide" : "Show Results (\(tcHijackResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showTCHijackResults ? "chevron.up" : "chevron.down")
-                                .font(.caption)
-                        }
-                    }
-                }
-                
-                if showTCHijackResults {
-                    ForEach(Array(tcHijackResults.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(lineColor(line))
-                            .textSelection(.enabled)
                     }
                 }
             }
@@ -228,28 +179,15 @@ struct ExperimentsView: View {
         }
     }
     
-    private func runTCHijackExperiment() {
-        isTCHijackRunning = true
-        tcHijackResults.removeAll()
-        showTCHijackResults = true
+    private func runFlagScanExperiment() {
+        isFlagScanRunning = true
+        flagScanResults.removeAll()
+        showFlagScanResults = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpTCFuncPtrHijack.shared.runAll()
+            let r = ExpSafeFlagScan.shared.runAll()
             DispatchQueue.main.async {
-                tcHijackResults = r
-                isTCHijackRunning = false
-            }
-        }
-    }
-    
-    private func runFullZeroExperiment() {
-        isFullZeroRunning = true
-        fullZeroResults.removeAll()
-        showFullZeroResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpAMFIFullZero.shared.runAll()
-            DispatchQueue.main.async {
-                fullZeroResults = r
-                isFullZeroRunning = false
+                flagScanResults = r
+                isFlagScanRunning = false
             }
         }
     }

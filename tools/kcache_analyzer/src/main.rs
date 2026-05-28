@@ -3,6 +3,8 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::env;
 
+mod disasm;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let path = if args.len() > 1 {
@@ -29,6 +31,7 @@ fn main() {
         0xfeedface | 0xfeedfacf => {
             println!("[*] Raw Mach-O detected");
             analyze_macho(data);
+            disasm::analyze_pmap_cs(data);
         }
         0xcafebabe | 0xbebafeca => {
             println!("[*] Fat binary detected");

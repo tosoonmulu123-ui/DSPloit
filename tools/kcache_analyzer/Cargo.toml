@@ -1,9 +1,10 @@
 [package]
 name = "kcache_analyzer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
 memmap2 = "0.9"
 goblin = "0.8"
 regex = "1"
+lzfse_rust = "0.2"

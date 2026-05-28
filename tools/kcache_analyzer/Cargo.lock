@@ -24,9 +24,10 @@ dependencies = [
 
 [[package]]
 name = "kcache_analyzer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "goblin",
+ "lzfse_rust",
  "memmap2",
  "regex",
 ]
@@ -42,6 +43,12 @@ name = "log"
 version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+
+[[package]]
+name = "lzfse_rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5edeac3ec657925dececc672bdd58fa2212291886ddcb3e08aa46924c78340c6"
 
 [[package]]
 name = "memchr"
