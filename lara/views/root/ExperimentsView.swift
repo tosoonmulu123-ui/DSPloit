@@ -18,6 +18,10 @@ struct ExperimentsView: View {
     @State private var isTCHijackRunning = false
     @State private var showTCHijackResults = false
     
+    @State private var fullZeroResults: [String] = []
+    @State private var isFullZeroRunning = false
+    @State private var showFullZeroResults = false
+    
     var body: some View {
         List {
             Section {
@@ -85,9 +89,49 @@ struct ExperimentsView: View {
             }
             
             // Legend
-            Section("Trust Cache Func Ptr Hijack") {
-                Text("Find kernel TC load function pointer. If writable, hijack to bypass validation.")
+            // AMFI Full Zero (PRIORITY — from deep RE)
+            Section("AMFI Full Zero — 33 Flags (★ NEW)") {
+                Text("Zero ALL 33 AMFI flags found via kernelcache RE (not just 10). Tests if additional flags control unsigned exec.")
                     .font(.caption).foregroundStyle(.secondary)
+                
+                Button {
+                    runFullZeroExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isFullZeroRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.green)
+                        Text(isFullZeroRunning ? "Running..." : "Run AMFI Full Zero")
+                        Spacer()
+                        Text("★").foregroundStyle(.yellow)
+                    }
+                }
+                .disabled(isFullZeroRunning || !mgr.dsready)
+                
+                if !fullZeroResults.isEmpty {
+                    Button { showFullZeroResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showFullZeroResults ? "Hide" : "Show Results (\(fullZeroResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showFullZeroResults ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                        }
+                    }
+                }
+                
+                if showFullZeroResults {
+                    ForEach(Array(fullZeroResults.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(lineColor(line))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            
+            Section("Trust Cache Func Ptr Hijack") {
+                Text("⚠️ CAUTION: May panic. Find kernel TC load function pointer.")
+                    .font(.caption).foregroundStyle(.red)
                 
                 Button {
                     runTCHijackExperiment()
@@ -155,6 +199,19 @@ struct ExperimentsView: View {
             DispatchQueue.main.async {
                 tcHijackResults = r
                 isTCHijackRunning = false
+            }
+        }
+    }
+    
+    private func runFullZeroExperiment() {
+        isFullZeroRunning = true
+        fullZeroResults.removeAll()
+        showFullZeroResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpAMFIFullZero.shared.runAll()
+            DispatchQueue.main.async {
+                fullZeroResults = r
+                isFullZeroRunning = false
             }
         }
     }
