@@ -22,6 +22,10 @@ struct ExperimentsView: View {
     @State private var isFullZeroRunning = false
     @State private var showFullZeroResults = false
     
+    @State private var pmapResults: [String] = []
+    @State private var isPmapRunning = false
+    @State private var showPmapResults = false
+    
     var body: some View {
         List {
             Section {
@@ -90,7 +94,41 @@ struct ExperimentsView: View {
             
             // Legend
             // AMFI Full Zero (PRIORITY — from deep RE)
-            Section("AMFI Full Zero — 33 Flags (★ NEW)") {
+            Section("pmap_cs Disable (★★ BREAKTHROUGH)") {
+                Text("Disable pmap_cs enforcement byte flags found via ARM64 disassembly. These control whether PPL enforces code signing. SAFEST experiment — only writes to __DATA bytes.")
+                    .font(.caption).foregroundStyle(.secondary)
+                
+                Button {
+                    runPmapExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isPmapRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.mint)
+                        Text(isPmapRunning ? "Running..." : "Run pmap_cs Disable")
+                        Spacer()
+                        Text("★★").foregroundStyle(.yellow)
+                    }
+                }
+                .disabled(isPmapRunning || !mgr.dsready)
+                
+                if !pmapResults.isEmpty {
+                    Button { showPmapResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showPmapResults ? "Hide" : "Show Results (\(pmapResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showPmapResults ? "chevron.up" : "chevron.down").font(.caption)
+                        }
+                    }
+                }
+                if showPmapResults {
+                    ForEach(Array(pmapResults.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
+                    }
+                }
+            }
+            
+            Section("AMFI Full Zero — 33 Flags") {
                 Text("Zero ALL 33 AMFI flags found via kernelcache RE (not just 10). Tests if additional flags control unsigned exec.")
                     .font(.caption).foregroundStyle(.secondary)
                 
@@ -212,6 +250,19 @@ struct ExperimentsView: View {
             DispatchQueue.main.async {
                 fullZeroResults = r
                 isFullZeroRunning = false
+            }
+        }
+    }
+    
+    private func runPmapExperiment() {
+        isPmapRunning = true
+        pmapResults.removeAll()
+        showPmapResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpPmapCSDisable.shared.runAll()
+            DispatchQueue.main.async {
+                pmapResults = r
+                isPmapRunning = false
             }
         }
     }
