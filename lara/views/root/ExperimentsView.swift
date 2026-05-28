@@ -14,6 +14,10 @@ struct ExperimentsView: View {
     @State private var isAmfidRunning = false
     @State private var showAmfidResults = false
     
+    @State private var tcHijackResults: [String] = []
+    @State private var isTCHijackRunning = false
+    @State private var showTCHijackResults = false
+    
     var body: some View {
         List {
             Section {
@@ -26,7 +30,6 @@ struct ExperimentsView: View {
                 }
             }
             
-            // amfid Patch (PRIORITY)
             Section("amfid Patch — AMFI Bypass") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Patch amfid's signature validation function to always return success. This bypasses AMFI for unsigned binary execution.")
@@ -82,6 +85,44 @@ struct ExperimentsView: View {
             }
             
             // Legend
+            Section("Trust Cache Func Ptr Hijack") {
+                Text("Find kernel TC load function pointer. If writable, hijack to bypass validation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                
+                Button {
+                    runTCHijackExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isTCHijackRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.orange)
+                        Text(isTCHijackRunning ? "Running..." : "Run TC Hijack Test")
+                        Spacer()
+                    }
+                }
+                .disabled(isTCHijackRunning || !mgr.dsready)
+                
+                if !tcHijackResults.isEmpty {
+                    Button { showTCHijackResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showTCHijackResults ? "Hide" : "Show Results (\(tcHijackResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showTCHijackResults ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                        }
+                    }
+                }
+                
+                if showTCHijackResults {
+                    ForEach(Array(tcHijackResults.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(lineColor(line))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            
             Section("Output Legend") {
                 HStack { Text("✅"); Text("Working — integrate").font(.caption).foregroundStyle(.green) }
                 HStack { Text("⚠️"); Text("Partial — investigate").font(.caption).foregroundStyle(.orange) }
@@ -101,6 +142,19 @@ struct ExperimentsView: View {
             DispatchQueue.main.async {
                 amfidResults = r
                 isAmfidRunning = false
+            }
+        }
+    }
+    
+    private func runTCHijackExperiment() {
+        isTCHijackRunning = true
+        tcHijackResults.removeAll()
+        showTCHijackResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpTCFuncPtrHijack.shared.runAll()
+            DispatchQueue.main.async {
+                tcHijackResults = r
+                isTCHijackRunning = false
             }
         }
     }
