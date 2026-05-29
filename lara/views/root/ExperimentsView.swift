@@ -26,6 +26,10 @@ struct ExperimentsView: View {
     @State private var isProbeRunning = false
     @State private var showProbeResults = false
     
+    @State private var msmResults: [String] = []
+    @State private var isMSMRunning = false
+    @State private var showMSMResults = false
+    
     var body: some View {
         List {
             Section {
@@ -122,6 +126,50 @@ struct ExperimentsView: View {
                 }
                 if showFlagScanResults {
                     ForEach(Array(flagScanResults.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
+                    }
+                }
+            }
+            
+            // MSM Trust Cache Load (★★★★★ BEST APPROACH)
+            Section("MSM Trust Cache Load (★★★★★ BREAKTHROUGH)") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Load trust cache via RemoteCall into MobileStorageMounter. MSM already has pmap.load-trust-cache entitlement — no kernel writes needed!")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Safe: uses legitimate entitlement path, no KTRR/PPL risk")
+                        .font(.caption2).foregroundStyle(.green)
+                }
+                
+                Button {
+                    runMSMExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isMSMRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.green)
+                        Text(isMSMRunning ? "Running..." : "Run MSM Trust Cache Load")
+                        Spacer()
+                        Text("★★★★★").foregroundStyle(.yellow)
+                    }
+                }
+                .disabled(isMSMRunning || !mgr.dsready || !mgr.rcready)
+                
+                if !mgr.rcready {
+                    Text("⚠️ Need RemoteCall active (run jailbreak first)")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                
+                if !msmResults.isEmpty {
+                    Button { showMSMResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showMSMResults ? "Hide" : "Show Results (\(msmResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showMSMResults ? "chevron.up" : "chevron.down").font(.caption)
+                        }
+                    }
+                }
+                if showMSMResults {
+                    ForEach(Array(msmResults.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
                     }
                 }
@@ -257,6 +305,19 @@ struct ExperimentsView: View {
             DispatchQueue.main.async {
                 self.probeResults = r
                 self.isProbeRunning = false
+            }
+        }
+    }
+    
+    private func runMSMExperiment() {
+        isMSMRunning = true
+        msmResults.removeAll()
+        showMSMResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpMSMTrustCacheLoad.shared.runAll()
+            DispatchQueue.main.async {
+                self.msmResults = r
+                self.isMSMRunning = false
             }
         }
     }
