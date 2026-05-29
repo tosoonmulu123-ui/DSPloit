@@ -98,57 +98,43 @@ final class ExpProcListDebug {
         log.append("our_proc + 0x0 (next) = 0x\(String(format:"%llx", ourNext))")
         log.append("our_proc + 0x8 (prev) = 0x\(String(format:"%llx", ourPrev))")
         
-        // Scan our_proc first 0x20 bytes for kernel pointers (find list links)
-        log.append("")
-        log.append("── Scanning our_proc[0..0x100] for proc-like pointers ──")
-        log.append("(Looking for pointers where target+0x60 has valid PID)")
-        log.append("")
-        
         // PAC strip: on A12+ kernel pointers have PAC bits
-        // Try multiple strip strategies
-        let pacMasks: [UInt64] = [
-            0x0000007FFFFFFFFF, // T1SZ=25 (39-bit VA)
-            0x00000FFFFFFFFFFF, // T1SZ=17 (47-bit VA)
-            0x0000FFFFFFFFFFFF, // 48-bit
-            0xFFFFFFFFFFFFFFFF, // no strip (maybe no PAC on this field)
-        ]
+        // CRITICAL: Do NOT dereference PAC-stripped addresses without validation!
+        // Previous attempt caused panic: "kaddr not in kernel"
+        // The correct PAC mask depends on T1SZ which varies per device.
+        // For now, just log raw values for analysis — do NOT kread stripped addresses.
         
-        // Also try with kernel upper bits forced
         func stripPAC(_ ptr: UInt64) -> UInt64 {
             if ptr == 0 { return 0 }
-            // If top byte is 0xFF, it's likely a kernel pointer with PAC
-            // Strip to get canonical kernel address
-            // Kernel VA on iOS: 0xfffffff0_00000000 base
-            // With PAC: top bits get mangled
-            // Strategy: OR with 0xfffffff000000000 after masking lower bits
-            let lower = ptr & 0x0000007FFFFFFFFF
-            let asKern = lower | 0xfffffff000000000
-            return asKern
+            // Use kernel base to determine valid range
+            let kernBase = ds_get_kernel_base()
+            // Kernel VA prefix (top bits that are constant)
+            let prefix = kernBase & 0xFFFFFF0000000000 // e.g. 0xfffffff000000000
+            let lower = ptr & 0x0000003FFFFFFFFF // 38-bit VA (T1SZ=25 on A12)
+            let candidate = lower | prefix
+            return candidate
         }
         
         for off in stride(from: 0, to: 0x100, by: 8) {
             let raw = ds_kread64(ourProc + UInt64(off))
             if raw == 0 { continue }
             
-            // Try raw first
-            var found = false
-            let candidates = [raw, stripPAC(raw)]
+            let stripped = stripPAC(raw)
             
-            for candidate in candidates {
-                if candidate > 0xfffffff000000000 && candidate < 0xfffffffffff00000 
-                   && candidate != ourProc && candidate != kernProc {
-                    let targetPid = ds_kread32(candidate + 0x60)
-                    if targetPid > 0 && targetPid < 65535 && targetPid != ourPid {
-                        log.append("  ✅ off 0x\(String(format:"%02x",off)) → pid=\(targetPid) (raw=0x\(String(format:"%llx",raw)))")
-                        found = true
-                        break
-                    }
+            // Only try to read if it looks like a valid kernel address
+            let kernBase = ds_get_kernel_base()
+            let isValid = stripped >= kernBase && stripped < (kernBase + 0x100000000)
+            
+            if isValid {
+                // Safe to read — check if it's a proc (has valid PID at +0x60)
+                let targetPid = ds_kread32(stripped + 0x60)
+                if targetPid > 0 && targetPid < 65535 && targetPid != ourPid {
+                    log.append("  ✅ off 0x\(String(format:"%02x",off)) → pid=\(targetPid) (stripped=0x\(String(format:"%llx",stripped)))")
                 }
             }
             
-            if !found && off < 0x20 {
-                // Log first few entries even if not proc
-                log.append("  off 0x\(String(format:"%02x",off)) = 0x\(String(format:"%llx",raw))")
+            if off < 0x20 {
+                log.append("  off 0x\(String(format:"%02x",off)) = 0x\(String(format:"%llx",raw)) → 0x\(String(format:"%llx",stripped)) \(isValid ? "✓" : "✗")")
             }
         }
         

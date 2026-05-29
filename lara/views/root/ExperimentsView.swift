@@ -74,13 +74,23 @@ struct ExperimentsView: View {
                 }
                 
                 // Phase 1 + 2 (proven path)
-                sectionHeader("Trust Cache")
+                sectionHeader("AMFI Bypass")
+                expBtn("🔥 amfid NOP (FINAL)", .red) {
+                    runAsync("amfid NOP Final") { cb in
+                        ExpAmfidNopFinal.shared.onLog = cb
+                        let syncOutput = ExpAmfidNopFinal.shared.runAll()
+                        for line in syncOutput { cb(line) }
+                    }
+                }
                 expBtn("⚡ Multi-Bypass (ALL)", .red) {
                     runAsync("Multi") { cb in
                         ExpMultiBypass.shared.onLog = cb
                         ExpMultiBypass.shared.runAsync()
                     }
                 }
+                
+                Divider().padding(.vertical, 4)
+                sectionHeader("Trust Cache")
                 expBtn("① Load TC (SpringBoard)", .green) {
                     runAsync("TC Load") { cb in
                         ExpTCLoadAndSpawn.shared.onLog = cb
