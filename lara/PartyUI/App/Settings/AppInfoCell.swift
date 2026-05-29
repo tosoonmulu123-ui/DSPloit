@@ -1,8 +1,6 @@
 //
 //  AppInfoCell.swift
-//  PartyUI
-//
-//  Created by lunginspector on 3/3/26.
+//  DSPloit
 //
 
 import SwiftUI
@@ -11,19 +9,19 @@ public struct AppInfoCell: View {
     public init() {}
     
     public var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             AppIcon()
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(AppInfo.appName)
-                    .font(.system(.title3, weight: .semibold))
-                Text("Version \(AppInfo.appVersion) (\(AppInfo.appBuild))")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("v\(AppInfo.appVersion) (\(AppInfo.appBuild))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// icon for AppInfoCell
 public struct AppIcon: View {
     var image: Image
     
@@ -32,25 +30,10 @@ public struct AppIcon: View {
     }
     
     public var body: some View {
-        if #available(iOS 19.0, *) {
-            image
-                .resizable()
-                .scaledToFit()
-                .frame(width: 64, height: 64)
-                .background(Color(.systemGray6))
-                .clipShape(.rect(cornerRadius: 18))
-                .glassEffect(.regular, in: .rect(cornerRadius: 18))
-        } else {
-            image
-                .resizable()
-                .scaledToFit()
-                .frame(width: 64, height: 64)
-                .background(Color(.systemGray6))
-                .clipShape(.rect(cornerRadius: 14))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.primary.opacity(0.2), lineWidth: 2)
-                }
-        }
+        image
+            .resizable()
+            .scaledToFit()
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 11))
     }
 }

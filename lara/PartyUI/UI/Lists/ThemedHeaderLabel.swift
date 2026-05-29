@@ -1,8 +1,6 @@
 //
 //  ThemedHeaderLabel.swift
-//  PartyUI
-//
-//  Created by lunginspector on 3/3/26.
+//  DSPloit
 //
 
 import SwiftUI
@@ -17,14 +15,14 @@ public struct ThemedHeaderLabel: View {
     }
     
     public var body: some View {
-        HStack {
+        HStack(spacing: 6) {
             Image(systemName: icon)
-                .frame(width: 24, alignment: .center)
-            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(text.uppercased())
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textCase(nil)
         }
-        .fontWeight(.medium)
-        .opacity(0.6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top)
     }
 }

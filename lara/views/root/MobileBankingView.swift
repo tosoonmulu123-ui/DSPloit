@@ -149,6 +149,7 @@ struct MobileBankingView: View {
         }
         .navigationTitle("Banking")
         .navigationBarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
         .onAppear { refreshJbPathsLocal() }
     }
 
