@@ -85,21 +85,28 @@ struct ExperimentsView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    expButton("SpringBoard IOKit", icon: "star.fill", color: .yellow, stars: 5) {
+                    expButton("cryptexd IOKit (BEST)", icon: "checkmark.seal.fill", color: .green, stars: 5) {
+                        runAsyncExperiment("cryptexd TC") { logCb in
+                            ExpCryptexdTCLoad.shared.onLog = logCb
+                            ExpCryptexdTCLoad.shared.runAsync()
+                        }
+                    }
+                    
+                    expButton("SpringBoard IOKit", icon: "star.fill", color: .yellow, stars: 3) {
                         runAsyncExperiment("SpringBoard TC") { logCb in
                             ExpSpringBoardTCLoad.shared.onLog = logCb
                             ExpSpringBoardTCLoad.shared.runAsync()
                         }
                     }
                     
-                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .green, stars: 3) {
+                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .orange, stars: 2) {
                         runAsyncExperiment("MSM TC Load") { logCb in
                             ExpMSMTrustCacheLoad.shared.onLog = logCb
                             ExpMSMTrustCacheLoad.shared.runAsync()
                         }
                     }
                     
-                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 3) {
+                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 2) {
                         runAsyncExperiment("launchd TC Load") { logCb in
                             ExpLaunchdTCLoad.shared.onLog = logCb
                             ExpLaunchdTCLoad.shared.runAsync()
@@ -116,7 +123,11 @@ struct ExperimentsView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    expButton("Data Segment Probe", icon: "magnifyingglass", color: .blue, stars: 4) {
+                    expButton("pmap_cs Kernel Probe", icon: "cpu", color: .indigo, stars: 4) {
+                        runExperiment("pmap_cs Probe") { ExpPmapCSProbe.shared.runAll() }
+                    }
+                    
+                    expButton("Data Segment Probe", icon: "magnifyingglass", color: .blue, stars: 3) {
                         runExperiment("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
                     }
                     

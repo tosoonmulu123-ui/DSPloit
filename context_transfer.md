@@ -334,43 +334,54 @@ AMFI_OBJECT:       0xfffffff00a3304c0  (AppleMobileFileIntegrity IOKit object)
 
 ### Blocking Issue
 ```
-PREVIOUS STATUS (before 2026-05-29):
-  AMFI flag zeroing + cs_enforcement_disable NOT ENOUGH for unsigned exec.
-  Trust cache MSM XPC reply 0xdead = likely error (format/entitlement rejected).
-  PPL protects trust cache slot table — cannot direct write.
-
-NEW STATUS (2026-05-29 — MAJOR REFACTOR):
+STATUS (2026-05-30 — GHIDRA DEEP RE SESSION):
 ═══════════════════════════════════════════════════════════════
-IMPLEMENTED: amfi_bypass.m — Multi-strategy AMFI nuclear bypass
-  Strategy 1: cs_flags patching (PPL-aware, detects and skips if blocked)
-  Strategy 2: pmap_cs trust level patching (NOT PPL protected!)
-  Strategy 3: Global pmap_cs enforcement disable
-  Strategy 4: amfid exception port hijack preparation
-  Strategy 5: amfid MISValidateSignature RemoteCall patch (PROVEN path)
-  Strategy 6: Nuclear — all strategies simultaneously
 
-INTEGRATED INTO JAILBREAK CHAIN:
-  Step 6 → amfi_bypass_nuclear() (kernel-side, 6 sub-strategies)
-  Step 6b → amfid RemoteCall hijack (userspace patch via RC)
-  Combined = FULL AMFI BYPASS
+CRITICAL DISCOVERY: The AMFI IOKit user client handler (FUN_fffffff008f76ee4)
+accepts trust cache loads via TWO selectors:
+  - Selector 7: TC + IMG4 manifest (used by cryptexd)
+  - Selector 2: TC only, no manifest needed (simpler!)
 
-KEY INSIGHT (from Cyanide/Dopamine analysis):
-  pmap_cs trust level is in task struct → writable via KRW (no PPL!)
-  amfid is userspace → __TEXT patchable via RemoteCall + mprotect
-  The combination of kernel trust level + amfid patch = 100% bypass
+ENTITLEMENT GATE: "com.apple.private.amfi.can-load-trust-cache"
+  - SpringBoard does NOT have this → IOServiceOpen fails
+  - cryptexd HAS this entitlement → can load trust caches!
+  - MobileStorageMounter also has it (but RC connection fails)
 
-ALSO IMPLEMENTED:
-  - KernelOps.swift — extracted kernel ops, offset validation, auto-correction
-  - Runtime offset auto-correction (probes kernel structs to fix wrong offsets)
-  - SSH password change warning (security fix)
-  - DeviceCompat version range fix (darksword covers 16.0-18.7.1 + 26.0-26.0.1)
+TRUST CACHE LOAD GATE BYPASS (FUN_fffffff008f78cc4):
+  The kernel checks DAT_fffffff007b795e8 (tc_load_gate).
+  If gate=0, it calls FUN_fffffff008f78cc4 which checks AKS lock state.
+  On UNLOCKED device → returns 1 → TC loading proceeds!
+  Since user is actively using device → always unlocked → gate bypassed!
 
-TESTING NEEDED:
-  1. Run on device with iOS 18.2 (confirmed working darksword)
-  2. Verify amfid RC connection succeeds
-  3. Verify MISValidateSignature patch takes effect
-  4. Test posix_spawn unsigned binary after full chain
-  5. If amfid RC fails → pmap_cs trust level alone may suffice
+BUFFER FORMAT (from cryptexd RE at FUN_10002d45c):
+  Selector 7: [uint64 tc_size][uint64 manifest_size][tc_data][manifest_data]
+  Selector 2: [raw tc_data] directly
+
+NEW APPROACH: exp_cryptexd_tc_load.swift
+  1. Wake cryptexd via XPC (com.apple.cryptexd)
+  2. Connect RemoteCall to cryptexd
+  3. In cryptexd context: IOServiceMatching("AppleMobileFileIntegrity")
+  4. IOServiceOpen → IOConnectCallMethod(conn, 2, NULL, 0, tc_data, tc_size, ...)
+  5. Kernel accepts because cryptexd has the entitlement!
+  6. Trust cache loaded → posix_spawn unsigned binary → SUCCESS
+
+ALSO FOUND:
+  - cs_enforcement_disable at 0xfffffff00a160798 (may be writable!)
+  - pmap_cs_allow_invalid checks: get-task-allow OR run-unsigned-code OR
+    run-invalid-allow OR license-to-operate entitlements
+  - FUN_fffffff008285e3c (developer mode check) reads DAT_fffffff00a0e45b8
+  - FUN_fffffff00854a0bc sets pmap_cs enforcement (has panic guard)
+
+EXPERIMENTS ADDED:
+  - exp_cryptexd_tc_load.swift — HIGH PRIORITY (cryptexd has entitlement)
+  - exp_pmap_cs_probe.swift — reads all critical flags at runtime
+  - ExperimentsView updated with new buttons
+
+TESTING PRIORITY:
+  1. Run "pmap_cs Kernel Probe" → see which flags are writable
+  2. Run "cryptexd IOKit" → attempt TC load via entitled daemon
+  3. If cryptexd RC fails → try patching cs_enforcement_disable
+  4. If cs_enforcement_disable writable → may be enough alone!
 ```
 
 ---

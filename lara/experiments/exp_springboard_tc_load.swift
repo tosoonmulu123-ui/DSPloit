@@ -75,17 +75,20 @@ final class ExpSpringBoardTCLoad {
         log("")
         
         // IOServiceMatching("AppleMobileFileIntegrity")
+        // NOTE: IOServiceMatching takes const char* and returns CFMutableDictionaryRef
+        // The string must be in remote process memory
         let amfiStr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
         let matching = RootExecutor.rcallAddr(sb, ioMatching, amfiStr)
         log("IOServiceMatching → 0x\(String(matching, radix: 16))")
         
-        guard matching != 0 else {
-            log("❌ Matching dict is NULL")
+        guard matching != 0 && matching != 0xDEAD else {
+            log("❌ Matching dict is NULL/invalid")
             RootExecutor.rcall(sb, "free", amfiStr)
             return
         }
         
-        // IOServiceGetMatchingService
+        // IOServiceGetMatchingService(kIOMainPortDefault=0, matching)
+        // NOTE: matching dict is consumed by this call (CFRelease'd internally)
         let service = RootExecutor.rcallAddr(sb, ioGetMatch, 0, matching)
         log("AMFI service → 0x\(String(service, radix: 16))")
         
