@@ -129,6 +129,13 @@ struct ExperimentsView: View {
                         runExperiment("pmap_cs Probe") { ExpPmapCSProbe.shared.runAll() }
                     }
                     
+                    expButton("amfid NOP Patch (v2)", icon: "lock.open.fill", color: .red, stars: 5) {
+                        runAsyncExperiment("amfid Patch v2") { logCb in
+                            ExpAmfidPatchV2.shared.onLog = logCb
+                            ExpAmfidPatchV2.shared.runAsync()
+                        }
+                    }
+                    
                     expButton("Data Segment Probe", icon: "magnifyingglass", color: .blue, stars: 3) {
                         runExperiment("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
                     }
