@@ -387,84 +387,28 @@ final class JailbreakEngine: ObservableObject {
         step6b_hijackAmfid()
     }
     
-    /// Step 6b: Hijack amfid via RemoteCall (the PROVEN path for full bypass)
-    /// This patches MISValidateSignatureAndCopyInfo to always return 0.
-    /// Combined with kernel-side patches from step 6, this achieves full AMFI bypass.
+    /// Step 6b: amfid bypass via kernel-only approach
+    /// NOTE: RemoteCall to amfid was causing respring (amfid crash → SpringBoard killed)
+    /// Instead, we rely on kernel-side patches (global flags + pmap+0xc2) which are sufficient.
+    /// amfid RC hijack is available as manual experiment (ExpAmfidPatch) for testing.
     private func step6b_hijackAmfid() {
-        guard mgr.rcready, let sb = mgr.sbProc else {
-            appendLog("⚠️ RC not ready — skip amfid hijack (kernel bypass may suffice)")
-            progress = 0.9
-            step7_trustCacheInject()
-            return
+        // Skip amfid RC hijack in main chain — it causes respring
+        // The kernel-side patches from step6 (pmap_cs enforcement + allow_invalid + tc_load_gate)
+        // should be sufficient for unsigned code execution.
+        //
+        // If they're not sufficient on this iOS version, user can manually run
+        // ExpAmfidPatch from the Experiments tab.
+        
+        let bypassStatus = String(cString: amfi_bypass_status())
+        if bypassStatus.contains("6/6") || bypassStatus.contains("5/6") || bypassStatus.contains("4/6") {
+            appendLog("✅ Kernel-side AMFI bypass strong enough — skipping amfid hijack")
+        } else {
+            appendLog("ℹ️ Kernel bypass partial — amfid RC hijack available in Experiments tab")
+            appendLog("   (Skipped in main chain to prevent respring)")
         }
         
-        appendLog("Attempting amfid RemoteCall hijack...")
-        
-        // Connect to amfid via RemoteCall
-        mgr.rcinitDaemon(
-            serviceName: "com.apple.MobileFileIntegrity",
-            framework: "/System/Library/Frameworks/MobileFileIntegrity.framework/MobileFileIntegrity",
-            process: "amfid",
-            migbypass: false
-        ) { [weak self] amfidRC in
-            guard let self else { return }
-            
-            guard let rc = amfidRC else {
-                self.appendLog("⚠️ Cannot connect to amfid — kernel bypass only")
-                self.progress = 0.9
-                self.step7_trustCacheInject()
-                return
-            }
-            
-            // Find MISValidateSignatureAndCopyInfo
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            let dlsymAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                                               remote_alloc_str(rc, "MISValidateSignatureAndCopyInfo"))
-            
-            if dlsymAddr != 0 && dlsymAddr != UInt64(bitPattern: -1) {
-                // Read original instruction
-                let origInstr = rc.remoteRead64(from: dlsymAddr)
-                self.appendLog("amfid: MISValidateSignature at 0x\(String(dlsymAddr, radix: 16))")
-                self.appendLog("amfid: original bytes: 0x\(String(origInstr, radix: 16))")
-                
-                // Patch: mov x0, #0; ret (always return success)
-                // ARM64: 0xD2800000 = mov x0, #0
-                //        0xD65F03C0 = ret
-                let patchValue: UInt64 = 0xD65F03C0_D2800000
-                
-                // First try mprotect to make page writable
-                let pageAddr = dlsymAddr & ~0x3FFF
-                let mprotectSym = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                                                     remote_alloc_str(rc, "mprotect"))
-                if mprotectSym != 0 {
-                    // PROT_READ | PROT_WRITE | PROT_EXEC = 7
-                    RootExecutor.rcallAddr(rc, mprotectSym, pageAddr, 0x4000, 7)
-                }
-                
-                // Write the patch
-                let writeOk = rc.remote_write64(dlsymAddr, value: patchValue)
-                if writeOk {
-                    let verify = rc.remoteRead64(from: dlsymAddr)
-                    if verify == patchValue {
-                        self.appendLog("✅✅✅ amfid PATCHED! MISValidateSignature → always returns 0")
-                        self.appendLog("   ALL code signature checks will now pass!")
-                    } else {
-                        self.appendLog("⚠️ amfid write verify mismatch (0x\(String(verify, radix: 16)))")
-                    }
-                } else {
-                    self.appendLog("⚠️ amfid remote_write64 failed — __TEXT read-only")
-                }
-            } else {
-                self.appendLog("⚠️ MISValidateSignatureAndCopyInfo not found in amfid")
-            }
-            
-            rc.destroy()
-            
-            DispatchQueue.main.async {
-                self.progress = 0.9
-                self.step7_trustCacheInject()
-            }
-        }
+        progress = 0.9
+        step7_trustCacheInject()
     }
     
     /// Legacy AMFI disable (fallback if new system fails to init)
