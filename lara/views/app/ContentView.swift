@@ -1,8 +1,6 @@
 //
 //  ContentView.swift
-//  DSPloit
-//
-//  Main tab — user-friendly, clean iOS native style
+//  DSPloit — Main tab
 //
 
 import SwiftUI
@@ -19,141 +17,50 @@ struct ContentView: View {
     
     var body: some View {
         NavigationStack {
-            List {
-                // Main status
-                Section {
-                    mainStatusRow
-                }
-                
-                // Jailbreak button
-                Section {
+            ScrollView {
+                VStack(spacing: 16) {
+                    // Status card
+                    statusCard
+                    
+                    // Jailbreak button
                     jailbreakButton
-                } footer: {
-                    if !isJailbroken && !jb.isRunning {
-                        Text("Tap to unlock full device access. This may take 30–60 seconds.")
-                    }
-                }
-                
-                // Progress (only while running)
-                if jb.isRunning {
-                    Section("Progress") {
-                        ProgressView(value: jb.progress)
-                            .tint(.blue)
-                        Text(jb.state.rawValue)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    
+                    // Progress + live log
+                    if jb.isRunning {
+                        progressSection
                     }
                     
-                    // Inline live log (last 8 lines)
-                    Section("Live Log") {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(jb.log.suffix(8), id: \.self) { line in
-                                HStack(alignment: .top, spacing: 6) {
-                                    Circle()
-                                        .fill(logLineColor(line))
-                                        .frame(width: 6, height: 6)
-                                        .padding(.top, 5)
-                                    Text(line)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(logLineColor(line))
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
+                    // Error
+                    if let error = jb.errorMessage, !jb.isRunning {
+                        errorCard(error)
+                    }
+                    
+                    // Post-jailbreak status
+                    if isJailbroken && !jb.isRunning {
+                        subsystemStatus
                     }
                 }
-                
-                // Actions (after jailbreak)
-                if isJailbroken {
-                    Section("Quick Actions") {
-                        Button(action: safeRespring) {
-                            Label("Respring", systemImage: "arrow.clockwise")
-                        }
-                        #if !DISABLE_REMOTECALL
-                        Button {
-                            mgr.rcfailed = false
-                            mgr.rcLastError = nil
-                            mgr.rcinit(process: "SpringBoard", migbypass: false) { _ in }
-                        } label: {
-                            Label("Reconnect", systemImage: "wifi.exclamationmark")
-                        }
-                        #endif
-                    }
-                }
-                
-                // Error
-                if let error = jb.errorMessage {
-                    Section {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text(error)
-                                .font(.subheadline)
-                        }
-                        
-                        Button("Try Again") {
-                            jb.runFullChain()
-                        }
-                        .font(.subheadline.bold())
-                    } header: {
-                        Text("Error")
-                    }
-                }
-                
-                // Success banner
-                if isJailbroken && !jb.isRunning {
-                    Section {
-                        HStack(spacing: 10) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .font(.title2)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Jailbreak Active")
-                                    .font(.subheadline.bold())
-                                Text("Root + AMFI bypass + Sandbox escaped")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        
-                        // Status indicators
-                        VStack(alignment: .leading, spacing: 6) {
-                            statusIndicator("Kernel R/W", active: mgr.dsready)
-                            statusIndicator("Sandbox Escape", active: mgr.sbxready)
-                            statusIndicator("RemoteCall", active: mgr.rcready)
-                            statusIndicator("Root (uid=0)", active: root.rootConfirmed)
-                            statusIndicator("VFS Access", active: mgr.vfsready)
-                        }
-                        .padding(.vertical, 4)
-                    } footer: {
-                        Text("Use Re-Jailbreak after respring/reboot. Tap terminal icon for full logs.")
-                    }
-                }
-                
-                // Help (before jailbreak)
-                if !isJailbroken && !jb.isRunning && jb.state != .failed {
-                    Section {
-                        Button { showGuide = true } label: {
-                            Label("How does this work?", systemImage: "questionmark.circle")
-                        }
-                    }
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("DSPloit")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showGuide = true } label: {
                         Image(systemName: "questionmark.circle")
+                            .foregroundStyle(.secondary)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 16) {
+                    HStack(spacing: 14) {
                         Button { mgr.showLogs.toggle() } label: {
                             Image(systemName: "terminal")
+                                .foregroundStyle(.secondary)
                         }
                         Button { showSettings = true } label: {
-                            Image(systemName: "gear")
+                            Image(systemName: "gearshape")
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -163,30 +70,32 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Main Status
+    // MARK: - Status Card
     
-    private var mainStatusRow: some View {
+    private var statusCard: some View {
         HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(statusBgColor.opacity(0.12))
-                    .frame(width: 48, height: 48)
-                Image(systemName: statusIcon)
-                    .font(.title3)
-                    .foregroundStyle(statusBgColor)
-            }
+            Circle()
+                .fill(statusColor)
+                .frame(width: 10, height: 10)
             
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(statusTitle)
-                    .font(.headline)
+                    .font(.system(size: 15, weight: .semibold))
                 Text(statusSubtitle)
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             
             Spacer()
+            
+            if isJailbroken {
+                Text("✓")
+                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.green)
+            }
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemGroupedBackground)))
     }
     
     // MARK: - Jailbreak Button
@@ -194,45 +103,180 @@ struct ContentView: View {
     @ViewBuilder
     private var jailbreakButton: some View {
         #if !DISABLE_REMOTECALL
-        Button(action: {
+        Button {
             guard !jb.isRunning else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             if isJailbroken {
-                // Re-jailbreak: reset state and run again
                 jb.isJailbroken = false
                 root.rootConfirmed = false
             }
             jb.runFullChain()
-        }) {
+        } label: {
             HStack {
                 Spacer()
-                Group {
-                    if jb.isRunning {
-                        ProgressView().tint(.white)
-                    } else {
-                        Image(systemName: isJailbroken ? "arrow.clockwise" : "bolt.fill")
-                    }
+                if jb.isRunning {
+                    ProgressView().tint(.white)
+                        .padding(.trailing, 6)
                 }
                 Text(isJailbroken ? "Re-Jailbreak" : (jb.isRunning ? "Working..." : "Jailbreak"))
-                    .fontWeight(.semibold)
+                    .font(.system(size: 16, weight: .semibold))
                 Spacer()
             }
             .foregroundStyle(.white)
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isJailbroken ? Color.orange : (jb.isRunning ? Color.blue : Color.accentColor))
+                    .fill(jb.isRunning ? Color.gray : (isJailbroken ? Color.orange : Color.blue))
             )
         }
         .disabled(jb.isRunning)
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-        .listRowBackground(Color.clear)
         #else
         EmptyView()
         #endif
     }
     
-    // MARK: - Safe Respring
+    // MARK: - Progress Section
+    
+    private var progressSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Progress bar
+            HStack(spacing: 10) {
+                ProgressView(value: jb.progress)
+                    .tint(.blue)
+                Text("\(Int(jb.progress * 100))%")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            
+            // State
+            Text(jb.state.rawValue)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.blue)
+            
+            // Live log (last 6 lines)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(jb.log.suffix(6), id: \.self) { line in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("●")
+                            .font(.system(size: 5))
+                            .foregroundStyle(logDotColor(line))
+                            .padding(.top, 5)
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(logTextColor(line))
+                            .lineLimit(2)
+                    }
+                }
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.85)))
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemGroupedBackground)))
+    }
+    
+    // MARK: - Error Card
+    
+    private func errorCard(_ error: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Failed")
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            Text(error)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+            
+            Button {
+                jb.runFullChain()
+            } label: {
+                Text("Retry")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.blue))
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemGroupedBackground)))
+    }
+    
+    // MARK: - Subsystem Status
+    
+    private var subsystemStatus: some View {
+        VStack(spacing: 0) {
+            ForEach(subsystems, id: \.label) { item in
+                HStack {
+                    Text(item.label)
+                        .font(.system(size: 13))
+                    Spacer()
+                    Text(item.active ? "●" : "○")
+                        .font(.system(size: 10))
+                        .foregroundStyle(item.active ? .green : .secondary)
+                }
+                .padding(.vertical, 9)
+                .padding(.horizontal, 14)
+                if item.label != subsystems.last?.label {
+                    Divider().padding(.leading, 14)
+                }
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemGroupedBackground)))
+    }
+    
+    private var subsystems: [(label: String, active: Bool)] {
+        [
+            ("Kernel R/W", mgr.dsready),
+            ("Sandbox Escape", mgr.sbxready),
+            ("RemoteCall", mgr.rcready),
+            ("Root (uid=0)", root.rootConfirmed),
+            ("VFS Access", mgr.vfsready),
+        ]
+    }
+    
+    // MARK: - Helpers
+    
+    private var isJailbroken: Bool { root.rootConfirmed || jb.isJailbroken }
+    
+    private var statusColor: Color {
+        if isJailbroken { return .green }
+        if jb.isRunning { return .blue }
+        if jb.state == .failed { return .red }
+        return .secondary
+    }
+    
+    private var statusTitle: String {
+        if isJailbroken { return "Jailbroken" }
+        if jb.isRunning { return "In Progress" }
+        if jb.state == .failed { return "Failed" }
+        return "Locked"
+    }
+    
+    private var statusSubtitle: String {
+        if isJailbroken { return "Full root access active" }
+        if jb.isRunning { return jb.state.rawValue }
+        if jb.state == .failed { return "Tap Retry or Jailbreak again" }
+        return "Tap Jailbreak to start"
+    }
+    
+    private func logDotColor(_ line: String) -> Color {
+        if line.contains("✅") || line.contains("🎉") { return .green }
+        if line.contains("❌") { return .red }
+        if line.contains("⚠️") { return .yellow }
+        return .gray
+    }
+    
+    private func logTextColor(_ line: String) -> Color {
+        if line.contains("✅") || line.contains("🎉") { return .green }
+        if line.contains("❌") { return .red }
+        if line.contains("⚠️") { return .yellow }
+        return Color(.init(white: 0.75, alpha: 1))
+    }
+    
+    // MARK: - Respring
     
     private func safeRespring() {
         #if !DISABLE_REMOTECALL
@@ -253,66 +297,5 @@ struct ContentView: View {
             }
         }
         mgr.respring()
-    }
-    
-    // MARK: - Helpers
-    
-    private var isJailbroken: Bool {
-        root.rootConfirmed || jb.isJailbroken
-    }
-    
-    private var statusIcon: String {
-        if isJailbroken { return "lock.open.fill" }
-        if jb.isRunning { return "hourglass" }
-        if jb.state == .failed { return "xmark.circle.fill" }
-        return "lock.fill"
-    }
-    
-    private var statusBgColor: Color {
-        if isJailbroken { return .green }
-        if jb.isRunning { return .blue }
-        if jb.state == .failed { return .red }
-        return .secondary
-    }
-    
-    private var statusTitle: String {
-        if isJailbroken { return "Jailbroken" }
-        if jb.isRunning { return "In Progress" }
-        if jb.state == .failed { return "Failed" }
-        return "Locked"
-    }
-    
-    private var statusSubtitle: String {
-        if isJailbroken { return "Full root access active" }
-        if jb.isRunning { return "\(Int(jb.progress * 100))% complete" }
-        if jb.state == .failed { return "Something went wrong" }
-        return "Tap Jailbreak to get started"
-    }
-    
-    // MARK: - Log Line Color Helper
-    
-    private func logLineColor(_ line: String) -> Color {
-        if line.contains("✅") || line.contains("success") { return .green }
-        if line.contains("❌") || line.contains("failed") || line.contains("ERROR") { return .red }
-        if line.contains("⚠️") || line.contains("warn") { return .orange }
-        if line.contains("🎉") { return .green }
-        return .secondary
-    }
-    
-    // MARK: - Status Indicator Row
-    
-    private func statusIndicator(_ label: String, active: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: active ? "circle.fill" : "circle")
-                .font(.system(size: 8))
-                .foregroundStyle(active ? .green : .secondary)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(active ? .primary : .secondary)
-            Spacer()
-            Text(active ? "Active" : "Inactive")
-                .font(.caption2)
-                .foregroundStyle(active ? .green : .secondary)
-        }
     }
 }

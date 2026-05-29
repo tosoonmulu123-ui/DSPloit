@@ -1,8 +1,6 @@
 //
 //  RootDashboardView.swift
-//  DSPloit
-//
-//  Root tools — clean native list style
+//  DSPloit — Root tools
 //
 
 import SwiftUI
@@ -19,68 +17,82 @@ struct RootDashboardView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            ScrollView {
                 if rootReady {
-                    Section("Tools") {
-                        toolRow("folder.fill", "File Manager", "Browse and edit files", .blue, RootFileManagerView())
-                        toolRow("shippingbox.fill", "Packages", "Install apps and tweaks", .purple, PackageManagerView())
-                        toolRow("building.columns.fill", "Banking", "Hide jailbreak detection", .green, MobileBankingView())
-                        toolRow("gearshape.2.fill", "Daemons", "Manage system services", .orange, DaemonDisableView())
-                        toolRow("flask.fill", "Experiments", "TC hijack + amfid patch", .red, ExperimentsView())
+                    VStack(spacing: 10) {
+                        toolCard("folder.fill", "File Manager", "Browse and edit files", .blue, RootFileManagerView())
+                        toolCard("shippingbox.fill", "Packages", "Install apps and tweaks", .purple, PackageManagerView())
+                        toolCard("building.columns.fill", "Banking", "Hide jailbreak detection", .green, MobileBankingView())
+                        toolCard("gearshape.2.fill", "Daemons", "Manage system services", .orange, DaemonDisableView())
+                        toolCard("flask.fill", "Experiments", "TC load + AMFI research", .red, ExperimentsView())
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                 } else {
-                    Section {
-                        VStack(spacing: 12) {
-                            Image(systemName: "lock.fill")
-                                .font(.largeTitle)
-                                .foregroundStyle(.secondary)
-                            Text("Root Not Active")
-                                .font(.headline)
-                            Text("Run Jailbreak from the Main tab first.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 32)
-                    }
+                    lockedState
                 }
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Root")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 16) {
+                    HStack(spacing: 14) {
                         Button { mgr.showLogs.toggle() } label: {
                             Image(systemName: "terminal")
+                                .foregroundStyle(.secondary)
                         }
                         Button { showGuide = true } label: {
                             Image(systemName: "questionmark.circle")
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
             }
-            .sheet(isPresented: $showGuide) {
-                GuideView()
-            }
+            .sheet(isPresented: $showGuide) { GuideView() }
         }
     }
 
-    private func toolRow<D: View>(_ icon: String, _ title: String, _ subtitle: String, _ color: Color, _ dest: D) -> some View {
+    private func toolCard<D: View>(_ icon: String, _ title: String, _ subtitle: String, _ color: Color, _ dest: D) -> some View {
         NavigationLink(destination: dest) {
             HStack(spacing: 14) {
                 Image(systemName: icon)
-                    .font(.body)
+                    .font(.system(size: 18))
                     .foregroundStyle(color)
-                    .frame(width: 28)
+                    .frame(width: 32)
+                
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.body)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.primary)
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
             }
-            .padding(.vertical, 4)
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemGroupedBackground)))
         }
+    }
+    
+    private var lockedState: some View {
+        VStack(spacing: 16) {
+            Spacer().frame(height: 80)
+            Image(systemName: "lock.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("Root Not Active")
+                .font(.system(size: 17, weight: .semibold))
+            Text("Run Jailbreak from the Main tab first.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 }

@@ -1,8 +1,6 @@
 //
 //  ExperimentsView.swift
-//  DSPloit
-//
-//  Experiments — live log style (compact, scrollable)
+//  DSPloit — Experiments (compact terminal-style log + buttons)
 //
 
 import SwiftUI
@@ -16,28 +14,26 @@ struct ExperimentsView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Live log (top, scrollable, compact)
             logView
-            
             Divider()
-            
-            // Buttons (bottom, fixed)
             buttonsView
         }
+        .background(Color(.systemBackground))
         .navigationTitle("Experiments")
+        .navigationBarTitleDisplayMode(.inline)
     }
     
-    // MARK: - Live Log View (like main tab)
+    // MARK: - Log (terminal style)
     
     private var logView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(log.enumerated()), id: \.offset) { idx, line in
                         HStack(alignment: .top, spacing: 6) {
-                            Circle()
-                                .fill(dotColor(line))
-                                .frame(width: 6, height: 6)
+                            Text("●")
+                                .font(.system(size: 5))
+                                .foregroundStyle(dotColor(line))
                                 .padding(.top, 5)
                             Text(line)
                                 .font(.system(size: 11, design: .monospaced))
@@ -51,10 +47,10 @@ struct ExperimentsView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(Color(.systemBackground))
+            .background(Color.black.opacity(0.92))
             .onChange(of: log.count) { _ in
                 if let last = log.indices.last {
-                    withAnimation(.easeOut(duration: 0.2)) {
+                    withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo(last, anchor: .bottom)
                     }
                 }
@@ -62,170 +58,132 @@ struct ExperimentsView: View {
         }
     }
     
-    // MARK: - Buttons View
+    // MARK: - Buttons
     
     private var buttonsView: some View {
         ScrollView {
-            VStack(spacing: 12) {
-                // Status
+            VStack(spacing: 8) {
                 if isRunning {
-                    HStack {
-                        ProgressView().scaleEffect(0.8)
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.7)
                         Text(currentExperiment)
-                            .font(.caption.bold())
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(.blue)
                     }
-                    .padding(.top, 8)
+                    .padding(.top, 6)
                 }
                 
-                // Trust Cache experiments (TOP PRIORITY)
-                VStack(spacing: 8) {
-                    Text("Trust Cache Load")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    expButton("① Load TC (SpringBoard)", icon: "arrow.down.circle.fill", color: .green, stars: 5) {
-                        runAsyncExperiment("TC Load") { logCb in
-                            ExpTCLoadAndSpawn.shared.onLog = logCb
-                            ExpTCLoadAndSpawn.shared.phase1_loadTC()
-                        }
+                // Phase 1 + 2 (proven path)
+                sectionHeader("Trust Cache")
+                expBtn("① Load TC (SpringBoard)", .green) {
+                    runAsync("TC Load") { cb in
+                        ExpTCLoadAndSpawn.shared.onLog = cb
+                        ExpTCLoadAndSpawn.shared.phase1_loadTC()
                     }
-                    
-                    expButton("② Test Spawn (launchd)", icon: "play.circle.fill", color: .green, stars: 5) {
-                        runAsyncExperiment("TC Spawn") { logCb in
-                            ExpTCLoadAndSpawn.shared.onLog = logCb
-                            ExpTCLoadAndSpawn.shared.phase2_testSpawn()
-                        }
+                }
+                expBtn("② Test Spawn (launchd)", .green) {
+                    runAsync("TC Spawn") { cb in
+                        ExpTCLoadAndSpawn.shared.onLog = cb
+                        ExpTCLoadAndSpawn.shared.phase2_testSpawn()
                     }
-                    
-                    Divider().padding(.vertical, 4)
-                    
-                    expButton("cryptexd IOKit", icon: "checkmark.seal.fill", color: .teal, stars: 3) {
-                        runAsyncExperiment("cryptexd TC") { logCb in
-                            ExpCryptexdTCLoad.shared.onLog = logCb
-                            ExpCryptexdTCLoad.shared.runAsync()
-                        }
-                    }
-                    
-                    expButton("SpringBoard IOKit (old)", icon: "star.fill", color: .yellow, stars: 2) {
-                        runAsyncExperiment("SpringBoard TC") { logCb in
-                            ExpSpringBoardTCLoad.shared.onLog = logCb
-                            ExpSpringBoardTCLoad.shared.runAsync()
-                        }
+                }
+                expBtn("cryptexd IOKit", .teal) {
+                    runAsync("cryptexd") { cb in
+                        ExpCryptexdTCLoad.shared.onLog = cb
+                        ExpCryptexdTCLoad.shared.runAsync()
                     }
                 }
                 
-                Divider()
+                Divider().padding(.vertical, 4)
                 
-                // Other experiments
-                VStack(spacing: 8) {
-                    Text("Research")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    expButton("pmap_cs Kernel Probe", icon: "cpu", color: .indigo, stars: 4) {
-                        runExperiment("pmap_cs Probe") { ExpPmapCSProbe.shared.runAll() }
+                // Research
+                sectionHeader("Research")
+                expBtn("pmap_cs Kernel Probe", .indigo) {
+                    runSync("pmap_cs") { ExpPmapCSProbe.shared.runAll() }
+                }
+                expBtn("amfid NOP Patch (v2)", .red) {
+                    runAsync("amfid v2") { cb in
+                        ExpAmfidPatchV2.shared.onLog = cb
+                        ExpAmfidPatchV2.shared.runAsync()
                     }
-                    
-                    expButton("amfid NOP Patch (v2)", icon: "lock.open.fill", color: .red, stars: 5) {
-                        runAsyncExperiment("amfid Patch v2") { logCb in
-                            ExpAmfidPatchV2.shared.onLog = logCb
-                            ExpAmfidPatchV2.shared.runAsync()
-                        }
-                    }
-                    
-                    expButton("Data Segment Probe", icon: "magnifyingglass", color: .blue, stars: 3) {
-                        runExperiment("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
-                    }
-                    
-                    expButton("amfid Patch", icon: "lock.open.fill", color: .purple, stars: 3) {
-                        runExperiment("amfid Patch") { ExpAmfidPatch.shared.runAll() }
-                    }
-                    
-                    expButton("Safe Flag Scan", icon: "flag.fill", color: .mint, stars: 2) {
-                        runExperiment("Flag Scan") { ExpSafeFlagScan.shared.runAll() }
+                }
+                expBtn("Data Segment Probe", .blue) {
+                    runSync("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
+                }
+                expBtn("SpringBoard IOKit (old)", .yellow) {
+                    runAsync("SB IOKit") { cb in
+                        ExpSpringBoardTCLoad.shared.onLog = cb
+                        ExpSpringBoardTCLoad.shared.runAsync()
                     }
                 }
                 
-                // Clear button
-                Button {
-                    log.removeAll()
-                } label: {
-                    Label("Clear Log", systemImage: "trash")
-                        .font(.caption)
+                // Clear
+                Button { log.removeAll() } label: {
+                    Text("Clear")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.red)
                 }
                 .padding(.top, 4)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
-        .frame(maxHeight: 280)
+        .frame(maxHeight: 260)
         .background(Color(.secondarySystemBackground))
     }
     
-    // MARK: - Experiment Button
+    // MARK: - Components
     
-    private func expButton(_ title: String, icon: String, color: Color, stars: Int, action: @escaping () -> Void) -> some View {
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+    }
+    
+    private func expBtn(_ title: String, _ color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                    .frame(width: 20)
+            HStack {
                 Text(title)
-                    .font(.subheadline)
+                    .font(.system(size: 13, weight: .medium))
                 Spacer()
-                Text(String(repeating: "★", count: stars))
-                    .font(.caption2)
-                    .foregroundStyle(.yellow)
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
             }
             .padding(.vertical, 10)
-            .padding(.horizontal, 14)
-            .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)))
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.06)))
         }
         .disabled(isRunning || !mgr.dsready)
     }
     
-    // MARK: - Run Experiment
+    // MARK: - Run Helpers
     
-    private func runExperiment(_ name: String, block: @escaping () -> [String]) {
+    private func runSync(_ name: String, block: @escaping () -> [String]) {
         isRunning = true
         currentExperiment = name
-        log.append("▶ Starting: \(name)")
-        
+        log.append("▶ \(name)")
         DispatchQueue.global(qos: .userInitiated).async {
             let results = block()
             DispatchQueue.main.async {
                 self.log.append(contentsOf: results)
-                self.log.append("■ Done: \(name)")
-                self.log.append("")
+                self.log.append("■ Done")
                 self.isRunning = false
                 self.currentExperiment = ""
             }
         }
     }
     
-    /// Async experiment (for launchd/MSM that use callbacks)
-    private func runAsyncExperiment(_ name: String, start: @escaping ((@escaping (String) -> Void)) -> Void) {
+    private func runAsync(_ name: String, start: @escaping ((@escaping (String) -> Void)) -> Void) {
         isRunning = true
         currentExperiment = name
-        log.append("▶ Starting: \(name)")
-        
-        let logCallback: (String) -> Void = { [self] msg in
-            DispatchQueue.main.async {
-                self.log.append(msg)
-            }
-        }
-        
-        start(logCallback)
-        
-        // Auto-finish after 30s if not manually stopped
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [self] in
+        log.append("▶ \(name)")
+        start { msg in DispatchQueue.main.async { self.log.append(msg) } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
             if self.isRunning && self.currentExperiment == name {
-                self.log.append("■ Done: \(name)")
-                self.log.append("")
+                self.log.append("■ Done")
                 self.isRunning = false
                 self.currentExperiment = ""
             }
@@ -235,19 +193,18 @@ struct ExperimentsView: View {
     // MARK: - Colors
     
     private func dotColor(_ line: String) -> Color {
-        if line.contains("✅") { return .green }
+        if line.contains("✅") || line.contains("🎉") { return .green }
         if line.contains("❌") { return .red }
         if line.contains("⚠️") { return .orange }
         if line.hasPrefix("▶") || line.hasPrefix("■") { return .blue }
-        return .secondary.opacity(0.5)
+        return .gray
     }
     
     private func textColor(_ line: String) -> Color {
-        if line.contains("✅") { return .green }
+        if line.contains("✅") || line.contains("🎉") { return .green }
         if line.contains("❌") { return .red }
         if line.contains("⚠️") { return .orange }
-        if line.hasPrefix("▶") || line.hasPrefix("■") { return .blue }
-        if line.contains("══") || line.contains("──") { return .primary }
-        return .secondary
+        if line.hasPrefix("▶") || line.hasPrefix("■") { return .cyan }
+        return Color(.init(white: 0.78, alpha: 1))
     }
 }
