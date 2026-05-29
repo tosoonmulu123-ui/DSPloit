@@ -75,6 +75,12 @@ struct ExperimentsView: View {
                 
                 // Phase 1 + 2 (proven path)
                 sectionHeader("Trust Cache")
+                expBtn("⚡ Multi-Bypass (ALL)", .red) {
+                    runAsync("Multi") { cb in
+                        ExpMultiBypass.shared.onLog = cb
+                        ExpMultiBypass.shared.runAsync()
+                    }
+                }
                 expBtn("① Load TC (SpringBoard)", .green) {
                     runAsync("TC Load") { cb in
                         ExpTCLoadAndSpawn.shared.onLog = cb
