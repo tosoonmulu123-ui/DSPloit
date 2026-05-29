@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "ghidra-mcp": {
+      "command": "python",
+      "args": [
+        "bridge_mcp_ghidra.py",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "C:\\Users\\Royan\\.kiro\\powers\\repos\\ghidra-mcp",
+      "env": {
+        "GHIDRA_MCP_URL": "http://127.0.0.1:8089",
+        "GHIDRA_DEBUGGER_URL": "http://127.0.0.1:8099",
+        "PYTHONIOENCODING": "utf-8"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

@@ -43,6 +43,25 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    
+                    // Inline live log (last 8 lines)
+                    Section("Live Log") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(jb.log.suffix(8), id: \.self) { line in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Circle()
+                                        .fill(logLineColor(line))
+                                        .frame(width: 6, height: 6)
+                                        .padding(.top, 5)
+                                    Text(line)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(logLineColor(line))
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
                 
                 // Actions (after jailbreak)
@@ -88,14 +107,27 @@ struct ContentView: View {
                         HStack(spacing: 10) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
-                            VStack(alignment: .leading, spacing: 2) {
+                                .font(.title2)
+                            VStack(alignment: .leading, spacing: 4) {
                                 Text("Jailbreak Active")
                                     .font(.subheadline.bold())
-                                Text("Full root access. Use Re-Jailbreak after respring/reboot.")
+                                Text("Root + AMFI bypass + Sandbox escaped")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        
+                        // Status indicators
+                        VStack(alignment: .leading, spacing: 6) {
+                            statusIndicator("Kernel R/W", active: mgr.dsready)
+                            statusIndicator("Sandbox Escape", active: mgr.sbxready)
+                            statusIndicator("RemoteCall", active: mgr.rcready)
+                            statusIndicator("Root (uid=0)", active: root.rootConfirmed)
+                            statusIndicator("VFS Access", active: mgr.vfsready)
+                        }
+                        .padding(.vertical, 4)
+                    } footer: {
+                        Text("Use Re-Jailbreak after respring/reboot. Tap terminal icon for full logs.")
                     }
                 }
                 
@@ -255,5 +287,32 @@ struct ContentView: View {
         if jb.isRunning { return "\(Int(jb.progress * 100))% complete" }
         if jb.state == .failed { return "Something went wrong" }
         return "Tap Jailbreak to get started"
+    }
+    
+    // MARK: - Log Line Color Helper
+    
+    private func logLineColor(_ line: String) -> Color {
+        if line.contains("✅") || line.contains("success") { return .green }
+        if line.contains("❌") || line.contains("failed") || line.contains("ERROR") { return .red }
+        if line.contains("⚠️") || line.contains("warn") { return .orange }
+        if line.contains("🎉") { return .green }
+        return .secondary
+    }
+    
+    // MARK: - Status Indicator Row
+    
+    private func statusIndicator(_ label: String, active: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: active ? "circle.fill" : "circle")
+                .font(.system(size: 8))
+                .foregroundStyle(active ? .green : .secondary)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(active ? .primary : .secondary)
+            Spacer()
+            Text(active ? "Active" : "Inactive")
+                .font(.caption2)
+                .foregroundStyle(active ? .green : .secondary)
+        }
     }
 }

@@ -42,30 +42,44 @@ struct ParsedLogLine: Identifiable {
 
 enum LogTagFilter: String, CaseIterable, Identifiable {
     case all = "All"
+    case jb = "Chain"
+    case amfi = "AMFI"
     case ds = "Exploit"
-    case offs = "Offsets"
-    case kcache = "Kcache"
-    case jb = "Jailbreak"
+    case pmap = "pmap_cs"
+    case tc = "TrustCache"
     case vfs = "VFS"
     case sbx = "Sandbox"
     case rc = "RC"
-    case fetch = "Fetch"
+    case root = "Root"
+    case offs = "Offsets"
 
     var id: String { rawValue }
 
     func matches(_ line: ParsedLogLine) -> Bool {
         if self == .all { return true }
-        guard let tag = line.tag?.lowercased() else { return false }
+        guard let tag = line.tag?.lowercased() else {
+            // Also match lines without explicit tags by content
+            let lower = line.raw.lowercased()
+            switch self {
+            case .amfi: return lower.contains("amfi") || lower.contains("cs_flag") || lower.contains("enforcement")
+            case .pmap: return lower.contains("pmap") || lower.contains("trust_level") || lower.contains("allow_invalid")
+            case .tc: return lower.contains("trust cache") || lower.contains("trust_cache") || lower.contains("cdhash") || lower.contains("msm")
+            case .jb: return lower.contains("jailbreak") || lower.contains("step ")
+            default: return false
+            }
+        }
         switch self {
         case .all: return true
-        case .ds: return tag == "ds"
-        case .offs: return tag == "offs"
-        case .kcache: return tag.contains("kcache") || tag == "offs"
         case .jb: return tag == "jb"
+        case .amfi: return tag == "amfi" || tag == "exp_amfid" || tag == "exp_flagscan"
+        case .ds: return tag == "ds" || tag == "pe"
+        case .pmap: return tag.contains("pmap")
+        case .tc: return tag == "tc" || tag == "tc79" || tag.contains("trust")
         case .vfs: return tag == "vfs"
         case .sbx: return tag == "sbx"
         case .rc: return tag == "rc"
-        case .fetch: return tag.contains("fetch") || tag.contains("kcache")
+        case .root: return tag == "root"
+        case .offs: return tag == "offs" || tag.contains("kcache") || tag.contains("offsets")
         }
     }
 }
@@ -128,14 +142,20 @@ enum LogLineParser {
         let lower = line.lowercased()
         if line.contains("✅") || lower.contains("success") || lower.contains(" escaped!")
             || lower.contains(" ready!") || lower.contains(" resolve ok")
-            || lower.contains("jailbreak complete") || lower.contains("exploit success") {
+            || lower.contains("jailbreak complete") || lower.contains("exploit success")
+            || lower.contains("patched!") || lower.contains("amfi bypassed")
+            || lower.contains("unsigned code allowed") || lower.contains("trust_cache_load_gate enabled")
+            || line.contains("🎉") {
             return .success
         }
         if line.contains("❌") || lower.contains("failed") || lower.contains("error:")
-            || lower.contains("xpf start error") || lower.contains("panic") {
+            || lower.contains("xpf start error") || lower.contains("panic")
+            || lower.contains("ppl blocked") || lower.contains("write failed") {
             return .error
         }
-        if line.contains("⚠️") || lower.contains("warn") || lower.contains("continuing") {
+        if line.contains("⚠️") || lower.contains("warn") || lower.contains("continuing")
+            || lower.contains("skip") || lower.contains("fallback")
+            || lower.contains("incomplete") || lower.contains("hardcoded") {
             return .warning
         }
         return .info
