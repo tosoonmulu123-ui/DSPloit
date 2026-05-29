@@ -22,6 +22,10 @@ struct ExperimentsView: View {
     @State private var isPmapRunning = false
     @State private var showPmapResults = false
     
+    @State private var probeResults: [String] = []
+    @State private var isProbeRunning = false
+    @State private var showProbeResults = false
+    
     var body: some View {
         List {
             Section {
@@ -123,6 +127,45 @@ struct ExperimentsView: View {
                 }
             }
             
+            // Data Segment Probe (★★★★ CRITICAL — RUN FIRST)
+            Section("Data Segment Probe (★★★★ RUN FIRST)") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("READ-ONLY probe to find which kernel addresses are actually writable. Previous writes to __DATA_CONST caused panic.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("NO WRITES except one safe test. Maps real writable __DATA range.")
+                        .font(.caption2).foregroundStyle(.green)
+                }
+                
+                Button {
+                    runProbeExperiment()
+                } label: {
+                    HStack {
+                        Image(systemName: isProbeRunning ? "hourglass" : "play.fill")
+                            .foregroundStyle(.blue)
+                        Text(isProbeRunning ? "Probing..." : "Run Data Segment Probe")
+                        Spacer()
+                        Text("★★★★").foregroundStyle(.yellow)
+                    }
+                }
+                .disabled(isProbeRunning || !mgr.dsready)
+                
+                if !probeResults.isEmpty {
+                    Button { showProbeResults.toggle() } label: {
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text(showProbeResults ? "Hide" : "Show Results (\(probeResults.count) lines)")
+                            Spacer()
+                            Image(systemName: showProbeResults ? "chevron.up" : "chevron.down").font(.caption)
+                        }
+                    }
+                }
+                if showProbeResults {
+                    ForEach(Array(probeResults.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
+                    }
+                }
+            }
+            
             Section("pmap_cs Disable (★ Legacy)") {
                 Text("⚠️ CAUTION: Previous version wrote to wrong addresses. Now uses corrected addresses from Rust analyzer. Tests if pmap_cs flags need to be SET to 1.")
                     .font(.caption).foregroundStyle(.orange)
@@ -201,6 +244,19 @@ struct ExperimentsView: View {
             DispatchQueue.main.async {
                 pmapResults = r
                 isPmapRunning = false
+            }
+        }
+    }
+    
+    private func runProbeExperiment() {
+        isProbeRunning = true
+        probeResults.removeAll()
+        showProbeResults = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = ExpDataSegmentProbe.shared.runAll()
+            DispatchQueue.main.async {
+                self.probeResults = r
+                self.isProbeRunning = false
             }
         }
     }
