@@ -92,18 +92,63 @@ final class ExpProcListDebug {
         let nextPtr = ds_kread64(kernProc + UInt64(off_proc_p_list_le_next))
         log.append("kern_proc + 0x\(String(format:"%x",off_proc_p_list_le_next)) = 0x\(String(format:"%llx", nextPtr))")
         
+        // Also try from our_proc
+        let ourNext = ds_kread64(ourProc + UInt64(off_proc_p_list_le_next))
+        let ourPrev = ds_kread64(ourProc + 0x8) // le_prev is typically at +0x8
+        log.append("our_proc + 0x0 (next) = 0x\(String(format:"%llx", ourNext))")
+        log.append("our_proc + 0x8 (prev) = 0x\(String(format:"%llx", ourPrev))")
+        
+        // Scan our_proc first 0x20 bytes for kernel pointers (find list links)
+        log.append("")
+        log.append("── Scanning our_proc[0..0x40] for list pointers ──")
+        for off in stride(from: 0, to: 0x40, by: 8) {
+            let val = ds_kread64(ourProc + UInt64(off))
+            if val > 0xfffffff000000000 && val < 0xfffffffffff00000 && val != ourProc && val != kernProc {
+                // Check if target has a valid PID
+                let targetPid = ds_kread32(val + 0x60) // off_proc_p_pid = 0x60
+                if targetPid > 0 && targetPid < 65535 {
+                    log.append("  off 0x\(String(format:"%02x",off)) → 0x\(String(format:"%llx",val)) pid=\(targetPid) ✅")
+                } else {
+                    log.append("  off 0x\(String(format:"%02x",off)) → 0x\(String(format:"%llx",val)) (not proc)")
+                }
+            }
+        }
+        
         if nextPtr == 0 || nextPtr == kernProc {
-            log.append("❌ Next pointer is NULL or self-referencing")
-            log.append("Scanning kern_proc for valid pointers...")
-            // Dump first 0x80 bytes of kern_proc to find the list head
-            for off in stride(from: 0, to: 0x80, by: 8) {
-                let val = ds_kread64(kernProc + UInt64(off))
-                // Valid kernel pointer?
-                if val > 0xfffffff000000000 && val < 0xfffffffffff00000 && val != kernProc {
-                    // Check if it looks like a proc (has a PID field)
-                    let maybePid = ds_kread32(val + UInt64(off_proc_p_pid))
-                    if maybePid > 0 && maybePid < 10000 {
-                        log.append("  ✅ off 0x\(String(format:"%x",off)) → 0x\(String(format:"%llx",val)) (pid=\(maybePid))")
+            log.append("")
+            log.append("❌ kern_proc next is NULL — trying from our_proc...")
+            
+            // Try walking from our_proc
+            if ourNext > 0xfffffff000000000 && ourNext != ourProc {
+                log.append("✅ our_proc has valid next pointer!")
+                var current = ourNext
+                var count = 0
+                while current != 0 && current != ourProc && current != kernProc && count < 30 {
+                    count += 1
+                    let pid = ds_kread32(current + 0x60)
+                    var nb = [UInt8](repeating: 0, count: 16)
+                    let v = ds_kread64(current + UInt64(off_proc_p_name))
+                    let v2 = ds_kread64(current + UInt64(off_proc_p_name) + 8)
+                    withUnsafeBytes(of: v) { for j in 0..<8 { nb[j] = $0[j] } }
+                    withUnsafeBytes(of: v2) { for j in 0..<8 { nb[8+j] = $0[j] } }
+                    let pname = String(bytes: nb.prefix(while: { $0 >= 0x20 && $0 < 0x7f }), encoding: .ascii) ?? "?"
+                    
+                    if count <= 15 || pname.contains("amfi") {
+                        log.append("  [\(count)] pid=\(pid) '\(pname)'")
+                    }
+                    current = ds_kread64(current + UInt64(off_proc_p_list_le_next))
+                }
+                log.append("  walked \(count) procs")
+            } else {
+                log.append("our_proc next also invalid")
+                log.append("Scanning kern_proc for valid pointers...")
+                for off in stride(from: 0, to: 0x80, by: 8) {
+                    let val = ds_kread64(kernProc + UInt64(off))
+                    if val > 0xfffffff000000000 && val < 0xfffffffffff00000 && val != kernProc {
+                        let maybePid = ds_kread32(val + 0x60)
+                        if maybePid > 0 && maybePid < 65535 {
+                            log.append("  ✅ kern+0x\(String(format:"%x",off)) → pid=\(maybePid)")
+                        }
                     }
                 }
             }
