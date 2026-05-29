@@ -2,7 +2,7 @@
 //  ExperimentsView.swift
 //  DSPloit
 //
-//  Test new techniques before integrating into main chain.
+//  Experiments — live log style (compact, scrollable)
 //
 
 import SwiftUI
@@ -10,322 +10,185 @@ import SwiftUI
 struct ExperimentsView: View {
     @ObservedObject private var mgr = dspmgr.shared
     
-    @State private var amfidResults: [String] = []
-    @State private var isAmfidRunning = false
-    @State private var showAmfidResults = false
-    
-    @State private var flagScanResults: [String] = []
-    @State private var isFlagScanRunning = false
-    @State private var showFlagScanResults = false
-    
-    @State private var pmapResults: [String] = []
-    @State private var isPmapRunning = false
-    @State private var showPmapResults = false
-    
-    @State private var probeResults: [String] = []
-    @State private var isProbeRunning = false
-    @State private var showProbeResults = false
-    
-    @State private var msmResults: [String] = []
-    @State private var isMSMRunning = false
-    @State private var showMSMResults = false
+    @State private var log: [String] = []
+    @State private var isRunning = false
+    @State private var currentExperiment = ""
     
     var body: some View {
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Experiments", systemImage: "flask.fill")
-                        .font(.headline)
-                    Text("Test bypasses here. Results logged for analysis. Nothing touches main chain until verified ✅.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+        VStack(spacing: 0) {
+            // Live log (top, scrollable, compact)
+            logView
             
-            Section("amfid Patch — AMFI Bypass") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Patch amfid's signature validation function to always return success. This bypasses AMFI for unsigned binary execution.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("3 strategies: kill+race, __TEXT patch via RC, XPC hook")
-                        .font(.caption2)
-                        .foregroundStyle(.blue)
-                }
-                
-                Button {
-                    runAmfidExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isAmfidRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.purple)
-                        Text(isAmfidRunning ? "Running..." : "Run amfid Patch Test")
-                        Spacer()
-                        if !isAmfidRunning {
-                            Text("★")
-                                .foregroundStyle(.yellow)
-                        }
-                    }
-                }
-                .disabled(isAmfidRunning || !mgr.dsready)
-                
-                if !mgr.dsready {
-                    Text("⚠️ Jailbreak dulu — butuh KRW + RemoteCall aktif")
-                        .font(.caption).foregroundStyle(.red)
-                }
-                
-                if !amfidResults.isEmpty {
-                    Button { showAmfidResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showAmfidResults ? "Hide" : "Show Results (\(amfidResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showAmfidResults ? "chevron.up" : "chevron.down")
-                                .font(.caption)
-                        }
-                    }
-                }
-                
-                if showAmfidResults {
-                    ForEach(Array(amfidResults.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(lineColor(line))
-                            .textSelection(.enabled)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 4))
-                    }
-                }
-            }
+            Divider()
             
-            // Safe Flag Scan (★★★ HIGHEST PRIORITY)
-            Section("Safe Flag Scan (★★★ BREAKTHROUGH)") {
-                Text("Systematically test AMFI/pmap_cs __DATA flags found by Rust analyzer. Tests ONE flag at a time, restores on failure. SAFEST experiment — no panic risk.")
-                    .font(.caption).foregroundStyle(.secondary)
-                
-                Button {
-                    runFlagScanExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isFlagScanRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.mint)
-                        Text(isFlagScanRunning ? "Running..." : "Run Safe Flag Scan")
-                        Spacer()
-                        Text("★★★").foregroundStyle(.yellow)
-                    }
-                }
-                .disabled(isFlagScanRunning || !mgr.dsready)
-                
-                if !flagScanResults.isEmpty {
-                    Button { showFlagScanResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showFlagScanResults ? "Hide" : "Show Results (\(flagScanResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showFlagScanResults ? "chevron.up" : "chevron.down").font(.caption)
-                        }
-                    }
-                }
-                if showFlagScanResults {
-                    ForEach(Array(flagScanResults.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
-                    }
-                }
-            }
-            
-            // MSM Trust Cache Load (★★★★★ BEST APPROACH)
-            Section("MSM Trust Cache Load (★★★★★ BREAKTHROUGH)") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Load trust cache via RemoteCall into MobileStorageMounter. MSM already has pmap.load-trust-cache entitlement — no kernel writes needed!")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Safe: uses legitimate entitlement path, no KTRR/PPL risk")
-                        .font(.caption2).foregroundStyle(.green)
-                }
-                
-                Button {
-                    runMSMExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isMSMRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.green)
-                        Text(isMSMRunning ? "Running..." : "Run MSM Trust Cache Load")
-                        Spacer()
-                        Text("★★★★★").foregroundStyle(.yellow)
-                    }
-                }
-                .disabled(isMSMRunning || !mgr.dsready || !mgr.rcready)
-                
-                if !mgr.rcready {
-                    Text("⚠️ Need RemoteCall active (run jailbreak first)")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                
-                if !msmResults.isEmpty {
-                    Button { showMSMResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showMSMResults ? "Hide" : "Show Results (\(msmResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showMSMResults ? "chevron.up" : "chevron.down").font(.caption)
-                        }
-                    }
-                }
-                if showMSMResults {
-                    ForEach(Array(msmResults.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
-                    }
-                }
-            }
-            
-            // Data Segment Probe (★★★★ CRITICAL — RUN FIRST)
-            Section("Data Segment Probe (★★★★ RUN FIRST)") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("READ-ONLY probe to find which kernel addresses are actually writable. Previous writes to __DATA_CONST caused panic.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("NO WRITES except one safe test. Maps real writable __DATA range.")
-                        .font(.caption2).foregroundStyle(.green)
-                }
-                
-                Button {
-                    runProbeExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isProbeRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.blue)
-                        Text(isProbeRunning ? "Probing..." : "Run Data Segment Probe")
-                        Spacer()
-                        Text("★★★★").foregroundStyle(.yellow)
-                    }
-                }
-                .disabled(isProbeRunning || !mgr.dsready)
-                
-                if !probeResults.isEmpty {
-                    Button { showProbeResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showProbeResults ? "Hide" : "Show Results (\(probeResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showProbeResults ? "chevron.up" : "chevron.down").font(.caption)
-                        }
-                    }
-                }
-                if showProbeResults {
-                    ForEach(Array(probeResults.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
-                    }
-                }
-            }
-            
-            Section("pmap_cs Disable (★ Legacy)") {
-                Text("⚠️ CAUTION: Previous version wrote to wrong addresses. Now uses corrected addresses from Rust analyzer. Tests if pmap_cs flags need to be SET to 1.")
-                    .font(.caption).foregroundStyle(.orange)
-                
-                Button {
-                    runPmapExperiment()
-                } label: {
-                    HStack {
-                        Image(systemName: isPmapRunning ? "hourglass" : "play.fill")
-                            .foregroundStyle(.orange)
-                        Text(isPmapRunning ? "Running..." : "Run pmap_cs Disable")
-                        Spacer()
-                    }
-                }
-                .disabled(isPmapRunning || !mgr.dsready)
-                
-                if !pmapResults.isEmpty {
-                    Button { showPmapResults.toggle() } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text(showPmapResults ? "Hide" : "Show Results (\(pmapResults.count) lines)")
-                            Spacer()
-                            Image(systemName: showPmapResults ? "chevron.up" : "chevron.down").font(.caption)
-                        }
-                    }
-                }
-                if showPmapResults {
-                    ForEach(Array(pmapResults.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: 10, design: .monospaced)).foregroundStyle(lineColor(line)).textSelection(.enabled)
-                    }
-                }
-            }
-            
-            Section("Output Legend") {
-                HStack { Text("✅"); Text("Working — integrate").font(.caption).foregroundStyle(.green) }
-                HStack { Text("⚠️"); Text("Partial — investigate").font(.caption).foregroundStyle(.orange) }
-                HStack { Text("❌"); Text("Failed — do NOT integrate").font(.caption).foregroundStyle(.red) }
-                HStack { Text("🔍"); Text("Info — check value").font(.caption).foregroundStyle(.blue) }
-            }
+            // Buttons (bottom, fixed)
+            buttonsView
         }
         .navigationTitle("Experiments")
     }
     
-    private func runAmfidExperiment() {
-        isAmfidRunning = true
-        amfidResults.removeAll()
-        showAmfidResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpAmfidPatch.shared.runAll()
-            DispatchQueue.main.async {
-                amfidResults = r
-                isAmfidRunning = false
+    // MARK: - Live Log View (like main tab)
+    
+    private var logView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(log.enumerated()), id: \.offset) { idx, line in
+                        HStack(alignment: .top, spacing: 6) {
+                            Circle()
+                                .fill(dotColor(line))
+                                .frame(width: 6, height: 6)
+                                .padding(.top, 5)
+                            Text(line)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(textColor(line))
+                                .lineLimit(3)
+                                .textSelection(.enabled)
+                        }
+                        .id(idx)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .background(Color(.systemBackground))
+            .onChange(of: log.count) { _ in
+                if let last = log.indices.last {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    }
+                }
             }
         }
     }
     
-    private func runFlagScanExperiment() {
-        isFlagScanRunning = true
-        flagScanResults.removeAll()
-        showFlagScanResults = true
+    // MARK: - Buttons View
+    
+    private var buttonsView: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                // Status
+                if isRunning {
+                    HStack {
+                        ProgressView().scaleEffect(0.8)
+                        Text(currentExperiment)
+                            .font(.caption.bold())
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(.top, 8)
+                }
+                
+                // Trust Cache experiments (TOP PRIORITY)
+                VStack(spacing: 8) {
+                    Text("Trust Cache Load")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .green, stars: 5) {
+                        runExperiment("MSM TC Load") { ExpMSMTrustCacheLoad.shared.runAll() }
+                    }
+                    
+                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 5) {
+                        runExperiment("launchd TC Load") { ExpLaunchdTCLoad.shared.runAll() }
+                    }
+                }
+                
+                Divider()
+                
+                // Other experiments
+                VStack(spacing: 8) {
+                    Text("Research")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    expButton("Data Segment Probe", icon: "magnifyingglass", color: .blue, stars: 4) {
+                        runExperiment("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
+                    }
+                    
+                    expButton("amfid Patch", icon: "lock.open.fill", color: .purple, stars: 3) {
+                        runExperiment("amfid Patch") { ExpAmfidPatch.shared.runAll() }
+                    }
+                    
+                    expButton("Safe Flag Scan", icon: "flag.fill", color: .mint, stars: 2) {
+                        runExperiment("Flag Scan") { ExpSafeFlagScan.shared.runAll() }
+                    }
+                }
+                
+                // Clear button
+                Button {
+                    log.removeAll()
+                } label: {
+                    Label("Clear Log", systemImage: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                .padding(.top, 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .frame(maxHeight: 280)
+        .background(Color(.secondarySystemBackground))
+    }
+    
+    // MARK: - Experiment Button
+    
+    private func expButton(_ title: String, icon: String, color: Color, stars: Int, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                    .frame(width: 20)
+                Text(title)
+                    .font(.subheadline)
+                Spacer()
+                Text(String(repeating: "★", count: stars))
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)))
+        }
+        .disabled(isRunning || !mgr.dsready)
+    }
+    
+    // MARK: - Run Experiment
+    
+    private func runExperiment(_ name: String, block: @escaping () -> [String]) {
+        isRunning = true
+        currentExperiment = name
+        log.append("▶ Starting: \(name)")
+        
         DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpSafeFlagScan.shared.runAll()
+            let results = block()
             DispatchQueue.main.async {
-                flagScanResults = r
-                isFlagScanRunning = false
+                self.log.append(contentsOf: results)
+                self.log.append("■ Done: \(name)")
+                self.log.append("")
+                self.isRunning = false
+                self.currentExperiment = ""
             }
         }
     }
     
-    private func runPmapExperiment() {
-        isPmapRunning = true
-        pmapResults.removeAll()
-        showPmapResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpPmapCSDisable.shared.runAll()
-            DispatchQueue.main.async {
-                pmapResults = r
-                isPmapRunning = false
-            }
-        }
-    }
+    // MARK: - Colors
     
-    private func runProbeExperiment() {
-        isProbeRunning = true
-        probeResults.removeAll()
-        showProbeResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpDataSegmentProbe.shared.runAll()
-            DispatchQueue.main.async {
-                self.probeResults = r
-                self.isProbeRunning = false
-            }
-        }
-    }
-    
-    private func runMSMExperiment() {
-        isMSMRunning = true
-        msmResults.removeAll()
-        showMSMResults = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ExpMSMTrustCacheLoad.shared.runAll()
-            DispatchQueue.main.async {
-                self.msmResults = r
-                self.isMSMRunning = false
-            }
-        }
-    }
-    
-    private func lineColor(_ line: String) -> Color {
+    private func dotColor(_ line: String) -> Color {
         if line.contains("✅") { return .green }
         if line.contains("❌") { return .red }
         if line.contains("⚠️") { return .orange }
+        if line.hasPrefix("▶") || line.hasPrefix("■") { return .blue }
+        return .secondary.opacity(0.5)
+    }
+    
+    private func textColor(_ line: String) -> Color {
+        if line.contains("✅") { return .green }
+        if line.contains("❌") { return .red }
+        if line.contains("⚠️") { return .orange }
+        if line.hasPrefix("▶") || line.hasPrefix("■") { return .blue }
         if line.contains("══") || line.contains("──") { return .primary }
         return .secondary
     }
