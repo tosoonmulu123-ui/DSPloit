@@ -86,11 +86,17 @@ struct ExperimentsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
                     expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .green, stars: 5) {
-                        runExperiment("MSM TC Load") { ExpMSMTrustCacheLoad.shared.runAll() }
+                        runAsyncExperiment("MSM TC Load") { logCb in
+                            ExpMSMTrustCacheLoad.shared.onLog = logCb
+                            ExpMSMTrustCacheLoad.shared.runAsync()
+                        }
                     }
                     
                     expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 5) {
-                        runExperiment("launchd TC Load") { ExpLaunchdTCLoad.shared.runAll() }
+                        runAsyncExperiment("launchd TC Load") { logCb in
+                            ExpLaunchdTCLoad.shared.onLog = logCb
+                            ExpLaunchdTCLoad.shared.runAsync()
+                        }
                     }
                 }
                 
@@ -166,6 +172,31 @@ struct ExperimentsView: View {
             let results = block()
             DispatchQueue.main.async {
                 self.log.append(contentsOf: results)
+                self.log.append("■ Done: \(name)")
+                self.log.append("")
+                self.isRunning = false
+                self.currentExperiment = ""
+            }
+        }
+    }
+    
+    /// Async experiment (for launchd/MSM that use callbacks)
+    private func runAsyncExperiment(_ name: String, start: @escaping ((@escaping (String) -> Void)) -> Void) {
+        isRunning = true
+        currentExperiment = name
+        log.append("▶ Starting: \(name)")
+        
+        let logCallback: (String) -> Void = { [self] msg in
+            DispatchQueue.main.async {
+                self.log.append(msg)
+            }
+        }
+        
+        start(logCallback)
+        
+        // Auto-finish after 30s if not manually stopped
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [self] in
+            if self.isRunning && self.currentExperiment == name {
                 self.log.append("■ Done: \(name)")
                 self.log.append("")
                 self.isRunning = false
