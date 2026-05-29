@@ -51,11 +51,43 @@ final class ExpAmfidPatchV2 {
         
         // Step 1: Find amfid process in kernel
         log("[1/4] Finding amfid...")
-        let amfidPid = findAmfidPid()
-        guard amfidPid > 0 else {
-            log("❌ amfid not found"); return
+        
+        // First, dump all procs to see what's running
+        let allProcs = listAllProcs()
+        log("Running processes: \(allProcs.count)")
+        let amfiProcs = allProcs.filter { $0.name.lowercased().contains("amfi") }
+        if !amfiProcs.isEmpty {
+            for p in amfiProcs {
+                log("  Found: '\(p.name)' PID=\(p.pid)")
+            }
+        } else {
+            log("  No 'amfi' process found in list")
+            log("  First 20 procs:")
+            for p in allProcs.prefix(20) {
+                log("    PID \(p.pid): \(p.name)")
+            }
         }
-        log("✅ amfid PID: \(amfidPid)")
+        
+        let amfidPid: Int32
+        if let found = amfiProcs.first {
+            amfidPid = found.pid
+        } else {
+            log("")
+            log("⚠️ amfid not running — may be spawned on-demand on iOS 18")
+            log("   Triggering amfid by spawning a signed binary...")
+            triggerAmfid()
+            log("   Re-scanning...")
+            let retry = listAllProcs().filter { $0.name.lowercased().contains("amfi") }
+            if let found = retry.first {
+                amfidPid = found.pid
+                log("   ✅ Found after trigger: PID \(amfidPid)")
+            } else {
+                log("   ❌ amfid still not found")
+                log("   On iOS 18.2, amfid may be embedded in kernel (TXM)")
+                return
+            }
+        }
+        log("")
         
         // Step 2: Find amfid's __TEXT base address
         log("")
@@ -317,12 +349,23 @@ final class ExpAmfidPatchV2 {
     // MARK: - Helpers
     
     private func findAmfidPid() -> Int32 {
-        // Walk kernel proc list to find amfid
+        let procs = listAllProcs()
+        return procs.first(where: { $0.name.lowercased().contains("amfi") })?.pid ?? -1
+    }
+    
+    private struct ProcInfo {
+        let pid: Int32
+        let name: String
+        let addr: UInt64
+    }
+    
+    private func listAllProcs() -> [ProcInfo] {
+        var result: [ProcInfo] = []
         let kernProc = ds_get_kern_proc()
         var current = ds_kread64(kernProc + UInt64(off_proc_p_list_le_next))
         var iterations = 0
         
-        while current != 0 && current != kernProc && iterations < 500 {
+        while current != 0 && current != kernProc && iterations < 1000 {
             iterations += 1
             var name = [UInt8](repeating: 0, count: 32)
             for i in 0..<4 {
@@ -333,13 +376,31 @@ final class ExpAmfidPatchV2 {
                     }
                 }
             }
-            let procName = String(bytes: name.prefix(while: { $0 != 0 }), encoding: .utf8) ?? ""
-            if procName == "amfid" {
-                return Int32(ds_kread32(current + UInt64(off_proc_p_pid)))
-            }
+            let procName = String(bytes: name.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "?"
+            let pid = Int32(ds_kread32(current + UInt64(off_proc_p_pid)))
+            result.append(ProcInfo(pid: pid, name: procName, addr: current))
             current = ds_kread64(current + UInt64(off_proc_p_list_le_next))
         }
-        return -1
+        return result.sorted { $0.pid < $1.pid }
+    }
+    
+    private func triggerAmfid() {
+        // Spawn a signed binary to trigger amfid to start
+        // /usr/bin/true or /bin/df should work
+        #if !DISABLE_REMOTECALL
+        if let sb = dspmgr.shared.sbProc {
+            let path = remote_alloc_str(sb, "/usr/bin/true")
+            let pidAddr = sb.trojanMem + 0xB00
+            sb[pidAddr].setValue32(0)
+            let argv = sb.trojanMem + 0xB10
+            sb[argv].setValue64(path)
+            sb[argv + 8].setValue64(0)
+            RootExecutor.rcall(sb, "posix_spawn", pidAddr, path, 0, 0, argv, 0)
+            RootExecutor.rcall(sb, "free", path)
+            // Wait a moment for amfid to spawn
+            usleep(500000) // 500ms
+        }
+        #endif
     }
     
     private func getAmfidTextBase(proc: UInt64, task: UInt64) -> UInt64 {
