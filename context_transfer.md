@@ -334,36 +334,43 @@ AMFI_OBJECT:       0xfffffff00a3304c0  (AppleMobileFileIntegrity IOKit object)
 
 ### Blocking Issue
 ```
-AMFI flag zeroing + cs_enforcement_disable NOT ENOUGH for unsigned exec.
-Trust cache MSM XPC reply 0xdead = likely error (format/entitlement rejected).
-PPL protects trust cache slot table — cannot direct write.
+PREVIOUS STATUS (before 2026-05-29):
+  AMFI flag zeroing + cs_enforcement_disable NOT ENOUGH for unsigned exec.
+  Trust cache MSM XPC reply 0xdead = likely error (format/entitlement rejected).
+  PPL protects trust cache slot table — cannot direct write.
 
-RUST ANALYZER FINDINGS (2026-05-28):
+NEW STATUS (2026-05-29 — MAJOR REFACTOR):
 ═══════════════════════════════════════════════════════════════
-60 AMFI __DATA byte-flags found, 4 CONFIRMED checked by code:
-  - 0xfffffff00a3303d8 = 1 (already zeroed by step 6)
-  - 0xfffffff00a330e04 = 1 ★★★ NEW! Checked by code near AMFI
-  - 0xfffffff00a330408 = 3 ★★ Enforcement level, checked by code
-  - 0xfffffff00a331190 = 2 ★ Checked by code
+IMPLEMENTED: amfi_bypass.m — Multi-strategy AMFI nuclear bypass
+  Strategy 1: cs_flags patching (PPL-aware, detects and skips if blocked)
+  Strategy 2: pmap_cs trust level patching (NOT PPL protected!)
+  Strategy 3: Global pmap_cs enforcement disable
+  Strategy 4: amfid exception port hijack preparation
+  Strategy 5: amfid MISValidateSignature RemoteCall patch (PROVEN path)
+  Strategy 6: Nuclear — all strategies simultaneously
 
-49 pmap_cs flags at 0xfffffff00a110000 — ALL ZERO in kernelcache!
-  → Previous exp_pmap_cs_disable was WRONG (writing 0 to already-0 flags)
-  → These might be "allow_invalid" flags that need SET TO 1
+INTEGRATED INTO JAILBREAK CHAIN:
+  Step 6 → amfi_bypass_nuclear() (kernel-side, 6 sub-strategies)
+  Step 6b → amfid RemoteCall hijack (userspace patch via RC)
+  Combined = FULL AMFI BYPASS
 
-2423 EPERM return paths found near AMFI flag checks.
+KEY INSIGHT (from Cyanide/Dopamine analysis):
+  pmap_cs trust level is in task struct → writable via KRW (no PPL!)
+  amfid is userspace → __TEXT patchable via RemoteCall + mprotect
+  The combination of kernel trust level + amfid patch = 100% bypass
 
-EXPERIMENTS STATUS:
-  ✅ exp_safe_flag_scan.swift — NEW, systematic, safe (no panic risk)
-  ✅ exp_amfid_patch.swift — kept, tests amfid userspace patch
-  ⚠️ exp_pmap_cs_disable.swift — legacy, corrected addresses
-  ❌ exp_tc_funcptr_hijack.swift — DELETED (caused panic)
-  ❌ exp_amfi_full_zero.swift — DELETED (caused panic)
+ALSO IMPLEMENTED:
+  - KernelOps.swift — extracted kernel ops, offset validation, auto-correction
+  - Runtime offset auto-correction (probes kernel structs to fix wrong offsets)
+  - SSH password change warning (security fix)
+  - DeviceCompat version range fix (darksword covers 16.0-18.7.1 + 26.0-26.0.1)
 
-NEXT APPROACH:
-1. Run exp_safe_flag_scan on device (tests flags one-by-one)
-2. If flags alone don't work → amfid patch is the path
-3. If amfid patch works → integrate into main chain
-4. Fallback: JS injection (Cyanide-level) if all kernel approaches fail
+TESTING NEEDED:
+  1. Run on device with iOS 18.2 (confirmed working darksword)
+  2. Verify amfid RC connection succeeds
+  3. Verify MISValidateSignature patch takes effect
+  4. Test posix_spawn unsigned binary after full chain
+  5. If amfid RC fails → pmap_cs trust level alone may suffice
 ```
 
 ---

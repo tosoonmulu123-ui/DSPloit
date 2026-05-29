@@ -61,8 +61,8 @@ Semi-tethered jailbreak with multi-exploit support, MIG filter bypass, and trust
 2. **sbx.m** — Sandbox escape via extension data patching
 3. **vfs.m** — Virtual filesystem access via namecache + vm_map patching
 4. **RemoteCall** — Thread hijacking via Mach exception ports + MIG bypass
-5. **AMFI Bypass** — 10 boolean flags in AMFI __DATA zeroed (Experiment 93b)
-6. **Trust Cache** — XPC to MobileStorageMounter with trust cache v2 data
+5. **amfi_bypass.m** — Nuclear AMFI bypass (6 strategies: cs_flags + pmap_cs trust level + mac_proc_enforce + AMFI flags + cs_enforcement + amfid hijack)
+6. **Trust Cache** — XPC to MobileStorageMounter with trust cache v2 data (fallback if amfid patch alone isn't sufficient)
 
 ### Multi-Exploit System
 | Exploit | iOS Range | Status |

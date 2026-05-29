@@ -20,6 +20,12 @@ final class SSHManager {
     private let daemonPlist = "/var/jb/Library/LaunchDaemons/com.dsploit.dropbear.plist"
     private let hostKeyPath = "/var/jb/etc/dropbear"
     private let sshPort: UInt16 = 2222
+    private let passwordFile = "/var/jb/etc/dropbear/.password_changed"
+    
+    /// Whether the default password has been changed
+    var passwordChanged: Bool {
+        FileManager.default.fileExists(atPath: passwordFile)
+    }
     
     var isInstalled: Bool {
         FileManager.default.fileExists(atPath: dropbearPath)
@@ -121,6 +127,13 @@ final class SSHManager {
             log?("❌ Jailbreak not active")
             completion(false)
             return
+        }
+        
+        if !passwordChanged {
+            log?("⚠️ SECURITY: Default password 'alpine' is active!")
+            log?("⚠️ Change it immediately after connecting:")
+            log?("   ssh root@<device-ip> -p \(sshPort)")
+            log?("   Then run: passwd")
         }
         
         log?("Starting SSH server on port \(sshPort)...")

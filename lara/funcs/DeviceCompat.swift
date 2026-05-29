@@ -94,7 +94,7 @@ final class DeviceCompat {
     /// Core compatibility check:
     /// - Chip must be A11-A18 or M1/M2
     /// - Multi-exploit support:
-    ///   - darksword: iOS 16.0–18.2
+    ///   - darksword: iOS 16.0–18.7.1, 26.0–26.0.1
     ///   - AppleJPEGDriver UAF: iOS 18.3–26.3
     ///   - AppleSEPKeyStore UAF: iOS 26.1–26.2
     ///   - AppleKeyStore close UAF: iOS ≤26.2.1
@@ -117,7 +117,7 @@ final class DeviceCompat {
         }
         
         // Check iOS version — multi-exploit coverage
-        // darksword: iOS 16.0–18.2
+        // darksword: iOS 16.0–18.7.1, 26.0–26.0.1
         // AppleJPEGDriver UAF (CVE-2026-20687): iOS 18.3–26.3
         // AppleSEPKeyStore UAF (CVE-2026-20637): iOS 26.1–26.2
         // AppleKeyStore close UAF: iOS 16.0–26.2.1
@@ -133,13 +133,21 @@ final class DeviceCompat {
         }
         
         if major == 18 {
-            if minor <= 2 {
-                // iOS 18.0–18.2 — darksword (primary)
-                return (true, false, nil)
-            } else {
-                // iOS 18.3–18.x — AppleJPEGDriver UAF + AppleKeyStore UAF
+            if minor <= 7 {
+                if minor < 7 {
+                    // iOS 18.0–18.6.x — darksword
+                    return (true, false, nil)
+                }
+                // iOS 18.7.x
+                if patch <= 1 {
+                    // iOS 18.7.0–18.7.1 — darksword
+                    return (true, false, nil)
+                }
+                // iOS 18.7.2+ — darksword patched, but JPEG UAF still works
                 return (true, false, nil)
             }
+            // iOS 18.8+ — JPEG UAF covers
+            return (true, false, nil)
         }
         
         if major >= 19 && major <= 25 {
@@ -148,19 +156,24 @@ final class DeviceCompat {
         }
         
         if major == 26 {
+            if minor == 0 {
+                if patch <= 1 {
+                    // iOS 26.0–26.0.1 — darksword + AKS
+                    return (true, false, nil)
+                }
+                // iOS 26.0.2+ — JPEG UAF + AKS
+                return (true, false, nil)
+            }
             if minor <= 3 {
-                // iOS 26.0–26.3 — multiple exploits available
-                // 26.0–26.0.1: darksword + AKS
-                // 26.1–26.2: SEPKeyStore + JPEG + AKS
-                // 26.2.1: AKS close UAF
-                // 26.3: JPEG UAF (last version before patch)
+                // iOS 26.1–26.3 — multiple exploits available
                 return (true, false, nil)
             }
             // iOS 26.4+ — all known exploits patched
             return (false, true, "iOS 26.\(minor) is patched. All known exploits fixed in 26.4.")
         }
         
-        return (false, true, "iOS \(major).\(minor) is not supported.")
+        // iOS 27+ — unknown, likely patched
+        return (false, true, "iOS \(major).\(minor) is not supported. Latest supported: 26.3.")
     }
     
     // MARK: - Chip Detection

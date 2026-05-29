@@ -14,6 +14,7 @@
 #import "persistence.h"
 #import "persistence_v2.h"
 #import "TrustCacheInjector.h"
+#import "amfi_bypass.h"
 #import "vnode.h"
 #import "apfs.h"
 #import "vfs.h"
