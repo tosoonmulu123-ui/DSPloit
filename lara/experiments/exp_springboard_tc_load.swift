@@ -224,7 +224,13 @@ final class ExpSpringBoardTCLoad {
         var uuid = UUID().uuid; tc.append(Data(bytes: &uuid, count: 16))
         var c: UInt32 = 1; tc.append(Data(bytes: &c, count: 4))
         tc.append(cdhash)
-        tc.append(contentsOf: [2, 0, 0, 0])
+        // hash_type=2, flags=0, constraint_category=2 (from Apple IPSW analysis)
+        var hashType: UInt8 = 2
+        var flags: UInt8 = 0
+        var constraint: UInt16 = 2
+        tc.append(Data(bytes: &hashType, count: 1))
+        tc.append(Data(bytes: &flags, count: 1))
+        tc.append(Data(bytes: &constraint, count: 2))
         return tc
     }
     

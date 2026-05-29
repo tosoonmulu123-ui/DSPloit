@@ -430,7 +430,7 @@ final class ExpCryptexdTCLoad {
     
     // MARK: - Trust Cache v2 Builder
     
-    /// Build trust cache v2 with proper format (from Ghidra RE):
+    /// Build trust cache v2 with proper format (from Ghidra RE + Apple IPSW):
     /// +0x00: uint32 version = 2
     /// +0x04: uint8[16] uuid
     /// +0x14: uint32 entry_count
@@ -438,7 +438,7 @@ final class ExpCryptexdTCLoad {
     ///        +0x00: uint8[20] cdhash
     ///        +0x14: uint8 hash_type (2=SHA256)
     ///        +0x15: uint8 flags (0=normal)
-    ///        +0x16: uint16 padding
+    ///        +0x16: uint16 constraint_category (2=normal, from Apple IPSW)
     private func buildTrustCacheV2(cdhash: Data) -> Data {
         var tc = Data()
         var version: UInt32 = 2
@@ -452,7 +452,13 @@ final class ExpCryptexdTCLoad {
         if cdhash.count < 20 {
             tc.append(Data(repeating: 0, count: 20 - cdhash.count))
         }
-        tc.append(contentsOf: [2, 0, 0, 0]) // hash_type=2, flags=0, pad
+        // hash_type=2 (SHA256), flags=0, constraint_category=2 (from Apple IPSW)
+        var hashType: UInt8 = 2
+        var flags: UInt8 = 0
+        var constraint: UInt16 = 2
+        tc.append(Data(bytes: &hashType, count: 1))
+        tc.append(Data(bytes: &flags, count: 1))
+        tc.append(Data(bytes: &constraint, count: 2))
         return tc
     }
     
