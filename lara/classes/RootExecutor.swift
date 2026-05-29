@@ -77,9 +77,11 @@ final class RootExecutor: ObservableObject {
     static func rcallAddr(_ rc: RemoteCall, _ fnAddr: UInt64, _ args: UInt64...) -> UInt64 {
         guard fnAddr != 0 && fnAddr != UInt64(bitPattern: -1) else { return 0xDEAD }
         // Safety: reject obviously invalid addresses
-        // Valid userspace: 0x100000000...0x800000000 (shared cache + app)
+        // Valid userspace: 0x100000000...0x280000000000 (shared cache + app + dyld)
+        // iOS 18 shared cache can be mapped at high addresses (0x180000000+)
+        // DYLD_SHARED_REGION on arm64e can go up to ~0x280000000000
         // Valid kernel: 0xfffffff000000000+ (kernel VA)
-        let isUserspace = fnAddr >= 0x100000000 && fnAddr < 0x800000000
+        let isUserspace = fnAddr >= 0x100000000 && fnAddr < 0x280000000000
         let isKernel = fnAddr >= 0xfffffff000000000
         guard isUserspace || isKernel else {
             globallogger.log("(rcallAddr) REJECTED invalid addr: 0x\(String(format: "%llx", fnAddr))")
