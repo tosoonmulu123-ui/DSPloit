@@ -85,14 +85,21 @@ struct ExperimentsView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .green, stars: 5) {
+                    expButton("SpringBoard IOKit", icon: "star.fill", color: .yellow, stars: 5) {
+                        runAsyncExperiment("SpringBoard TC") { logCb in
+                            ExpSpringBoardTCLoad.shared.onLog = logCb
+                            ExpSpringBoardTCLoad.shared.runAsync()
+                        }
+                    }
+                    
+                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .green, stars: 3) {
                         runAsyncExperiment("MSM TC Load") { logCb in
                             ExpMSMTrustCacheLoad.shared.onLog = logCb
                             ExpMSMTrustCacheLoad.shared.runAsync()
                         }
                     }
                     
-                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 5) {
+                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 3) {
                         runAsyncExperiment("launchd TC Load") { logCb in
                             ExpLaunchdTCLoad.shared.onLog = logCb
                             ExpLaunchdTCLoad.shared.runAsync()
