@@ -116,6 +116,9 @@ struct ExperimentsView: View {
                 expBtn("Data Segment Probe", .blue) {
                     runSync("Data Probe") { ExpDataSegmentProbe.shared.runAll() }
                 }
+                expBtn("Proc List Debug", .cyan) {
+                    runSync("Proc Debug") { ExpProcListDebug.shared.runAll() }
+                }
                 expBtn("SpringBoard IOKit (old)", .yellow) {
                     runAsync("SB IOKit") { cb in
                         ExpSpringBoardTCLoad.shared.onLog = cb
