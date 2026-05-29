@@ -85,31 +85,33 @@ struct ExperimentsView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    expButton("cryptexd IOKit (BEST)", icon: "checkmark.seal.fill", color: .green, stars: 5) {
+                    expButton("① Load TC (SpringBoard)", icon: "arrow.down.circle.fill", color: .green, stars: 5) {
+                        runAsyncExperiment("TC Load") { logCb in
+                            ExpTCLoadAndSpawn.shared.onLog = logCb
+                            ExpTCLoadAndSpawn.shared.phase1_loadTC()
+                        }
+                    }
+                    
+                    expButton("② Test Spawn (launchd)", icon: "play.circle.fill", color: .green, stars: 5) {
+                        runAsyncExperiment("TC Spawn") { logCb in
+                            ExpTCLoadAndSpawn.shared.onLog = logCb
+                            ExpTCLoadAndSpawn.shared.phase2_testSpawn()
+                        }
+                    }
+                    
+                    Divider().padding(.vertical, 4)
+                    
+                    expButton("cryptexd IOKit", icon: "checkmark.seal.fill", color: .teal, stars: 3) {
                         runAsyncExperiment("cryptexd TC") { logCb in
                             ExpCryptexdTCLoad.shared.onLog = logCb
                             ExpCryptexdTCLoad.shared.runAsync()
                         }
                     }
                     
-                    expButton("SpringBoard IOKit", icon: "star.fill", color: .yellow, stars: 3) {
+                    expButton("SpringBoard IOKit (old)", icon: "star.fill", color: .yellow, stars: 2) {
                         runAsyncExperiment("SpringBoard TC") { logCb in
                             ExpSpringBoardTCLoad.shared.onLog = logCb
                             ExpSpringBoardTCLoad.shared.runAsync()
-                        }
-                    }
-                    
-                    expButton("MSM RemoteCall", icon: "shippingbox.fill", color: .orange, stars: 2) {
-                        runAsyncExperiment("MSM TC Load") { logCb in
-                            ExpMSMTrustCacheLoad.shared.onLog = logCb
-                            ExpMSMTrustCacheLoad.shared.runAsync()
-                        }
-                    }
-                    
-                    expButton("launchd IOKit", icon: "bolt.fill", color: .orange, stars: 2) {
-                        runAsyncExperiment("launchd TC Load") { logCb in
-                            ExpLaunchdTCLoad.shared.onLog = logCb
-                            ExpLaunchdTCLoad.shared.runAsync()
                         }
                     }
                 }
