@@ -387,24 +387,16 @@ final class JailbreakEngine: ObservableObject {
         step6b_hijackAmfid()
     }
     
-    /// Step 6b: amfid bypass via kernel-only approach
-    /// NOTE: RemoteCall to amfid was causing respring (amfid crash → SpringBoard killed)
-    /// Instead, we rely on kernel-side patches (global flags + pmap+0xc2) which are sufficient.
-    /// amfid RC hijack is available as manual experiment (ExpAmfidPatch) for testing.
+    /// Step 6b: amfid preparation (cs_flags patched by step 6)
+    /// The actual NOP write is done via Experiments tab (safe, manual)
+    /// because getting amfid's text base requires task_for_pid which
+    /// needs more testing before integrating into auto chain.
     private func step6b_hijackAmfid() {
-        // Skip amfid RC hijack in main chain — it causes respring
-        // The kernel-side patches from step6 (pmap_cs enforcement + allow_invalid + tc_load_gate)
-        // should be sufficient for unsigned code execution.
-        //
-        // If they're not sufficient on this iOS version, user can manually run
-        // ExpAmfidPatch from the Experiments tab.
-        
-        let bypassStatus = String(cString: amfi_bypass_status())
-        if bypassStatus.contains("6/6") || bypassStatus.contains("5/6") || bypassStatus.contains("4/6") {
-            appendLog("✅ Kernel-side AMFI bypass strong enough — skipping amfid hijack")
+        let status = String(cString: amfi_bypass_status())
+        if status.contains("amfid") {
+            appendLog("✅ amfid cs_flags patched (ready for NOP via Experiments)")
         } else {
-            appendLog("ℹ️ Kernel bypass partial — amfid RC hijack available in Experiments tab")
-            appendLog("   (Skipped in main chain to prevent respring)")
+            appendLog("ℹ️ amfid prep skipped — use Experiments tab for manual patch")
         }
         
         progress = 0.9

