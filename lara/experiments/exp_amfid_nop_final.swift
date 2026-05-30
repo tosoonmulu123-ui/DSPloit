@@ -178,7 +178,7 @@ final class ExpAmfidNopFinal {
         let amfidTask = taskbyproc(amfidProc)
         log("  amfid task: 0x\(String(format:"%llx", amfidTask))")
         
-        guard amfidTask != 0 && amfidTask > 0xfffffff000000000 else {
+        guard amfidTask != 0 && (amfidTask >> 32) > 0xFFFFFF00 else {
             log("❌ taskbyproc returned invalid value")
             log("   Falling back to launchd...")
             performPatchViaLaunchd(amfidPid: amfidPid)
@@ -189,7 +189,7 @@ final class ExpAmfidNopFinal {
         let vmMap = ds_kread64(amfidTask + 0x28)
         log("  vm_map (task+0x28): 0x\(String(format:"%llx", vmMap))")
         
-        guard vmMap != 0 && vmMap > 0xfffffff000000000 else {
+        guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
             log("❌ vm_map invalid — offset may be wrong")
             performPatchViaLaunchd(amfidPid: amfidPid)
             return
@@ -199,13 +199,12 @@ final class ExpAmfidNopFinal {
         let pmap = ds_kread64(vmMap + 0x48)
         log("  pmap (vm_map+0x48): 0x\(String(format:"%llx", pmap))")
         
-        guard pmap != 0 && pmap > 0xfffffff000000000 else {
+        guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
             log("❌ pmap invalid — offset 0x48 may be wrong")
             log("   Trying other offsets...")
-            // Try common pmap offsets
             for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60] {
                 let val = ds_kread64(vmMap + off)
-                if val > 0xfffffff000000000 && val < 0xffffffffe0000000 {
+                if val != 0 && (val >> 32) > 0xFFFFFF00 {
                     log("   vm_map+0x\(String(format:"%x", off)) = 0x\(String(format:"%llx", val)) ← possible pmap?")
                 }
             }
@@ -508,8 +507,8 @@ final class ExpAmfidNopFinal {
         log("Reading amfid's vm_map → pmap → page tables...")
         
         let amfidTask = taskbyproc(amfidProc)
-        guard amfidTask != 0 else {
-            log("❌ taskbyproc failed")
+        guard amfidTask != 0 && (amfidTask >> 32) > 0xFFFFFF00 else {
+            log("❌ taskbyproc failed: 0x\(String(format:"%llx", amfidTask))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -517,7 +516,7 @@ final class ExpAmfidNopFinal {
         
         // task → vm_map (offset 0x28 on iOS 18)
         let vmMap = ds_kread64(amfidTask + 0x28)
-        guard vmMap != 0 && vmMap > 0xfffffff000000000 else {
+        guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
             log("❌ vm_map invalid: 0x\(String(format:"%llx", vmMap))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -526,7 +525,7 @@ final class ExpAmfidNopFinal {
         
         // vm_map → pmap (offset 0x48 on iOS 18)
         let pmap = ds_kread64(vmMap + 0x48)
-        guard pmap != 0 && pmap > 0xfffffff000000000 else {
+        guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
             log("❌ pmap invalid: 0x\(String(format:"%llx", pmap))")
             log("   vm_map+0x48 may be wrong offset for this build")
             fallbackToLaunchd(amfidPid: amfidPid)
