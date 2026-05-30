@@ -212,7 +212,7 @@ final class ExpAmfidNopFinal {
         // Connect RC to amfid
         log("[5/7] Connecting to amfid via RemoteCall...")
         dspmgr.shared.rcinitDaemon(
-            serviceName: nil,
+            serviceName: "com.apple.amfi.mach",
             framework: nil,
             process: "amfid",
             migbypass: false
