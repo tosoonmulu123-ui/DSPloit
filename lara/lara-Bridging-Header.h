@@ -6,6 +6,15 @@
 @import UIKit;
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
+#import <mach/mach.h>
+
+// mach_vm functions (not auto-bridged to Swift)
+#include <mach/mach_vm.h>
+#include <mach/vm_prot.h>
+
+#ifndef VM_PROT_ALL
+#define VM_PROT_ALL (VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE)
+#endif
 
 #import "darksword.h"
 #import "offsets.h"
