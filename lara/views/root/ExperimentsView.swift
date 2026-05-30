@@ -91,6 +91,12 @@ struct ExperimentsView: View {
                 
                 Divider().padding(.vertical, 4)
                 sectionHeader("Trust Cache")
+                expBtn("✅ Jailbreak Proof (no binary)", .purple) {
+                    runAsync("JB Proof") { cb in
+                        ExpCodeExecProof.shared.onLog = cb
+                        ExpCodeExecProof.shared.run()
+                    }
+                }
                 expBtn("🔥 TC Direct Inject (KRW)", .orange) {
                     runAsync("TC Direct") { cb in
                         ExpTCDirectInject.shared.onLog = cb
