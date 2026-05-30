@@ -91,6 +91,12 @@ struct ExperimentsView: View {
                 
                 Divider().padding(.vertical, 4)
                 sectionHeader("Trust Cache")
+                expBtn("🔥 TC Direct Inject (KRW)", .orange) {
+                    runAsync("TC Direct") { cb in
+                        ExpTCDirectInject.shared.onLog = cb
+                        ExpTCDirectInject.shared.run()
+                    }
+                }
                 expBtn("① Load TC (SpringBoard)", .green) {
                     runAsync("TC Load") { cb in
                         ExpTCLoadAndSpawn.shared.onLog = cb
