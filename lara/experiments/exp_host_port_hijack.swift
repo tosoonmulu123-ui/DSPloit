@@ -182,7 +182,7 @@ final class ExpHostPortHijack {
                     header.pointee.msgh_bits = (remotePort > 0) ? 18 : 0 // MACH_MSG_TYPE_MOVE_SEND_ONCE is 18
                     header.pointee.msgh_size = 128 // Arbitrary safe size for reply
                     header.pointee.msgh_remote_port = remotePort
-                    header.pointee.msgh_local_port = MACH_PORT_NULL
+                    header.pointee.msgh_local_port = mach_port_t(MACH_PORT_NULL)
                     header.pointee.msgh_id = replyId
                     
                     // RetCode is at offset 32
