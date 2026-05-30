@@ -211,8 +211,9 @@ final class ExpAmfidNopFinal {
         
         // Connect RC to amfid
         log("[5/7] Connecting to amfid via RemoteCall...")
+        // Connect RC to amfid using rcinitDaemon (separate from SB connection)
         dspmgr.shared.rcinitDaemon(
-            serviceName: "com.apple.amfi.mach",
+            serviceName: "com.apple.amfi.xpc",
             framework: nil,
             process: "amfid",
             migbypass: false
@@ -221,7 +222,8 @@ final class ExpAmfidNopFinal {
             
             guard let rc = amfidRC else {
                 self.log("❌ RC to amfid failed")
-                self.log("   Trying alternative: mprotect from amfid via SpringBoard relay...")
+                self.log("   Error: \(RemoteCall.lastInitError() ?? "unknown")")
+                self.log("   amfid may have restricted exception ports")
                 self.patchViaSpringBoardRelay(amfidPid: amfidPid, patchAddr: patchAddr)
                 return
             }
