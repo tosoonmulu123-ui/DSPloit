@@ -201,7 +201,6 @@ final class ExpHostPortHijack {
             }
             self.log("[mig] Responder thread stopped.")
         }
-        #endif
     }
     
     // MARK: - KRW Port Resolution
@@ -224,13 +223,8 @@ final class ExpHostPortHijack {
         return portKaddr
     }
     
-    // MARK: - Local MIG Responder
     
-    private func injectMIGResponder(rc: RemoteCaller, portName: UInt32) -> UInt64 {
-        return 0
-    }
-    #endif
-    
+
     private func buildMinimalBinary() -> Data {
         var bin = Data()
         // Mach-O header (arm64, MH_EXECUTE)
