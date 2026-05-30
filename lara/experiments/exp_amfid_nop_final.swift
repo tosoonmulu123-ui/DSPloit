@@ -314,7 +314,7 @@ final class ExpAmfidNopFinal {
         let pageAddr = patchAddr & ~0xFFF
         
         // mach_vm_protect
-        let protKr = mach_vm_protect(taskPort, mach_vm_address_t(pageAddr), 0x4000, 0, vm_prot_t(VM_PROT_ALL))
+        let protKr = mach_vm_protect(taskPort, mach_vm_address_t(pageAddr), 0x4000, 0, vm_prot_t(7))
         log("  mach_vm_protect: kr=\(protKr)")
         guard protKr == KERN_SUCCESS else {
             log("❌ mach_vm_protect failed")
