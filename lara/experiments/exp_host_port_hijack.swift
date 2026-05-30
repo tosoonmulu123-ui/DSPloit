@@ -193,7 +193,7 @@ final class ExpHostPortHijack {
     // MARK: - MIG Responder
     
     #if !DISABLE_REMOTECALL
-    private func injectMIGResponder(rc: RemoteCallContext, portName: UInt32) -> Int {
+    private func injectMIGResponder(rc: RemoteCall, portName: UInt32) -> Int {
         // We need a simple thread that loops mach_msg and replies 0.
         // Instead of writing assembly, we can use a small ROP chain or a dedicated dylib.
         // Since RemoteCall doesn't easily support spinning off a background thread with custom logic
