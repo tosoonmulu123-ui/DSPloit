@@ -1,9 +1,201 @@
 # DSPloit — Context Transfer Document
-## Updated: 2026-05-24 | Session: Full Audit + Weaponization + Features
+## Updated: 2026-05-31 | Session: AMFI Bypass Deep Research + Ghidra RE
 
 ## Tujuan Akhir: FULL JAILBREAK ACCESS WITHOUT ANY PROBLEMS
 
 **Target**: iOS 16.0–18.7.1 + 26.0–26.0.1 | A11–A18 + M1/M2 | Semi-tethered | One-tap jailbreak
+
+---
+
+## CURRENT STATUS (2026-05-31)
+
+### What WORKS (confirmed on device — iPhone XR iOS 18.2):
+```
+✅ Kernel exploit (darksword) — working
+✅ Sandbox escape — working
+✅ RemoteCall (SpringBoard + launchd) — working
+✅ Root (uid=0) — working via launchd RC
+✅ VFS filesystem access — working
+✅ AMFI 10 flags zeroed — working (writable __DATA)
+✅ cs_enforcement_disable = 1 — working (writable)
+✅ posix_spawn signed binary (/bin/df) — working (ret=0)
+✅ amfid found via procbyname — PID 54
+✅ amfid text base found — 0x100104000
+✅ exc_guard disabled on amfid — working
+```
+
+### What DOESN'T WORK (all approaches tried):
+```
+❌ posix_spawn UNSIGNED binary — EPERM (AMFI still blocking)
+❌ RC to amfid — "restricted exception ports on iOS 18"
+❌ task_for_pid from launchd — ret=5 (AMFI denies even from uid=0)
+❌ task_for_pid from SpringBoard — respring (no entitlement)
+❌ IPC port forge — PAC kills it (Break 0xC472)
+❌ Page table walk — physical addresses, ds_kread64 can't read them
+❌ cs_flags patch on amfid — PPL blocks (proc_ro protected)
+❌ IOKit TC load from SpringBoard — causes respring
+❌ RC to cryptexd — fails (restricted exception ports)
+❌ RC to MobileStorageMounter — fails
+❌ Direct kernel TC write — PPL protected (trust cache in PPL memory)
+❌ amfi_only_platform_code flag — __DATA_CONST (KTRR), write causes panic
+❌ trust_cache_load_gate — __DATA_CONST (KTRR), causes panic
+❌ developer_mode_init — __DATA_CONST (KTRR), causes panic
+❌ pmap_cs_enforcement — __DATA_CONST (KTRR), causes panic
+```
+
+### Hardware Protections Blocking Us:
+```
+KTRR: Protects kernel __TEXT and __DATA_CONST (amfi_only_platform_code, tc_load_gate)
+PPL:  Protects trust cache memory, proc_ro, page tables
+PAC:  Protects IPC entries (can't forge task ports)
+```
+
+---
+
+## GHIDRA RE FINDINGS (this session)
+
+### CRITICAL: Kernel amfid callout logic (FUN_fffffff008f86398)
+```
+vnode_check_signature flow:
+1. Check if CDHash is in trust cache (FUN_fffffff008f84198)
+   → If YES: skip amfid, mark as "trust-cache", ALLOW
+   → If NO: continue to step 2
+
+2. Check DAT_fffffff007b79bd9 (amfi_only_platform_code)
+   → If 0: SKIP amfid callout entirely
+   → If 1 (default): call amfid via MIG (FUN_fffffff008f8abc4)
+
+3. amfid validates signature → returns valid/invalid
+4. Kernel acts on amfid's response
+```
+
+### DAT_fffffff007b79bd9 (amfi_only_platform_code)
+- Set during AMFI init from device tree property "amfi-only-platform-code"
+- Value = 1 on production devices
+- Located in __DATA_CONST → KTRR protected → CANNOT WRITE (causes panic)
+- If we COULD write it to 0, kernel would never call amfid
+
+### Trust Cache Lookup Path
+```
+FUN_fffffff008f84198 → FUN_fffffff008f7b564 → FUN_fffffff0082857b4 → FUN_fffffff007da2a6c
+→ FUN_fffffff007d9897c (PPL DISPATCH)
+```
+Trust cache queries go through PPL. The actual TC data is in PPL-guarded memory.
+Cannot be written via normal KRW.
+
+### TC Slot Table (0xfffffff00798f600 + slide)
+- Scanned on device: no valid TC modules found at expected offsets
+- Either the address is wrong or the structure layout differs from what we assumed
+- The slot table may be in __DATA_CONST too
+
+### Writable Addresses (confirmed):
+```
+0xfffffff00a160798 + slide = cs_enforcement_disable (uint32, writable)
+0xfffffff00a330098 + slide = AMFI __DATA base (10 flags at offsets, writable)
+0xfffffff00a3304c0 + slide = AMFI IOKit object pointer
+0xfffffff00a330590 + slide = DAT used in vnode_check_signature
+```
+
+### Read-Only Addresses (KTRR/__DATA_CONST — DO NOT WRITE):
+```
+0xfffffff007b79bd9 + slide = amfi_only_platform_code (PANIC if written)
+0xfffffff007b795e8 + slide = trust_cache_load_gate (PANIC if written)
+0xfffffff00a0e45b8 + slide = pmap_cs_enforcement (PANIC if written)
+0xfffffff00a0e1368 + slide = developer_mode_init (PANIC if written)
+0xfffffff00a0e00e0 + slide = PPL dispatch flag
+```
+
+---
+
+## AUDIT: DSPloit vs Upstream Lara vs DarkSword
+
+### Upstream rooootdev/lara:
+- Customization toolbox ONLY (not a jailbreak)
+- Uses darksword for KRW but only does: font overwrite, MobileGestalt, file manager, status bar tweaks
+- Does NOT attempt: AMFI bypass, TC injection, unsigned exec, package management, SSH
+- Known issues: "remotecall is super bugged"
+
+### DSPloit additions beyond upstream:
+- Multi-exploit selector (darksword + 3 skeleton exploits)
+- Full AMFI bypass system (5+ strategies, all blocked by hardware)
+- Trust cache injection attempts (IOKit, direct write, MSM XPC)
+- RootExecutor (launchd operations as uid=0)
+- Package manager (dpkg compatible)
+- SSH manager (dropbear)
+- Tweak loader (dlopen injection)
+- App registration (installd XPC)
+- KRW persistence
+- Dynamic offset resolution (XPF)
+- 15+ experiments for AMFI/TC research
+
+### DarkSword (original Russian spyware) approach:
+- NEVER patches amfid or loads trust caches
+- Runs ALL code inside already-signed processes via RemoteCall
+- Uses NSInvocation + JSContext injection for complex operations
+- This is the viable path for us too
+
+---
+
+## REMAINING VIABLE APPROACHES
+
+### Option A: RC-Based Jailbreak (DarkSword approach) — MOST REALISTIC
+```
+Don't spawn unsigned binaries. Instead:
+1. Deploy functionality as function calls via RC to SpringBoard/launchd
+2. SSH: inject dropbear-equivalent code into launchd via RC
+3. Tweaks: call dlopen in SpringBoard (needs signed dylib OR...)
+4. Package ops: all via launchd RC (mkdir, write, chmod, etc.)
+5. File manager: already working via VFS + RC
+
+Limitation: no standalone binaries in /usr/bin/
+But: 95% of jailbreak functionality works
+```
+
+### Option B: Find entitled process for TC load
+```
+Need a process that:
+1. Has "com.apple.private.amfi.can-load-trust-cache" entitlement
+2. We can connect RemoteCall to (not restricted exception ports)
+
+Known entitled processes:
+- cryptexd ← RC fails (restricted)
+- MobileStorageMounter ← RC fails
+- (need to find others)
+
+If we find one → IOKit selector 2 → TC loaded → full unsigned exec
+```
+
+### Option C: Wait for community
+```
+Wait for opa334, Linus Henze, or others to publish AMFI/PPL bypass for iOS 18.
+Then integrate into DSPloit.
+```
+
+---
+
+## KEY KERNEL ADDRESSES (iPhone XR iOS 18.2, this boot)
+
+```
+Kernel base:           0xfffffff024190000
+Kernel slide:          0x1d18c000
+amfid proc:            0xffffffdfe8fba148
+amfid PID:             54
+amfid text base:       0x100104000
+amfid patch target:    0x100106ec8 (cbz w22 → NOP)
+cs_enforcement_disable: 0xfffffff024190000 + 0x3170798 (writable)
+AMFI __DATA base:      0xfffffff024190000 + 0x3540098 (writable)
+```
+
+---
+
+## FILES MODIFIED THIS SESSION
+
+```
+lara/experiments/exp_amfid_nop_final.swift — fixed brace mismatch + nil param
+lara/experiments/exp_tc_direct_inject.swift — NEW: direct TC inject via KRW
+lara/experiments/exp_code_exec_proof.swift — NEW: jailbreak proof without binary
+lara/views/root/ExperimentsView.swift — added new experiment buttons
+```
 
 ---
 
@@ -21,214 +213,6 @@
 8. Setelah reboot: buka app lagi, tap "Jailbreak" lagi
 ```
 
-### Untuk iOS 18.3–18.7.1 (device teman):
-```
-Sama persis — exploit selector otomatis pilih darksword (CVE-2025-43510/43520)
-Tidak perlu setting apapun — auto-detect device + iOS version
-```
-
-### Untuk iOS 26.1–26.3 (skeleton exploits — butuh testing):
-```
-1. Build + sideload seperti biasa
-2. App akan auto-detect iOS 26.x dan pilih exploit yang sesuai
-3. KEMUNGKINAN: exploit gagal karena weaponization belum complete
-4. Kirim crash log / console output untuk debugging
-```
-
----
-
-## FLOW TEKNIS (DEVELOPER)
-
-### Jailbreak Chain (7 steps, otomatis):
-```
-User tap "Jailbreak"
-    ↓
-Step 1: exploit_select_best()
-    → iOS 16–18.7.1: EXPLOIT_DARKSWORD (proven working)
-    → iOS 26.1–26.3: EXPLOIT_JPEG_UAF / EXPLOIT_SEPKEYSTORE_UAF (skeleton)
-    → Fallback: jika primary gagal, coba alternatif
-    → Auto-retry: up to 2x on transient failures
-    ↓
-Step 2: VFS init + Sandbox escape
-    → vfs_init() — resolve rootvnode, enable file overwrite
-    → sbx_escape() — patch sandbox extensions (path→"/", class→"read-write")
-    ↓
-Step 3: RemoteCall ke SpringBoard
-    → Thread hijack via Mach exception ports
-    → MIG Filter Bypass aktif untuk iOS 18.4+
-    ↓
-Step 4: Root verification
-    → Connect launchd (PID 1) via RemoteCall
-    → getuid() = 0 → confirmed root
-    → Polling setiap 1s (max 25s timeout)
-    ↓
-Step 5: Bootstrap
-    → Create /var/jb/ directory structure via launchd
-    → Write marker file
-    ↓
-Step 6: AMFI disable
-    → Resolve AMFI data address via kcache_sym (dynamic)
-    → Zero 10 enforcement flags
-    → Set cs_enforcement_disable = 1
-    ↓
-Step 7: Trust cache inject
-    → XPC ke MobileStorageMounter via SpringBoard RC
-    → Send LoadTrustCache with trust cache v2 data
-    → CDHashes registered → unsigned binaries accepted
-    ↓
-"🎉 Jailbreak complete!"
-```
-
----
-
-## iOS VERSION COVERAGE
-
-| iOS Version | Exploit | CVE | Status |
-|-------------|---------|-----|--------|
-| 16.0–17.x | darksword | CVE-2025-43510/43520 | ✅ Working |
-| 18.0–18.2 | darksword | CVE-2025-43510/43520 | ✅ Working (confirmed iPhone XR) |
-| 18.3–18.7.1 | darksword | CVE-2025-43510/43520 | ✅ Working |
-| 18.7.2+ | — | — | ❌ Patched |
-| 26.0–26.0.1 | darksword | CVE-2025-43510/43520 | ✅ Working |
-| 26.1–26.2 | SEPKeyStore UAF | CVE-2026-20637 | ⚠️ Skeleton |
-| 26.1–26.3 | JPEG UAF | CVE-2026-20687 | ⚠️ Skeleton |
-| 26.4+ | — | — | ❌ All patched |
-
----
-
-## ARSITEKTUR
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      DSPloit App (SwiftUI)                    │
-├─────────────────────────────────────────────────────────────┤
-│  Tab 1: ContentView → JailbreakEngine.runFullChain()         │
-│  Tab 2: RootDashboardView → File Manager, Packages, etc     │
-├─────────────────────────────────────────────────────────────┤
-│  JailbreakEngine — 7-step chain + auto-retry (2x)           │
-│  dspmgr — Central state + kernel R/W wrappers                │
-│  RootExecutor — launchd operations (uid=0, <3s watchdog)     │
-│  DebInstaller — .deb parsing (.gz + .xz) + batch install    │
-│  DpkgStatus — track installed packages (dpkg compatible)     │
-│  SSHManager — deploy + manage dropbear SSH server            │
-│  IOKitFuzzer — probe IOKit services for new attack surfaces  │
-├─────────────────────────────────────────────────────────────┤
-│  KERNEL EXPLOIT: darksword.m (ICMPv6 socket KRW)             │
-│  ├── pe_v1() — standard path (non-A18)                       │
-│  ├── pe_a18() — A18/M4 wired page marker (safety limits)    │
-│  ├── KRW persistence (park sockets in launchd)               │
-│  ├── KRW validation (ds_krw_ready)                           │
-│  └── Terminal cleanup (ds_terminal_cleanup)                   │
-├─────────────────────────────────────────────────────────────┤
-│  SKELETON EXPLOITS (iOS 26.1+):                              │
-│  ├── jpeg_uaf.m — IOSurface reclaim (70% done)              │
-│  ├── sepkeystore_uaf.m — kalloc.80 gate reclaim (60%)       │
-│  └── aks_close_uaf.m — same technique as SEPKeyStore         │
-├─────────────────────────────────────────────────────────────┤
-│  POST-EXPLOITATION:                                          │
-│  ├── sbx.m — sandbox escape (PAC strip fixed)               │
-│  ├── vfs.m — filesystem (vfs_write implemented)             │
-│  ├── vnode.m — vnode redirect/chown/chmod                    │
-│  ├── apfs.m — APFS metadata manipulation                    │
-│  └── RemoteCall — MIG bypass for iOS 18.4+                   │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## COMPLETED THIS SESSION
-
-### Code Audit: 46 bugs found, 43 fixed
-### New Features:
-- Multi-exploit system with auto-fallback
-- MIG Filter Bypass (iOS 18.4+)
-- pe_a18 safety limits (from Cyanide)
-- Auto-retry (2x on transient failures)
-- SSHManager (dropbear deployment)
-- DpkgStatus (package tracking)
-- IOKitFuzzer (iOS 26.x research tool)
-- XZ decompression support
-- ds_krw_ready() + ds_terminal_cleanup()
-- vfs_write() implemented
-- Dynamic AMFI address resolution
-
-### Build Fixes:
-- [weak self] on struct → removed
-- mach_task_self() → mach_task_self_
-- IOConnectCallStructMethod bridging
-- Int32 overflow for IOKit error codes
-
----
-
-## NEXT SESSION TASKS (Priority Order)
-
-### 1. Fix remaining compile errors (if any after latest push)
-- Check CI result for latest commit c8b45db
-
-### 2. Tweak injection (ElleKit/Substrate) ✅ IMPLEMENTED
-- TweakLoaderDylib.m — full dylib that gets injected into processes
-  - Constructor auto-runs on dlopen
-  - Scans /var/jb/Library/TweakInject/ for .dylib files
-  - Parses filter plists (Bundles, Executables, Classes)
-  - Process blacklist (amfid, trustd, etc.)
-  - Safe mode support (/var/jb/.safe_mode)
-  - ElleKit loading for MSHookFunction/MSHookMessageEx
-  - Substrate compatibility (reads from MobileSubstrate/DynamicLibraries too)
-- TweakLoader.swift — already existed, manages deployment + injection
-- build_tweakloader.sh — separate build script for the dylib
-- ~250 lines new code
-
-### 3. Kernelcache auto-download fix ✅ IMPLEMENTED
-- validateKernelcache() — checks file size, header magic (IMG4/Mach-O/compressed)
-- downloadKernelcacheWithRetry() — 3 retries with exponential backoff
-- manualKernelcacheInstructions() — UI guidance for manual IPSW extract
-- ensureKernelcacheResolved() — 3-strategy approach:
-  1. Device preboot copy (fastest, no network)
-  2. Apple CDN download with retry + validation
-  3. Manual import detection
-- Corrupt file detection + auto-removal
-- ~200 lines new code
-
-### 4. App registration (uicache) ✅ IMPLEMENTED
-- AppRegistrar.swift — full implementation using installd XPC
-  - registerApp() — copies .app to /var/containers/Bundle/Application/<UUID>/
-  - Calls installd via XPC: InstallForLaunchServices command
-  - notifySpringBoard() — posts LaunchServices + CFNotification
-  - unregisterApp() — UninstallForLaunchServices
-  - registerAllJBApps() — batch register all /var/jb/Applications/*.app
-- Uses installd XPC instead of LSApplicationWorkspace (avoids kernel panic)
-- ~250 lines new code
-
-### 5. KRW persistence improvement ✅ IMPLEMENTED
-- persistence_v2.h — header with krw_state_t struct definition
-- persistence_v2.m — full implementation:
-  - krw_persist_save_state() — saves PCB addrs + kernel_base to file
-  - krw_persist_try_recover() — fast recovery path:
-    1. Validates magic, checksum, iOS version
-    2. Detects reboot via mach_absolute_time + kern.boottime
-    3. Tries bootstrap port recovery (v1 method)
-    4. Falls back to direct PCB validation
-    5. Re-finds proc if PID recycled
-  - krw_persist_validate_state() — check without restoring
-  - krw_persist_clear_state() — cleanup on failure
-  - krw_persist_state_age() — seconds since save
-- JailbreakEngine integration: tries recovery BEFORE running exploit
-- JailbreakEngine integration: saves state AFTER successful jailbreak
-- ~200 lines new code
-
-### 6. Offset auto-detection ✅ IMPLEMENTED
-- offsets_xpf.h — header for dynamic resolution API
-- offsets_xpf.m — full XPF-based dynamic offset resolution:
-  - Maps 60+ XPF dictionary keys → global offset variables
-  - Critical vs non-critical offset classification
-  - Fallback: if XPF fails, hardcoded table still works
-  - Resolves t1sz_boot, smr_base, sizeof_ipc_entry dynamically
-  - Saves resolved offsets to UserDefaults
-  - offsets_dump_all() for debugging
-- JailbreakEngine integration: calls offsets_resolve_dynamic() before exploit
-- Makes DSPloit work on ANY iOS build without code changes
-- ~250 lines new code
-
 ---
 
 ## QUICK REFERENCE
@@ -242,29 +226,24 @@ int exploit_run_selected(exploit_type_t type);
 int ds_run(void);
 bool ds_is_ready(void);
 bool ds_krw_ready(void);
-void ds_terminal_cleanup(void);
 uint64_t ds_kread64(uint64_t addr);
 void ds_kwrite64(uint64_t addr, uint64_t value);
+uint8_t ds_kread8(uint64_t addr);
+void ds_kwrite8(uint64_t addr, uint8_t val);
 
 // Process
 uint64_t ds_get_our_proc(void);
 uint64_t ds_get_kernel_base(void);
+uint64_t ds_get_kernel_slide(void);
 uint64_t procbypid(pid_t pid);
+uint64_t procbyname(const char *name);
+uint64_t taskbyproc(uint64_t proc);
+uint64_t ds_kreadptr(uint64_t va); // strips PAC
 
-// MIG bypass
-void mig_bypass_init(uint64_t slide, uint64_t lockOff, uint64_t sbxMsgOff, uint64_t stackLROff);
-void mig_bypass_start(void);
-void mig_bypass_pause(void);
-```
-
-```swift
-// Swift API
-JailbreakEngine.shared.runFullChain()
-dspmgr.shared.run { success in }
-RootExecutor.shared.executeAsRoot(operation:block:)
-DpkgStatus.shared.reload { packages in }
-SSHManager.shared.install { ok in }
-IOKitFuzzer.shared.quickScan { results in }
+// RemoteCall
+RootExecutor.rcall(rc, "functionName", arg0, arg1, ...)
+RootExecutor.rcallAddr(rc, fnAddr, arg0, arg1, ...)
+remote_alloc_str(rc, "string") → remote address
 ```
 
 ---
@@ -274,117 +253,12 @@ IOKitFuzzer.shared.quickScan { results in }
 | Resource | What it provides |
 |----------|-----------------|
 | [zeroxjf/cyanide-ios](https://github.com/zeroxjf/cyanide-ios) | Working darksword iOS 17–18.7.1 |
-| [rooootdev/lara](https://github.com/rooootdev/lara) | Upstream (we are AHEAD) |
+| [rooootdev/lara](https://github.com/rooootdev/lara) | Upstream (we are AHEAD — they only do customization) |
 | [DarkSword Analysis](https://github.com/AntonioCiolino/DarkSword-Analysis) | Full chain docs |
 | opa334/darksword-kexploit | Original PoC (in workspace) |
 | CVE-2025-43510/43520 | Kernel CVEs (patched 18.7.2/26.1) |
-| CVE-2026-20687 | JPEG UAF (patched 26.4) |
-| CVE-2026-20637 | SEPKeyStore UAF (patched 26.3) |
-
----
-
-## RE FINDINGS (Ghidra — iOS 18.2 kernelcache)
-
-### Trust Cache Internal Addresses (unslid)
-```
-TC_SLOT_TABLE:     0xfffffff00798f600  (stride 0x28 per type)
-TC_STATE:          0xfffffff00798f5a8  (global trust cache state)
-TC_LOCK_D:         0xfffffff00a18fa48  (type 0xd lock flag)
-TC_LOCK_E:         0xfffffff00a18fa49  (type 0xe lock flag)
-AMFI_OBJECT:       0xfffffff00a3304c0  (AppleMobileFileIntegrity IOKit object)
-```
-
-### Trust Cache Load Flow (from RE)
-```
-1. AMFI kext receives XPC → checks entitlement "can-load-trust-cache"
-2. Calls FUN_fffffff008f858b4 (wrapper) → loops type 4-23
-3. Each type calls FUN_fffffff00828516c (actual loader):
-   - Validates type range (0x19 to 0x103)
-   - Calls FUN_fffffff0082853dc(type, tc_data, tc_size, manifest, manifest_size, 0, 0)
-   - On success: sets lock flag at 0xfffffff00a18fa48/49
-4. Static TC loaded via pcRam0000000000000120(&state, type, uuid_ctx, data, size)
-```
-
-### Trust Cache Module Format (v2)
-```
-+0x00: uint32 version (must be 2)
-+0x04: uint8[16] uuid
-+0x14: uint32 entry_count
-+0x18: entries[] (each 24 bytes):
-       +0x00: uint8[20] cdhash (SHA256 truncated)
-       +0x14: uint8 hash_type (2 = SHA256)
-       +0x15: uint8 flags (0 = normal)
-       +0x16: uint16 padding
-```
-
-### Experiment Results (on device)
-```
-✅ Kernel exploit (darksword) — working
-✅ Sandbox escape — working
-✅ RemoteCall (SpringBoard + launchd) — working
-✅ Root (uid=0) — working
-✅ VFS filesystem access — working
-✅ AMFI 10 flags zeroed — working
-✅ cs_enforcement_disable = 1 — working
-✅ MSM XPC connected + replied (0xdead) — connected but may be error
-✅ posix_spawn signed binary (/bin/df) — working (ret=0)
-❌ posix_spawn UNSIGNED binary — EPERM (AMFI still blocking)
-❌ Direct kernel write to TC slot table — PPL blocks (panic)
-```
-
-### Blocking Issue
-```
-STATUS (2026-05-30 — GHIDRA DEEP RE SESSION):
-═══════════════════════════════════════════════════════════════
-
-CRITICAL DISCOVERY: The AMFI IOKit user client handler (FUN_fffffff008f76ee4)
-accepts trust cache loads via TWO selectors:
-  - Selector 7: TC + IMG4 manifest (used by cryptexd)
-  - Selector 2: TC only, no manifest needed (simpler!)
-
-ENTITLEMENT GATE: "com.apple.private.amfi.can-load-trust-cache"
-  - SpringBoard does NOT have this → IOServiceOpen fails
-  - cryptexd HAS this entitlement → can load trust caches!
-  - MobileStorageMounter also has it (but RC connection fails)
-
-TRUST CACHE LOAD GATE BYPASS (FUN_fffffff008f78cc4):
-  The kernel checks DAT_fffffff007b795e8 (tc_load_gate).
-  If gate=0, it calls FUN_fffffff008f78cc4 which checks AKS lock state.
-  On UNLOCKED device → returns 1 → TC loading proceeds!
-  Since user is actively using device → always unlocked → gate bypassed!
-
-BUFFER FORMAT (from cryptexd RE at FUN_10002d45c):
-  Selector 7: [uint64 tc_size][uint64 manifest_size][tc_data][manifest_data]
-  Selector 2: [raw tc_data] directly
-
-NEW APPROACH: exp_cryptexd_tc_load.swift
-  1. Wake cryptexd via XPC (com.apple.cryptexd)
-  2. Connect RemoteCall to cryptexd
-  3. In cryptexd context: IOServiceMatching("AppleMobileFileIntegrity")
-  4. IOServiceOpen → IOConnectCallMethod(conn, 2, NULL, 0, tc_data, tc_size, ...)
-  5. Kernel accepts because cryptexd has the entitlement!
-  6. Trust cache loaded → posix_spawn unsigned binary → SUCCESS
-
-ALSO FOUND:
-  - cs_enforcement_disable at 0xfffffff00a160798 (may be writable!)
-  - pmap_cs_allow_invalid checks: get-task-allow OR run-unsigned-code OR
-    run-invalid-allow OR license-to-operate entitlements
-  - FUN_fffffff008285e3c (developer mode check) reads DAT_fffffff00a0e45b8
-  - FUN_fffffff00854a0bc sets pmap_cs enforcement (has panic guard)
-
-EXPERIMENTS ADDED:
-  - exp_cryptexd_tc_load.swift — HIGH PRIORITY (cryptexd has entitlement)
-  - exp_pmap_cs_probe.swift — reads all critical flags at runtime
-  - ExperimentsView updated with new buttons
-
-TESTING PRIORITY:
-  1. Run "pmap_cs Kernel Probe" → see which flags are writable
-  2. Run "cryptexd IOKit" → attempt TC load via entitled daemon
-  3. If cryptexd RC fails → try patching cs_enforcement_disable
-  4. If cs_enforcement_disable writable → may be enough alone!
-```
 
 ---
 
 *DSPloit — iOS 16–18.7.1 • A11–A18 • Full Jailbreak*
-*Created by Royan | Last updated: 2026-05-24*
+*Created by Royan | Last updated: 2026-05-31*

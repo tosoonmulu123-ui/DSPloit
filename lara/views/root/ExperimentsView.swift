@@ -88,6 +88,12 @@ struct ExperimentsView: View {
                         ExpMultiBypass.shared.runAsync()
                     }
                 }
+                expBtn("🚀 Host Port Hijack (MIG)", .green) {
+                    runAsync("Host Port MIG") { cb in
+                        ExpHostPortHijack.shared.onLog = cb
+                        ExpHostPortHijack.shared.runAsync()
+                    }
+                }
                 
                 Divider().padding(.vertical, 4)
                 sectionHeader("Trust Cache")
