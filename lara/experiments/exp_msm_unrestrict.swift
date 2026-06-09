@@ -32,15 +32,14 @@ class ExpMSMUnrestrict {
         }
         
         // 1. Find MobileStorageMounter
-        let pid = RootExecutor.shared.getPID(for: "MobileStorageMounter")
+        let pid = procbyname("MobileStorageMounter")
         if pid <= 0 {
             log("⚠️ MobileStorageMounter not running. Attempting to spawn...")
-            // Just standard posix_spawn since it's signed
-            let ret = RootExecutor.shared.runSignedBinary("/usr/libexec/MobileStorageMounter")
-            log("Spawn returned: \(ret)")
+            // We can't spawn it directly easily without RootExecutor's full API,
+            // but we can try to find it first.
         }
         
-        let msmPid = RootExecutor.shared.getPID(for: "MobileStorageMounter")
+        let msmPid = procbyname("MobileStorageMounter")
         guard msmPid > 0 else {
             log("❌ Failed to find MobileStorageMounter")
             return
@@ -95,16 +94,23 @@ class ExpMSMUnrestrict {
         log("✅ Task memory patched. Attempting RemoteCall...")
         
         // 5. Test RemoteCall
-        let rc = RemoteCall(pid: msmPid)
-        guard rc.initRemoteCall() else {
+        var rcSuccess = false
+        let sema = DispatchSemaphore(value: 0)
+        dspmgr.shared.rcinitDaemon(serviceName: "com.apple.MobileStorageMounter", framework: nil, process: "MobileStorageMounter", migbypass: false) { rc in
+            if rc != nil {
+                rcSuccess = true
+                rc?.destroy()
+            }
+            sema.signal()
+        }
+        sema.wait()
+        
+        guard rcSuccess else {
             log("❌ RemoteCall still failed! (Restricted exception ports not bypassed)")
             return
         }
         
         log("🎉 SUCCESS: RemoteCall to MobileStorageMounter connected!")
         log("🎉 We can now call its functions!")
-        
-        // Cleanup
-        rc.deinitRemoteCall()
     }
 }
