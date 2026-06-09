@@ -127,6 +127,12 @@ struct ExperimentsView: View {
                         ExpCryptexdTCLoad.shared.runAsync()
                     }
                 }
+                expBtn("MSM Unrestrict (TC)", .orange) {
+                    runAsync("MSM Unrestrict") { cb in
+                        ExpMSMUnrestrict.shared.onLog = cb
+                        ExpMSMUnrestrict.shared.runAsync()
+                    }
+                }
                 
                 Divider().padding(.vertical, 4)
                 
