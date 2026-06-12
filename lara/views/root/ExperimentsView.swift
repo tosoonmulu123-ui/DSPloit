@@ -121,8 +121,14 @@ struct ExperimentsView: View {
                         ExpTCLoadAndSpawn.shared.phase2_testSpawn()
                     }
                 }
-                expBtn("cryptexd IOKit", .teal) {
-                    runAsync("cryptexd") { cb in
+                expBtn("cryptexd Unrestrict (safe)", .teal) {
+                    runAsync("cryptexd unrestrict") { cb in
+                        ExpCryptexdUnrestrict.shared.onLog = cb
+                        ExpCryptexdUnrestrict.shared.runAsync()
+                    }
+                }
+                expBtn("cryptexd IOKit (safe)", .teal) {
+                    runAsync("cryptexd TC") { cb in
                         ExpCryptexdTCLoad.shared.onLog = cb
                         ExpCryptexdTCLoad.shared.runAsync()
                     }
